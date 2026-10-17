@@ -52,3 +52,7 @@ go vet ./... && go test ./...
 ```
 
 Releases são automáticas: push na `main` → webhook do `deploy.barroso.tec.br` → binários publicados como release (sem GitHub Actions — a conta proíbe; o contrato é o `.deploy/release.json`).
+
+---
+
+Deploy keys, webhook e app no deployer configurados (host_barroso_harness, estrategia github_release, sufixo bh).
