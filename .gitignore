@@ -1,0 +1,5 @@
+dist/
+*.db
+*.session
+.DS_Store
+Thumbs.db

@@ -1,0 +1,15 @@
+{
+  "base_version": "v0.1.0",
+  "suffix": "bh",
+  "title": "Barroso Harness",
+  "notes": "Barroso Harness — harness de agentes em Go: CLI, Chat Completions compatível com OpenAI, BARROSO.md como instrução de sistema, terminal/arquivos/skills/MCP/web, subagentes sem recursão e gestão de contexto por orçamento medido. Instalação e receitas: https://harness.barroso.tec.br",
+  "version_var": "main.Versao",
+  "vet": true,
+  "targets": [
+    { "package": "./cmd/barroso-harness", "name": "barroso-harness-linux-amd64", "goos": "linux", "goarch": "amd64" },
+    { "package": "./cmd/barroso-harness", "name": "barroso-harness-linux-arm64", "goos": "linux", "goarch": "arm64" },
+    { "package": "./cmd/barroso-harness", "name": "barroso-harness-darwin-amd64", "goos": "darwin", "goarch": "amd64" },
+    { "package": "./cmd/barroso-harness", "name": "barroso-harness-darwin-arm64", "goos": "darwin", "goarch": "arm64" },
+    { "package": "./cmd/barroso-harness", "name": "barroso-harness-windows-amd64.exe", "goos": "windows", "goarch": "amd64" }
+  ]
+}
