@@ -1,168 +1,47 @@
 // Package runtime compõe o turno: instruções BARROSO.md → histórico →
 // guardrail → loop do modelo → tools YOLO → compactação proativa/reativa.
-// O transcript é append-only dentro do processo; persistência em disco
-// (sessões) entra no slice 1.
+// O transcript é append-only dentro do processo. A Sessão (session.go)
+// executa o loop; Turno é o wrapper de um único pedido usado por -p.
 package runtime
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
-	"time"
 
-	"github.com/ruanbarroso/barroso-harness/internal/budget"
 	"github.com/ruanbarroso/barroso-harness/internal/config"
 	"github.com/ruanbarroso/barroso-harness/internal/dealer"
-	"github.com/ruanbarroso/barroso-harness/internal/instructions"
-	"github.com/ruanbarroso/barroso-harness/internal/tools"
 )
 
-// Turno executa um pedido: streaming de texto na saída, tools em modo YOLO,
-// guardrail de janela antes de cada chamada e recuperação reativa limitada.
+// Turno executa um pedido único (modo -p): streaming de texto na saída, tools
+// em modo YOLO, guardrail de janela antes de cada chamada e recuperação
+// reativa limitada. Reusa a Sessão sem histórico prévio: stateless por vez.
 func Turno(out io.Writer, cfg config.Config, cwd, pedido string) error {
 	if strings.TrimSpace(pedido) == "" {
 		return fmt.Errorf("pedido vazio: use -p \"...\"")
 	}
-	baroMD, err := instructions.Resolve(cwd)
-	if err != nil {
+	if !cfg.Pronta() {
+		return fmt.Errorf(
+			"configuração incompleta (%s) — rode `bh` sem argumentos para configurar provider/model interativamente, ou edite %s",
+			strings.Join(cfg.Faltas(), ", "), filePath(cfg))
+	}
+	if err := NewSession(cfg).Send(context.Background(), out, cwd, pedido); err != nil {
 		return err
 	}
-
-	dc := dealer.Novo(dealer.Config{
-		BaseURL:      cfg.BaseURL,
-		Model:        cfg.Model,
-		APIKey:       cfg.APIKey,
-		MaxTokens:    cfg.MaxTokens,
-		JanelaTokens: cfg.Janela,
-	})
-	lista := tools.SpecsBuiltins()
-	schemas := make([]map[string]any, 0, len(lista))
-	for _, s := range lista {
-		schemas = append(schemas, map[string]any{
-			"type": "function",
-			"function": map[string]any{
-				"name":        s.Name,
-				"description": s.Description,
-				"parameters":  s.Schema,
-			},
-		})
-	}
-
-	historico := []dealer.Mensagem{{Role: "user", Conteudo: pedido}}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-	defer cancel()
-
-	est := budget.Estimador{}
-	if cfg.BytesPorToken > 0 {
-		est.CharsPorToken = float64(cfg.BytesPorToken)
-	}
-
-	piso := 0               // poda não desce abaixo deste índice (monotônica no turno)
-	reativaFeita := false   // compactação reativa: uma tentativa por turno
-
-	for ciclo := 0; ciclo < 64; ciclo++ {
-		system := "Você é o agente Barroso Harness, rodando localmente na máquina do usuário em modo YOLO: as ferramentas executam sem pedir aprovação.\n" +
-			"Use as ferramentas para agir (terminal, arquivos) e TEXTO para falar com o usuário. Quando a tarefa terminar, responda com texto puro.\n"
-		if baroMD != "" {
-			system += "\n## BARROSO.md (instrução de sistema)\n" + baroMD
-		}
-		system += "\n## Ambiente\n- cwd: " + cwd + "\n- plataforma: use tools para descobrir; não presuma shell.\n"
-
-		// ── guardrail de capacidade ──────────────────────────────
-		corpo, err := dc.Corpo(system, historico, schemas)
-		if err != nil {
-			return err
-		}
-		av := budget.Avaliar(string(corpo), cfg.Janela, est)
-		if !av.Cabe {
-			podado := podar(historico, &piso, av.TokensEntrada+av.TokensSaida-cfg.Janela)
-			if podado == nil {
-				return fmt.Errorf("guardrail: request não cabe (%s) e a poda não aliviou o suficiente", av.Veredito())
-			}
-			fmt.Fprintln(out, "[guardrail] compactação proativa por previsão de estouro")
-			historico = podado
-			continue // remonta e mede de novo
-		}
-
-		// ── rodada do modelo ─────────────────────────────────────
-		rodada, err := dc.Rodar(system, historico, schemas)
-		if err != nil {
-			if estouraContexto(err) && cfg.Janela > 0 && !reativaFeita {
-				reativaFeita = true
-				fmt.Fprintln(out, "[guardrail] provider recusou por contexto; compactação reativa")
-				podado := podar(historico, &piso, budget.ReservaOperacional)
-				if podado != nil {
-					historico = podado
-					continue
-				}
-			}
-			return err
-		}
-		if rodada.Usage != nil {
-			est.Calibrar(len(corpo), rodada.Usage.PromptTokens)
-		}
-
-		if rodada.Texto != "" && len(rodada.Tools) > 0 {
-			// texto+preamble antes das tools vai como assistant content
-			historico = append(historico, dealer.Mensagem{Role: "assistant", Conteudo: rodada.Texto})
-		}
-		if len(rodada.Tools) == 0 {
-			if rodada.Texto != "" {
-				fmt.Fprint(out, rodada.Texto)
-			}
-			fmt.Fprintln(out)
-			return nil
-		}
-
-		for _, call := range rodada.Tools {
-			historico = append(historico, dealer.Mensagem{
-				Role: "tool_call", ToolID: call.ID, ToolName: call.Nome, ToolArgs: call.Args,
-			})
-		}
-
-		// ── execução YOLO das tools ──────────────────────────────
-		for _, call := range rodada.Tools {
-			inicio := time.Now()
-			saida, exeErr := ferramenta(ctx, lista, cwd, call)
-			dur := time.Since(inicio)
-			isErr := exeErr != nil
-			if isErr {
-				saida = "erro: " + exeErr.Error()
-			}
-			historico = append(historico, dealer.Mensagem{
-				Role: "tool_result", Conteudo: saida,
-				ToolID: call.ID, ToolName: call.Nome, IsErro: isErr,
-			})
-			estado := "ok"
-			if isErr {
-				estado = "erro"
-			}
-			fmt.Fprintf(out, "[tool %s %s em %s]\n", call.Nome, estado, dur.Round(time.Millisecond))
-			// trecho visível do resultado para o humano acompanhar
-			// (o histórico do modelo já recebeu tudo).
-			eco := resultadoSaida(saida)
-			if eco != "" {
-				fmt.Fprintln(out, eco)
-			}
-		}
-	}
-	return fmt.Errorf("turno excedeu 64 ciclos; teto técnico configurável (não é permissionamento)")
+	return nil
 }
 
-func ferramenta(ctx context.Context, lista []tools.Spec, cwd string, call dealer.ToolChamada) (string, error) {
-	for _, s := range lista {
-		if s.Name == call.Nome {
-			return s.Exec(ctx, cwd, json.RawMessage(call.Args))
-		}
+// filePath devolve o caminho do config.json (não impresso em testes).
+func filePath(cfg config.Config) string {
+	if cfg.Home != "" {
+		return cfg.Home + "\\config.json"
 	}
-	return "", fmt.Errorf("tool desconhecida: %q (checar o nome exato)", call.Nome)
+	return "~/.barroso-harness/config.json"
 }
 
-// resultadoSaida devolve o trecho a ecoar no stream para o humano: até
-// 2 KiB de uma saída de tool (janela legível; o modelo recebeu tudo).
+// resultadoSaida devolve trecho a ecoar no stream: até 2 KiB de uma saída de
+// tool (o histórico do modelo já recebeu tudo).
 func resultadoSaida(saida string) string {
 	s := strings.TrimRight(saida, "\n")
 	if s == "" {
@@ -180,37 +59,27 @@ func resultadoSaida(saida string) string {
 }
 
 // podar troca resultados antigos e grandes de tool por bilhete curto. A poda
-// é monotônica dentro do turno (o piso não desce) — o provider de prefixo,
-// quendo houver, agradecer. Retorna nil se não aliviar o suficiente.
+// é monotônica dentro do turno — mantém o prefixo do request estável.
 func podar(h []dealer.Mensagem, piso *int, deficit int) []dealer.Mensagem {
 	if deficit <= 0 {
 		return nil
 	}
-	cauda := 24
+	const cauda = 24
 	if len(h) <= cauda {
 		return nil
 	}
-	nova := make([]dealer.Mensagem, len(h))
-	copy(nova, h)
-	limite := len(nova) - cauda // índice da primeira fora da cauda intocada
+	nova := append([]dealer.Mensagem(nil), h...)
+	limite := len(nova) - cauda
 	if limite <= *piso {
 		return nil
 	}
 	recuperado := 0
-	// varre do mais antigo para o mais novo dentro da zona podável: mantém o
-	// prefixo do request estável o máximo possível (provider com cache
-	// de prefixo agradece).
 	for i := *piso; i < limite; i++ {
-		if nova[i].Role != "tool_result" {
+		if nova[i].Role != "tool_result" || len(nova[i].Conteudo) < 2048 {
 			continue
 		}
 		t := len(nova[i].Conteudo)
-		if t < 2048 {
-			continue
-		}
-		nova[i].Conteudo = fmt.Sprintf(
-			"(resultado anterior de %s compactado pelo guardrail; re-peça com range menor se precisar do conteúdo)",
-			nova[i].ToolName)
+		nova[i].Conteudo = fmt.Sprintf("(resultado anterior de %s compactado pelo guardrail; re-peça com range menor se precisar do conteúdo)", nova[i].ToolName)
 		recuperado += t - len(nova[i].Conteudo)
 		if recuperado >= deficit {
 			break

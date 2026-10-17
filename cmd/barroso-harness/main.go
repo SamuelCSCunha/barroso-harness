@@ -1,7 +1,6 @@
 // Barroso Harness — executável único, multiplataforma, provider-neutral.
-// Slice 0: um turno completo por invocação (-p "pedido"), com streaming de
-// texto, tools locais em modo YOLO, orçamento de janela como guardrail e
-// compactação proativa/reativa.
+// -p executa um turno não interativo com config já salva; sem argumentos
+// inicia onboarding/REPL interativo.
 package main
 
 import (
@@ -10,6 +9,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/ruanbarroso/barroso-harness/internal/cli"
 	"github.com/ruanbarroso/barroso-harness/internal/config"
 	"github.com/ruanbarroso/barroso-harness/internal/runtime"
 )
@@ -19,9 +19,9 @@ var Versao = "dev"
 
 func main() {
 	var (
-		pedido  = flag.String("p", "", "pedido de um único turno (modo print); modo interativo vem no slice 1")
-		idInit  = flag.Bool("init", false, "cria config.json e BARROSO.md de exemplo em ~/.barroso-harness")
-		idVer   = flag.Bool("version", false, "mostra a versão")
+		pedido = flag.String("p", "", "pedido de um único turno (modo print)")
+		idInit = flag.Bool("init", false, "cria estrutura de dados em ~/.barroso-harness sem sobrescrever arquivos")
+		idVer  = flag.Bool("version", false, "mostra a versão")
 	)
 	flag.Parse()
 
@@ -34,8 +34,15 @@ func main() {
 			fmt.Fprintln(os.Stderr, "erro:", err)
 			os.Exit(1)
 		}
-		fmt.Println("arquivos de exemplo criados em", config.Dir())
+		fmt.Println("estrutura criada em", config.Dir())
 		return
+	}
+	if flag.NArg() > 0 && *pedido == "" {
+		fmt.Fprintln(os.Stderr, "uso: bh [-p \"pedido\"] [-init] [-version]")
+		os.Exit(2)
+	}
+	if *pedido == "" {
+		os.Exit(cli.RunInteractive(cli.IO{In: os.Stdin, Out: os.Stdout, ErrOut: os.Stderr}))
 	}
 	if err := Executar(os.Stdout, *pedido); err != nil {
 		fmt.Fprintln(os.Stderr, "erro:", err)

@@ -1,26 +1,30 @@
 // Package dealer fala com o provider no padrão OpenAI Chat Completions
-// (streaming SSE, tools, include_usage). O runtime monta o transcript;
-// o dealer só traduz ida e volta. Compactação é problema do runtime.
+// (streaming SSE, tools, include_usage) e expõe o catálogo /models no mesmo
+// padrão. O runtime monta o transcript; o dealer só traduz ida e volta.
+// Compactação é problema do runtime.
 package dealer
 
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 )
 
-// Config provider. A chave nunca vive no arquivo: entra por BARROSO_API_KEY.
+// Config provider. A chave vem da config local persistida pela CLI.
 type Config struct {
 	BaseURL      string `json:"base_url"`
 	Model        string `json:"model"`
 	APIKey       string `json:"-"`
 	MaxTokens    int    `json:"max_tokens"`     // teto de saída; 0 = 4096
-	JanelaTokens int    `json:"context_window"` // manual; 0 = desconhecida
+	JanelaTokens int    `json:"context_window"` // 0 = desconhecida
+	Effort       string `json:"effort"`         // vazio = omitir reasoning_effort do request
 }
 
 // Usage do provider.
@@ -120,6 +124,10 @@ func (c *Cliente) Corpo(system string, msgs []Mensagem, tools []map[string]any) 
 		"max_tokens":     c.MaxTokens(),
 		"stream_options": map[string]any{"include_usage": true},
 	}
+	if effort := strings.TrimSpace(c.cfg.Effort); effort != "" && !strings.EqualFold(effort, "none") {
+		// Omitimos campo vazio ou `none` (provider recusa ambos).
+		body["reasoning_effort"] = effort
+	}
 	if len(tools) > 0 {
 		body["tools"] = tools
 		body["tool_choice"] = "auto"
@@ -149,6 +157,35 @@ type sseChunk struct {
 	} `json:"usage"`
 }
 
+// RodarContext é Rodar com cancelamento real: o request e a leitura do stream
+// abortam quando o ctx expira ou é cancelado (o REPL usa Ctrl+C).
+func (c *Cliente) RodarContext(ctx context.Context, system string, msgs []Mensagem, tools []map[string]any) (*Rodada, error) {
+	if ctx == nil {
+		return c.Rodar(system, msgs, tools)
+	}
+	body, err := c.Corpo(system, msgs, tools)
+	if err != nil {
+		return nil, err
+	}
+	endpoint := NormalizarURL(c.cfg.BaseURL) + "/chat/completions"
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.cfg.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	httpc := &http.Client{Timeout: 15 * time.Minute}
+	resp, err := httpc.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("provider: %w", err)
+	}
+	defer resp.Body.Close()
+	return lerRodada(resp, ctx)
+}
+
 // Rodar executa uma rodada: streaming, acumula texto, monta tool calls e
 // captura usage. system e tools entram intocados — dealer não edita histórico.
 func (c *Cliente) Rodar(system string, msgs []Mensagem, tools []map[string]any) (*Rodada, error) {
@@ -156,7 +193,7 @@ func (c *Cliente) Rodar(system string, msgs []Mensagem, tools []map[string]any) 
 	if err != nil {
 		return nil, err
 	}
-	url := strings.TrimSuffix(c.cfg.BaseURL, "/") + "/chat/completions"
+	url := NormalizarURL(c.cfg.BaseURL) + "/chat/completions"
 	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -177,12 +214,25 @@ func (c *Cliente) Rodar(system string, msgs []Mensagem, tools []map[string]any) 
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
 		return nil, fmt.Errorf("provider HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
 	}
+	return lerRodada(resp, context.Background())
+}
 
+// lerRodada consome o stream SSE já aberto e monta a Rodada.
+func lerRodada(resp *http.Response, ctx context.Context) (*Rodada, error) {
+	if resp.StatusCode != 200 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		return nil, fmt.Errorf("provider HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
 	r := &Rodada{}
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 0, 1<<20), 4<<20)
 	emCurso := map[int]*oaiCall{}
 	for sc.Scan() {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
 		linha := sc.Text()
 		if !strings.HasPrefix(linha, "data:") {
 			continue
@@ -240,4 +290,143 @@ func (c *Cliente) Rodar(system string, msgs []Mensagem, tools []map[string]any) 
 	}
 	r.FimPorTexto = len(r.Tools) == 0
 	return r, nil
+}
+
+// ── catálogo /models ─────────────────────────────────────────────────────
+
+// CatalogModel é um item do /models, tolerante a campos desconhecidos.
+// ContextLength e Input podem faltar (provider não publica) — aí valem os
+// valores zero e a filtragem por input fica conservadora (mantém).
+type CatalogModel struct {
+	ID            string   `json:"id"`
+	OwnedBy       string   `json:"owned_by,omitempty"`
+	Created       int64    `json:"created,omitempty"`
+	ContextLength int      `json:"context_length,omitempty"`
+	Type          string   `json:"type,omitempty"`
+	Input         []string `json:"input,omitempty"` // ["text"] | ["text","image"] | ["audio"]...
+}
+
+// ModelsResponse é o envelope OpenAI do /models. Pode vir com metadata
+// extra no mesmo nível — ignorada.
+type ModelsResponse struct {
+	Data    []CatalogModel `json:"data"`
+	Object  string         `json:"object,omitempty"`
+	RawJSON []byte         `json:"-"`
+}
+
+// NormalizarURL tolera base com ou sem barra final e evita duplicação de
+// sufixos (/v1/v1, /chat/completions/chat/completions).
+func NormalizarURL(base string) string {
+	b := strings.TrimSuffix(strings.TrimSpace(base), "/")
+	for _, sufixo := range []string{"/chat/completions", "/completions", "/models"} {
+		if strings.HasSuffix(b, sufixo) {
+			b = strings.TrimSuffix(b, sufixo)
+		}
+	}
+	return b
+}
+
+const (
+	timeoutCatalogo = 15 * time.Second
+	tetoBodyCatalog = 1 << 20 // 1 MiB: catálogo nunca é gigante; corta abuse
+)
+
+// Catalogo faz GET {baseURL}/models com Bearer e devolve o envelope cru.
+func Catalogo(ctx context.Context, baseURL, apiKey string) (*ModelsResponse, error) {
+	endpoint := NormalizarURL(baseURL) + "/models"
+	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	httpc := &http.Client{Timeout: timeoutCatalogo}
+	resp, err := httpc.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("catálogo %s: %w", endpoint, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		return nil, fmt.Errorf("catálogo HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	b, err := io.ReadAll(io.LimitReader(resp.Body, tetoBodyCatalog+1))
+	if err != nil {
+		return nil, fmt.Errorf("catálogo: %w", err)
+	}
+	if len(b) > tetoBodyCatalog {
+		return nil, fmt.Errorf("catálogo: resposta excedeu %d bytes", tetoBodyCatalog)
+	}
+	var out ModelsResponse
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil, fmt.Errorf("catálogo: JSON inválido: %w", err)
+	}
+	out.RawJSON = b
+	if len(out.Data) == 0 {
+		return nil, fmt.Errorf("catálogo vazio em %s", endpoint)
+	}
+	return &out, nil
+}
+
+// Modelos devolve o catálogo processado: sem duplicatas, ordenado
+// alfabeticamente, só itens com pelo menos plausibilidade de chat. A
+// filtragem é TOLERANTE: provider pode vestir {"input": ["text"]} como
+// lista, string única ou não publicar nada; sem sinal, o modelo entra.
+// Marcadores explícitos de não-chat (embedding/tts/whisper/image/music)
+// saem quando o input não confirma texto.
+func Modelos(ctx context.Context, baseURL, apiKey string) ([]CatalogModel, error) {
+	resp, err := Catalogo(ctx, baseURL, apiKey)
+	if err != nil {
+		return nil, err
+	}
+	vistos := map[string]bool{}
+	var out []CatalogModel
+	for _, m := range resp.Data {
+		if m.ID == "" || vistos[m.ID] {
+			continue
+		}
+		if !plausivelChat(m) {
+			continue
+		}
+		vistos[m.ID] = true
+		out = append(out, m)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+func plausivelChat(m CatalogModel) bool {
+	if len(m.Input) > 0 {
+		temTexto := false
+		for _, in := range m.Input {
+			if strings.EqualFold(strings.TrimSpace(in), "text") {
+				temTexto = true
+				break
+			}
+		}
+		if !temTexto {
+			return false // input publicado SEM text: é áudio/imagem/embedding
+		}
+		return true
+	}
+	// Sem metadata de input: conservador — mantém, salvo marcador explícito.
+	marcador := strings.ToLower(m.Type) + " " + strings.ToLower(m.ID)
+	for _, ruim := range []string{"embedding", "tts", "whisper", "transcri", "dall-e", "image-gen", "stabili", "stable-", "music", "moderation", "rerank"} {
+		if strings.Contains(marcador, ruim) {
+			return false
+		}
+	}
+	return true
+}
+
+// ContextoDe devolve a janela publicada para o modelo ID (0 = desconhecida).
+func ContextoDe(lista []CatalogModel, id string) int {
+	for _, m := range lista {
+		if m.ID == id {
+			return m.ContextLength
+		}
+	}
+	return 0
 }

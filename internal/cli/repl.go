@@ -1,0 +1,563 @@
+// Package cli abriga o modo interativo: onboarding de provider/model e o
+// REPL com /model, /effort, /provider, /help e /exit. A leitura da chave é
+// oculta (x/term); testes injetam reader/writer e chaves fictícias.
+package cli
+
+import (
+	"bufio"
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"os/signal"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/ruanbarroso/barroso-harness/internal/config"
+	"github.com/ruanbarroso/barroso-harness/internal/dealer"
+	"github.com/ruanbarroso/barroso-harness/internal/runtime"
+	"golang.org/x/term"
+)
+
+// Esforcos são os níveis comuns de reasoning_effort. O provider pode aceitar
+// outros; validação real é o HTTP dele, e o erro volta para o usuário com a
+// chance de limpar via `/effort -` (nada de downgrade silencioso).
+var Esforcos = []string{"low", "medium", "high", "xhigh", "max"}
+
+// IO agrega os três fluxos, para testes injetarem reader/writer. O Reader
+// compartilhado evita descartar bytes quando a entrada é prebuffered.
+type IO struct {
+	In     io.Reader
+	Out    io.Writer
+	ErrOut io.Writer
+	reader *bufio.Reader
+}
+
+func (io *IO) Reader() *bufio.Reader {
+	if io.reader == nil {
+		io.reader = bufio.NewReader(io.In)
+	}
+	return io.reader
+}
+
+// PromptKey lê a chave SEM eco (x/term no stdin cru). Testes sobrescrevem.
+var PromptKey = func(prompt string) (string, error) {
+	fmt.Print(prompt)
+	b, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Println()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(b)), nil
+}
+
+// RunInteractive é o caminho de `bh` sem argumentos: onboarding se a config
+// estiver incompleta, REPL em seguida.
+func RunInteractive(io IO) int {
+	if err := run(io); err != nil {
+		fmt.Fprintf(io.ErrOut, "erro: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+func run(io IO) error {
+	io.Reader() // inicializa o buffer ANTES de qualquer leitura: as cópias de IO
+	// passadas a Onboarding/repl precisam compartilhar o mesmo *bufio.Reader,
+	// senão o segundo leitor vê EOF e o REPL não recebe linha nenhuma.
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	if !cfg.Pronta() {
+		fmt.Fprintln(io.Out, "Barroso Harness — primeira configuração (provider, chave e modelo; a chave fica só neste computador).")
+		if err := Onboarding(io, &cfg); err != nil {
+			if err == errCancelar || strings.Contains(strings.ToLower(err.Error()), "cancelado") {
+				fmt.Fprintln(io.Out, "onboarding cancelado; nada foi alterado ou salvo.")
+				return nil
+			}
+			return err
+		}
+	} else {
+		fmt.Fprintln(io.Out, "Barroso Harness —", cfg.Resumo())
+		fmt.Fprintln(io.Out, "/help lista os comandos.")
+	}
+	repl(io, &cfg)
+	return nil
+}
+
+var errCancelar = fmt.Errorf("cancelado")
+
+// ── onboarding ───────────────────────────────────────────────────────────
+
+// Onboarding guia: base URL (default keys.barroso) → chave oculta →
+// /models validado → escolha de modelo. Reasoning effort inicia desativado.
+// Persiste somente no sucesso; Ctrl+D/cancelamento devolve errCancelar.
+func Onboarding(io IO, cfg *config.Config) error {
+	if io.reader == nil {
+		io.reader = bufio.NewReader(io.In)
+	}
+	base := config.DefaultBaseURL
+	if p := cfg.Ativo(); p != nil && p.BaseURL != "" {
+		base = p.BaseURL
+	}
+	if v := perguntar(io, "base URL", base); strings.TrimSpace(v) != "" && strings.TrimSpace(v) != base {
+		base = strings.TrimSpace(v)
+	}
+
+	key := ""
+	if p := cfg.Ativo(); p != nil && p.APIKey != "" {
+		key = p.APIKey
+		fmt.Fprintln(io.Out, "chave atual preservada; digite enter para mantê-la ou uma nova (input oculto).")
+	}
+	if nova, err := PromptKey("api key: "); err == nil && strings.TrimSpace(nova) != "" {
+		key = strings.TrimSpace(nova)
+	}
+	if key == "" {
+		return fmt.Errorf("chave obrigatória para consultar /models e autenticar os turnos")
+	}
+
+	if err := configurarProvider(io, cfg, base, key); err != nil {
+		if _, ok := err.(*ForaDoCatalogo); !ok {
+			return err
+		}
+	}
+	if cfg.Model == "" {
+		if err := selecionarModelo(io, cfg); err != nil {
+			return err
+		}
+	}
+	if err := cfg.Save(); err != nil {
+		return fmt.Errorf("salvar config: %w", err)
+	}
+	fmt.Fprintln(io.Out, "salvo em "+config.Dir()+"\\config.json — effort desativado por enquanto (/effort liga).")
+	fmt.Fprintln(io.Out, cfg.Resumo())
+	return nil
+}
+
+// perguntar lê uma linha de entrada textual com sugestão default.
+func perguntar(io IO, rótulo, def string) string {
+	fmt.Fprintf(io.Out, "%s [%s]: ", rótulo, def)
+	linha, _ := io.Reader().ReadString('\n')
+	return strings.TrimSpace(linha)
+}
+
+// configurarProvider valida base+chave NO /models ANTES de alterar memória ou
+// disco; em falha devolve erro — nada mudou (rollback integral). Quando o
+// model guardado não existe no catálogo novo, a cópia fica com o provider
+// aplicado e Model="" e devolve *ForaDoCatalogo (caller decide persistir).
+func configurarProvider(io IO, cfg *config.Config, base, key string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	ls, err := dealer.Modelos(ctx, base, key)
+	if err != nil {
+		return fmt.Errorf("provider recusou %s: %v (rollback — nada foi salvo)", base, err)
+	}
+	copia := *cfg
+	copia = atualizarProvider(copia, definirNomeProvider(base), base, key)
+
+	fora := ForaDoCatalogo{}
+	if copia.Model != "" {
+		if !catalogoTem(copia.Model, ls) {
+			fora.Modelo = copia.Model
+			copia.Model = "" // provider novo não tem o modelo guardado
+		}
+	}
+	if copia.Model != "" {
+		// Model existente no catálogo novo: a janela segue o que está gravado
+		// (fonte manual) ou rederiva do catálogo quando derivada.
+		if copia.JanelaSource != config.FonteManual {
+			if j := janelaDe(copia.Model, ls); j > 0 {
+				copia = aplicarJanela(copia, j)
+			} else {
+				copia = limparJanelaCatalogo(copia)
+			}
+		}
+	}
+	*cfg = copia
+	if fora.Modelo != "" || copia.Model == "" {
+		return &fora
+	}
+	return nil
+}
+
+type ForaDoCatalogo struct{ Modelo string }
+
+func (e *ForaDoCatalogo) Error() string {
+	return "model " + e.Modelo + " fora do catálogo deste provider; escolha outro (/model)"
+}
+
+func definirNomeProvider(base string) string {
+	t := strings.TrimSuffix(strings.TrimSpace(base), "/")
+	t = strings.TrimPrefix(strings.TrimPrefix(t, "https://"), "http://")
+	if i := strings.IndexAny(t, "/:"); i >= 0 {
+		t = t[:i]
+	}
+	return strings.NewReplacer(".", "-").Replace(t)
+}
+
+func catalogoTem(id string, ls []dealer.CatalogModel) bool {
+	if id == "" {
+		return false
+	}
+	for _, m := range ls {
+		if m.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// aplicarJanela respeita override manual: se o usuário escreveu
+// context_window à mão, catálogo não sobrescreve.
+func aplicarJanela(cfg config.Config, janela int) config.Config {
+	if cfg.JanelaSource == config.FonteManual && cfg.Janela > 0 {
+		return cfg
+	}
+	cfg.Janela = janela
+	cfg.JanelaSource = config.FonteCatalogo
+	return cfg
+}
+
+// limparJanelaCatalogo zera somente o valor derivado do catálogo; manual fica.
+func limparJanelaCatalogo(cfg config.Config) config.Config {
+	if cfg.JanelaSource == config.FonteManual && cfg.Janela > 0 {
+		return cfg
+	}
+	cfg.Janela = 0
+	cfg.JanelaSource = ""
+	return cfg
+}
+
+func atualizarProvider(cfg config.Config, nome, base, key string) config.Config {
+	if cfg.Providers == nil {
+		cfg.Providers = map[string]*config.Provider{}
+	}
+	cfg.Providers[nome] = &config.Provider{BaseURL: base, APIKey: key}
+	cfg.CurrentProvider = nome
+	cfg.BaseURL, cfg.APIKey = base, key
+	return cfg
+}
+
+// janelaDe devolve o context_length publicado para o id (0 = desconhecida).
+func janelaDe(id string, ls []dealer.CatalogModel) int {
+	for _, m := range ls {
+		if m.ID == id {
+			return m.ContextLength
+		}
+	}
+	return 0
+}
+
+// ── seleção de model ─────────────────────────────────────────────────────
+
+// selecionarModelo: lista o catálogo filtrado (text-capable), ordem
+// alfabética, numerado; aceita índice ou ID. Atualiza janela derivada.
+func selecionarModelo(io IO, cfg *config.Config) error {
+	p := cfg.Ativo()
+	base, key := "", ""
+	if p != nil {
+		base, key = p.BaseURL, p.APIKey
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	ls, err := dealer.Modelos(ctx, base, key)
+	if err != nil {
+		return err
+	}
+	if len(ls) == 0 {
+		return fmt.Errorf("catálogo sem modelos plausíveis de chat")
+	}
+	fmt.Fprintln(io.Out, "modelos (ordem alfabética; digite o número ou o id):")
+	for i, m := range ls {
+		linha := fmt.Sprintf("  %2d. %s", i+1, m.ID)
+		if m.ContextLength > 0 {
+			linha += fmt.Sprintf("  [%d ctx]", m.ContextLength)
+		}
+		fmt.Fprintln(io.Out, linha)
+	}
+	for {
+		fmt.Fprint(io.Out, "model: ")
+		linha, err := io.Reader().ReadString('\n')
+		if err != nil {
+			return errCancelar
+		}
+		v := strings.TrimSpace(linha)
+		if v == "" {
+			fmt.Fprintln(io.Out, "escolha um item (número ou id) — sem modelo não há turno.")
+			continue
+		}
+		id := ""
+		if n, errA := strconv.Atoi(v); errA == nil && n >= 1 && n <= len(ls) {
+			id = ls[n-1].ID
+		} else if catalogoTem(v, ls) {
+			id = v
+		}
+		if id == "" {
+			fmt.Fprintf(io.Out, "%q não está no catálogo; repita.\n", v)
+			continue
+		}
+		cfg.Model = id
+		if j := janelaDe(id, ls); j > 0 {
+			*cfg = aplicarJanela(*cfg, j)
+		} else {
+			*cfg = limparJanelaCatalogo(*cfg)
+		}
+		return nil
+	}
+}
+
+// ── REPL ─────────────────────────────────────────────────────────────────
+
+// sinais é preenchido por signal.Notify; o primeiro Ctrl+C durante um turno
+// cancela a rodada, um segundo encerra o REPL (via canal fechar).
+func (io IO) cancelarTurno(fechar chan<- struct{}) (context.Context, context.CancelFunc) {
+	signais := make(chan os.Signal, 2)
+	signal.Notify(signais, os.Interrupt, syscall.SIGTERM)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-signais
+		fmt.Fprintln(io.Out, "\n[Ctrl+C] cancelando a rodada — de novo para sair")
+		cancel()
+		select {
+		case <-signais:
+			close(fechar)
+		case <-ctx.Done():
+		}
+		signal.Stop(signais)
+	}()
+	return ctx, cancel
+}
+
+func repl(io IO, cfg *config.Config) {
+	sess := runtime.NewSession(*cfg)
+	br := io.Reader()
+	cwd, _ := os.Getwd()
+	fechar := make(chan struct{})
+	sair := false
+
+	for {
+		fmt.Fprintf(io.Out, "\n[%s]%s> ", cfg.Model, effortTag(cfg.Effort))
+		select {
+		case <-fechar:
+			fmt.Fprintln(io.Out, "tchau")
+			return
+		default:
+		}
+		linha, err := br.ReadString('\n')
+		if err != nil { // EOF / Ctrl+D: sair limpo
+			fmt.Fprintln(io.Out, "\ntchau")
+			return
+		}
+		if sair {
+			fmt.Fprintln(io.Out, "tchau")
+			return
+		}
+		partes := strings.SplitN(strings.TrimSpace(linha), " ", 2)
+		campos := strings.Fields(partes[0])
+		arg := ""
+		if len(partes) > 1 {
+			arg = strings.TrimSpace(partes[1])
+		}
+		if len(campos) == 0 {
+			continue
+		}
+		switch campos[0] {
+		case "/exit", "/quit":
+			fmt.Fprintln(io.Out, "tchau")
+			return
+		case "/help":
+			ajuda(io)
+		case "/model":
+			if arg != "" {
+				// troca direta por id se ele existir no catálogo atual
+				if err := trocarModeloDireto(io, cfg, arg); err != nil {
+					fmt.Fprintln(io.ErrOut, "erro:", err)
+					continue
+				}
+			} else if err := selecionarModelo(io, cfg); err != nil {
+				fmt.Fprintln(io.ErrOut, "erro:", err)
+				continue
+			} else {
+				if err := cfg.Save(); err != nil {
+					fmt.Fprintln(io.ErrOut, "erro salvando:", err)
+					continue
+				}
+				sess.Configure(*cfg)
+			}
+			fmt.Fprintln(io.Out, cfg.Resumo())
+		case "/effort":
+			procEffort(io, cfg, sess, arg)
+		case "/provider":
+			if err := cmdProvider(io, cfg); err != nil {
+				fmt.Fprintln(io.ErrOut, "erro:", err)
+				continue
+			}
+			sess.Configure(*cfg)
+			fmt.Fprintln(io.Out, cfg.Resumo())
+		default:
+			if strings.HasPrefix(campos[0], "/") {
+				fmt.Fprintf(io.Out, "comando desconhecido: %s (/help lista)\n", campos[0])
+				continue
+			}
+			// turno do modelo: Ctrl+C abre mão da rodada corrente; um segundo
+			// sinal (ou /exit) encerra o REPL.
+			ctx, cancel := io.cancelarTurno(fechar)
+			errTurno := sess.Send(ctx, io.Out, cwd, strings.TrimSpace(linha))
+			cancel()
+			if errTurno != nil {
+				fmt.Fprintln(io.ErrOut, "erro:", errTurno)
+			}
+			select {
+			case <-fechar:
+				sair = true
+			default:
+			}
+		}
+	}
+}
+
+func effortTag(e string) string {
+	if e == "" {
+		return ""
+	}
+	return " e:" + e
+}
+
+func ajuda(io IO) {
+	fmt.Fprint(io.Out, `comandos:
+  /model            lista o catálogo (alfabética) e troca o modelo
+  /model <id>       troca direta quando o id está no catálogo
+  /effort           mostra effort atual e níveis comuns
+  /effort <nivel>   grava e entra na próxima requisição
+  /effort -         limpa (request volta sem reasoning_effort)
+  /provider         troca base URL + chave; valida /models antes de salvar
+  /help             esta ajuda
+  /exit, /quit      sair
+texto livre vai direto ao modelo; Ctrl+C cancela a rodada em curso.
+`)
+}
+
+// trocarModeloDireto resolve /model <índice|id>: aceita número da lista
+// alfabética ou o ID; se nenhum dos dois existir no catálogo, erro acionável
+// e nada muda.
+func trocarModeloDireto(io IO, cfg *config.Config, entrada string) error {
+	p := cfg.Ativo()
+	base, key := "", ""
+	if p != nil {
+		base, key = p.BaseURL, p.APIKey
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	ls, err := dealer.Modelos(ctx, base, key)
+	if err != nil {
+		return err
+	}
+	id := ""
+	if n, errA := strconv.Atoi(entrada); errA == nil && n >= 1 && n <= len(ls) {
+		id = ls[n-1].ID
+	} else if catalogoTem(entrada, ls) {
+		id = entrada
+	}
+	if id == "" {
+		return fmt.Errorf("%q não está no catálogo do provider; use /model sem argumento para listar", entrada)
+	}
+	copia := *cfg
+	copia.Model = id
+	if j := janelaDe(id, ls); j > 0 {
+		copia = aplicarJanela(copia, j)
+	} else {
+		copia = limparJanelaCatalogo(copia)
+	}
+	if err := copia.Save(); err != nil {
+		return err
+	}
+	*cfg = copia
+	return nil
+}
+
+// procEffort processa /effort [nivel].
+func procEffort(io IO, cfg *config.Config, sess *runtime.Session, arg string) {
+	atual := "(desativado)"
+	if cfg.Effort != "" {
+		atual = cfg.Effort
+	}
+	if arg == "" {
+		fmt.Fprintf(io.Out, "effort: %s · níveis: %s · `/effort -` limpa\n", atual, strings.Join(Esforcos, ", "))
+		return
+	}
+	copia := *cfg
+	if arg == "-" || arg == "off" || arg == "clear" {
+		copia.Effort = ""
+	} else {
+		copia.Effort = arg
+	}
+	if err := copia.Save(); err != nil {
+		fmt.Fprintf(io.ErrOut, "erro salvando: %v (effort atual continua %s)\n", err, atual)
+		return
+	}
+	*cfg = copia
+	sess.Configure(*cfg)
+	if cfg.Effort == "" {
+		fmt.Fprintln(io.Out, "effort limpo; a próxima requisição sai SEM reasoning_effort.")
+	} else {
+		fmt.Fprintf(io.Out, "effort=%s; entra na próxima requisição (provider recusa? `/effort -` limpa).\n", cfg.Effort)
+	}
+}
+
+// cmdProvider pergunta base URL e chave (oculta), valida /models e persiste.
+// Em falha de validação o erro sobe: nada de memória nem disco é alterado.
+func cmdProvider(io IO, cfg *config.Config) error {
+	base := config.DefaultBaseURL
+	if p := cfg.Ativo(); p != nil && p.BaseURL != "" {
+		base = p.BaseURL
+	}
+	if v := perguntar(io, "base URL", base); v != "" && v != base {
+		base = v
+	}
+	fmt.Fprintln(io.Out, "enter mantém a chave atual; input da nova é oculto.")
+	nova := ""
+	if v, err := PromptKey("api key: "); err == nil && strings.TrimSpace(v) != "" {
+		nova = strings.TrimSpace(v)
+	}
+	key := nova
+	if key == "" {
+		if p := cfg.Ativo(); p != nil {
+			key = p.APIKey
+		}
+	}
+	if key == "" {
+		return fmt.Errorf("chave obrigatória para validar /models")
+	}
+
+	copia := *cfg
+	err := configurarProvider(io, &copia, base, key)
+	// configurarProvider devolve ForaDoCatalogo quando o model guardado não
+	// existe no catálogo novo: o provider já foi aplicado na cópia, mas a
+	// escolha de model deve acontecer ANTES de salvar.
+	var fc *ForaDoCatalogo
+	if err != nil && !asForaCatalogo(err, &fc) {
+		return err
+	}
+	if copia.Model == "" || fc != nil {
+		fmt.Fprintln(io.Out, "provider novo não tem o model atual — escolha outro:")
+		if err := selecionarModelo(io, &copia); err != nil {
+			return fmt.Errorf("provider validado; corra /provider de novo para a escolha de model (%w)", err)
+		}
+	}
+	if err := copia.Save(); err != nil {
+		return err
+	}
+	*cfg = copia
+	return nil
+}
+
+func asForaCatalogo(err error, destino **ForaDoCatalogo) bool {
+	if e, ok := err.(*ForaDoCatalogo); ok {
+		*destino = e
+		return true
+	}
+	return false
+}
