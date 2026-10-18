@@ -6,13 +6,13 @@ import (
 )
 
 // O nome da sessão vai para a aba do terminal (OSC 0), sem controles que
-// quebrem a sequência; sem nome, a aba volta para "bh".
+// quebrem a sequência; sem nome, a aba volta para "BH".
 func TestTituloAba(t *testing.T) {
-	if got := tituloAba(""); got != "\033]0;bh\a" {
+	if got := tituloAba(""); got != "\033]0;BH\a" {
 		t.Fatalf("aba vazia = %q", got)
 	}
 	got := tituloAba("revisão\a do\x1b parser")
-	if got != "\033]0;bh | revisão do parser\a" {
+	if got != "\033]0;BH | revisão do parser\a" {
 		t.Fatalf("aba = %q", got)
 	}
 }
@@ -31,15 +31,15 @@ func TestTelaSemLinhaDeTitulo(t *testing.T) {
 	tl.Estado(estadoPainel{titulo: "minha sessão", modelo: "m"})
 	tl.Adicionar("primeira linha da conversa")
 	s := sb.String()
-	if !strings.Contains(s, "\033]0;bh | minha sessão\a") {
+	if !strings.Contains(s, "\033]0;BH | minha sessão\a") {
 		t.Fatal("título não foi para a aba")
 	}
-	if !strings.Contains(s, "\033[1;1H\033[0m primeira linha da conversa") {
-		t.Fatalf("conversa deveria começar na linha 1")
+	if !strings.Contains(s, "\033[2;1H\033[0m  primeira linha da conversa") {
+		t.Fatalf("conversa deveria começar na linha 2, depois da margem")
 	}
 }
 
-// Ao abrir, sem nenhuma mensagem, a aba já mostra "bh | Nova sessão".
+// Ao abrir, sem nenhuma mensagem, a aba já mostra "BH | Nova sessão".
 func TestAbaNovaSessaoNaAbertura(t *testing.T) {
 	coresLigadas = true
 	defer func() { coresLigadas = false }()
@@ -50,7 +50,7 @@ func TestAbaNovaSessaoNaAbertura(t *testing.T) {
 	var sb strings.Builder
 	tl := &tela{out: &sb}
 	tl.Estado(estadoPainel{modelo: "m"})
-	if !strings.Contains(sb.String(), "\033]0;bh | Nova sessão\a") {
-		t.Fatal("aba deveria abrir como 'bh | Nova sessão'")
+	if !strings.Contains(sb.String(), "\033]0;BH | Nova sessão\a") {
+		t.Fatal("aba deveria abrir como 'BH | Nova sessão'")
 	}
 }

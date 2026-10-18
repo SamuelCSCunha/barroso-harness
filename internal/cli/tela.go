@@ -94,7 +94,7 @@ func (t *tela) encerrar() {
 // tituloAba é a sequência OSC 0 que troca o nome da aba/janela do terminal.
 // Caracteres de controle saem do título para não quebrar a sequência.
 func tituloAba(sessao string) string {
-	nome := "bh"
+	nome := "BH"
 	if s := strings.TrimSpace(sessao); s != "" {
 		limpo := strings.Map(func(r rune) rune {
 			if r < 32 || r == 127 {
@@ -105,7 +105,7 @@ func tituloAba(sessao string) string {
 		if r := []rune(limpo); len(r) > 60 {
 			limpo = string(r[:60]) + "…"
 		}
-		nome = "bh | " + limpo
+		nome = "BH | " + limpo
 	}
 	return "\033]0;" + nome + "\a"
 }
@@ -126,11 +126,16 @@ func (t *tela) Adicionar(texto string) {
 // azul, como o OpenCode.
 func (t *tela) Usuario(texto string) {
 	t.mu.Lock()
+	// Mesma largura e mesma coluna do texto da caixa de entrada: as duas
+	// caixas ficam alinhadas, como no OpenCode.
 	larg := t.larguraConversa() - 2
 	vazia := comFundo(azulf("▌"), fundoUsuario, larg)
-	t.linhas = append(t.linhas, "", vazia)
-	for _, l := range strings.Split(quebrar(texto, larg-6), "\n") {
-		t.linhas = append(t.linhas, comFundo(azulf("▌")+"  "+cor(corTexto, l), fundoUsuario, larg))
+	if len(t.linhas) > 0 {
+		t.linhas = append(t.linhas, "")
+	}
+	t.linhas = append(t.linhas, vazia)
+	for _, l := range strings.Split(quebrar(texto, larg-4), "\n") {
+		t.linhas = append(t.linhas, comFundo(azulf("▌")+" "+cor(corTexto, l), fundoUsuario, larg))
 	}
 	t.linhas = append(t.linhas, vazia, "")
 	t.aparar()
@@ -273,7 +278,8 @@ func (t *tela) desenharTrancado() {
 	limpar := t.medir()
 	w, h := t.w, t.h
 	larg := t.larguraConversa()
-	altura := max(3, h-5)
+	// Linha 1 é margem; a conversa vai da linha 2 até h-5.
+	altura := max(3, h-6)
 
 	var sb strings.Builder
 	sb.WriteString(escSyncIni + escCurOcult)
@@ -305,7 +311,7 @@ func (t *tela) desenharTrancado() {
 		todas = append(todas, quebrarVis(l, larg-2)...)
 	}
 	if t.parcial != "" {
-		todas = append(todas, quebrarVis(t.parcial+t.entradaVisivel(), larg-2)...)
+		todas = append(todas, quebrarVis("  "+t.parcial+t.entradaVisivel(), larg-2)...)
 	}
 	if t.transit != "" {
 		todas = append(todas, t.transit)
@@ -315,12 +321,14 @@ func (t *tela) desenharTrancado() {
 	}
 	fim := len(todas) - t.rolagem
 	vis := todas[max(0, fim-altura):fim]
+	// Margem de 2 colunas à esquerda, a mesma da caixa de entrada.
+	linha(1, "")
 	for i := 0; i < altura; i++ {
 		s := ""
 		if i < len(vis) {
-			s = " " + vis[i]
+			s = "  " + vis[i]
 		}
-		linha(1+i, s)
+		linha(2+i, s)
 	}
 	if t.rolagem > 0 {
 		linha(h-4, "  "+cinzaf(fmt.Sprintf("↓ %d linhas abaixo · PgDn volta", t.rolagem)))
@@ -366,12 +374,14 @@ func (t *tela) desenharTrancado() {
 	if t.painelVisivel() {
 		col := w - larguraPain + 1
 		conteudo := t.linhasPainel()
-		for r := 1; r <= h-1; r++ {
+		// Painel com margem em cima (linha 1 livre) e uma linha de respiro
+		// interna antes do título, alinhado ao topo da conversa.
+		for r := 2; r <= h-1; r++ {
 			s := ""
-			if r-1 >= 0 && r-1 < len(conteudo) {
-				s = conteudo[r-1]
+			if r-3 >= 0 && r-3 < len(conteudo) {
+				s = conteudo[r-3]
 			}
-			fmt.Fprintf(&sb, "\033[%d;%dH%s%s", r, col, reset, comFundo(s, fundoPainel, larguraPain-1))
+			fmt.Fprintf(&sb, "\033[%d;%dH%s%s", r, col, reset, comFundo(s, fundoPainel, larguraPain-2))
 		}
 	}
 
@@ -380,7 +390,7 @@ func (t *tela) desenharTrancado() {
 		if t.parcial == "" {
 			fmt.Fprintf(&sb, "\033[%d;%dH", h-3, 5+larguraVis(t.entradaVisivel()))
 		} else if len(vis) > 0 {
-			fmt.Fprintf(&sb, "\033[%d;%dH", 1+len(vis)-1, 2+larguraVis(vis[len(vis)-1]))
+			fmt.Fprintf(&sb, "\033[%d;%dH", 2+len(vis)-1, 3+larguraVis(vis[len(vis)-1]))
 		}
 		sb.WriteString(escCurVisiv)
 	}
@@ -872,21 +882,30 @@ func (r *turnoTela) Eco(saida string) {
 	if saida == "" {
 		return
 	}
-	ls := strings.Split(saida, "\n")
-	extra := 0
-	if len(ls) > 6 {
-		extra, ls = len(ls)-6, ls[:6]
-	}
-	for i, l := range ls {
-		pre := "    "
-		if i == 0 {
-			pre = "  " + cinzaf("›") + " "
+	// Compacto como o OpenCode: UMA linha de prévia, cortada na largura. A
+	// saída inteira já foi para o modelo; na tela, um JSON de 2 KB virava uma
+	// parede de texto.
+	primeira := ""
+	total := 0
+	for _, l := range strings.Split(saida, "\n") {
+		if strings.TrimSpace(l) == "" {
+			continue
 		}
-		r.t.Adicionar(pre + cinzaf(l))
+		total++
+		if primeira == "" {
+			primeira = strings.Join(strings.Fields(l), " ")
+		}
 	}
-	if extra > 0 {
-		r.t.Adicionar("    " + cinzaf(fmt.Sprintf("… +%d linhas", extra)))
+	if primeira == "" {
+		return
 	}
+	r.t.mu.Lock()
+	larg := r.t.larguraConversa() - 10
+	r.t.mu.Unlock()
+	if total > 1 {
+		primeira += fmt.Sprintf("  (+%d linhas)", total-1)
+	}
+	r.t.Adicionar("  " + cinzaf("› "+cortarVis(primeira, larg)))
 }
 
 func (r *turnoTela) Guardrail(proativa bool) {

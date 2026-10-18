@@ -160,6 +160,6 @@ Num terminal de verdade, `bh` abre em tela cheia no layout do OpenCode: conversa
 
 Teclas: `Enter` envia · `↑`/`↓` histórico do que você digitou · `PgUp`/`PgDn` rola a conversa · `Esc` ou `Ctrl+C` interrompe a resposta em curso · `Ctrl+C` duas vezes sai · `Ctrl+U` apaga a linha · `Ctrl+L` redesenha.
 
-O nome da sessão aparece na aba do terminal (`bh | <nome>`) e no painel: é a primeira mensagem, ou o que você definir com `/rename novo nome`.
+O nome da sessão aparece na aba do terminal (`BH | <nome>`) e no painel: é a primeira mensagem, ou o que você definir com `/rename novo nome`.
 
 `BH_SIMPLES=1 bh` volta ao modo de rolagem. Pipe, redirecionamento e `bh -p` nunca usam a tela cheia.
