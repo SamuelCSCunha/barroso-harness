@@ -181,3 +181,28 @@ func semSombra(base, externas []tools.Spec) []tools.Spec {
 	}
 	return out
 }
+
+// catalogoTools é a RECEITA ÚNICA do catálogo de ferramentas de um turno,
+// usada pelos três pontos de entrada (REPL, -p e ACP — o ACP chega pela
+// mesma Session.Send). A ordem importa para o dedup e para o provider:
+//
+//  1. built-ins (terminal, arquivos, list_dir) — a base;
+//  2. recuperação do log (session_search/session_retrieve) — fecha sobre a
+//     sessão, então entra aqui e não no pacote tools;
+//  3. contexto vivo (ctx_read/ctx_write/ctx_append) — substitui o placeholder
+//     de ctx_read que vem das built-ins;
+//  4. web + skills — função da config e do cwd, reconstruídos a cada turno;
+//  5. injetadas (sub-agentes, MCP) — só com nomes que a base não tem.
+//
+// semRepetir resolve o ctx_read duplicado (placeholder × vivo) ficando com a
+// ÚLTIMA definição; semSombra impede tool externa de sequestrar nome local.
+func (s *Session) catalogoTools(cwd string) []tools.Spec {
+	base := append(tools.SpecsBuiltins(), SessaoSpecs(s)...)
+	base = append(base, EspecificacoesContextoVivoSessao(s)...)
+	base = append(base, web.Especificacoes(s.busca())...)
+	base = append(base, specsDeSkills(cwd)...)
+	s.muExtras.Lock()
+	injetadas := append([]tools.Spec(nil), s.injetadas...)
+	s.muExtras.Unlock()
+	return semSombra(semRepetir(base), injetadas)
+}

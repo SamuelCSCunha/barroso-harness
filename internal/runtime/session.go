@@ -159,15 +159,7 @@ func (s *Session) Send(ctx context.Context, r Renderer, cwd, pedido string) erro
 	if err != nil {
 		return err
 	}
-	lista := tools.SpecsBuiltins()
-	// As tools de recuperação do log entram junto das built-in: elas fecham
-	// sobre esta sessão (precisam do store), por isso são montadas aqui e não
-	// vivem no catálogo estático do pacote tools.
-	lista = append(lista, SessaoSpecs(s)...)
-	// Por último o catálogo estendido: contexto vivo, web, skills e o que o
-	// wiring injetou (sub-agentes, MCP). A política de colisão de nome está
-	// em extras.go — externo nunca sombreia interno.
-	lista = append(lista, s.extrasDoTurno(cwd)...)
+	lista := s.catalogoTools(cwd)
 	schemas := toolSchemas(lista)
 	working := append([]dealer.Mensagem(nil), s.history...)
 	working = append(working, dealer.Mensagem{Role: "user", Conteudo: pedido})
