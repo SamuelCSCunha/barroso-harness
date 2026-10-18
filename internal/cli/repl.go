@@ -473,6 +473,8 @@ func repl(io IO, cfg *config.Config) {
 			okFmt(io.Out, "sessão "+sess.ID()+" salva — "+strings.TrimSpace(titulo))
 		case "/help":
 			ajuda(io)
+		case "/update":
+			cmdUpdate(io)
 		case "/model":
 			if arg != "" {
 				// troca direta por id se ele existir no catálogo atual
@@ -533,6 +535,7 @@ func ajuda(io IO) {
   /new              limpa a história da sessão (conversa nova)
   /resume           lista as últimas sessões e retoma uma
   /save [título]    dá título à sessão atual e grava o log
+  /update           baixa e instala a release mais nova do canal
   /help             esta ajuda
   /exit, /quit      sair
 `)

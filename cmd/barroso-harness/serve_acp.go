@@ -7,10 +7,12 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 
 	"github.com/ruanbarroso/barroso-harness/internal/acp"
 	"github.com/ruanbarroso/barroso-harness/internal/config"
 	"github.com/ruanbarroso/barroso-harness/internal/runtime"
+	"github.com/ruanbarroso/barroso-harness/internal/store"
 	"github.com/ruanbarroso/barroso-harness/internal/wiring"
 )
 
@@ -18,23 +20,29 @@ func serveACP() {
 	cfg, err := config.Load()
 	if err != nil {
 		// Falha de config sai no stderr (log do protocolo), nunca no stdout —
-		// o fio ainda é o(stdout) do Sirve.
+		// o fio ainda é o(os.Stdout) do Sirve.
 		os.Stderr.WriteString("erro: " + err.Error() + "\n")
 		os.Exit(1)
 	}
 	cwd, _ := os.Getwd()
-	// Fábrica de turnos real: cada session/new ganha uma runtime.Session com o
-	// wiring montado (MCP conectado, gerente de sub-agentes). O conjunto é
-	// guardado por sessão e fechado quando o cliente encerra o processo.
+
+	// Log do ACP é o MESMO banco do REPL e do -p (mesma pasta, mesmo arquivo):
+	// uma sessão aberta num cliente editável é retomável no terminal depois.
+	// Best-effort — sem banco o protocolo segue, só sem histórico.
+	loja, errBanco := store.Open(filepath.Join(config.Dir(), "sessions.db"))
+	if errBanco != nil {
+		os.Stderr.WriteString("aviso: sessão sem persistência: " + errBanco.Error() + "\n")
+		loja = nil
+	}
+	defer func() {
+		if loja != nil {
+			_ = loja.Fechar()
+		}
+	}()
+
 	var abertos []*wiring.Conjunto
 	fabrica := func(c config.Config) (acp.Turno, string) {
-		sess := runtime.NewSession(c)
-		conj, avisos := wiring.Montar(nil, c, sess, cwd)
-		for _, aviso := range avisos {
-			os.Stderr.WriteString("aviso: " + aviso + "\n")
-		}
-		abertos = append(abertos, conj)
-		return sess, ""
+		return novaSessaoACP(c, loja, cwd, &abertos)
 	}
 	defer func() {
 		for _, conj := range abertos {
@@ -49,4 +57,33 @@ func serveACP() {
 		os.Exit(1)
 	}
 	ag.Esperar()
+}
+
+// novaSessaoACP monta uma runtime.Session por session/new: persistente quando
+// há banco, com o wiring de subsistemas (MCP, sub-agentes) ligado — mesma
+// receita do REPL e do -p, para o cliente ACP não ver um catálogo pobre.
+//
+// O id devolvido NUNCA é vazio, e isso não é detalhe: o agente ACP registra a
+// sessão no mapa sob essa chave e responde session/new com ela. Id vazio
+// registrava a sessão na chave "" e o cliente recebia sessionId vazio —
+// incapaz de endereçar session/prompt, que rejeitava com "sessão desconhecida".
+//
+// O ctx do wiring é o de vida do processo: sub-agentes nascidos de um turno
+// ACP precisam sobreviver a ele.
+func novaSessaoACP(cfg config.Config, loja *store.Store, cwd string, abertos *[]*wiring.Conjunto) (acp.Turno, string) {
+	id := runtime.NovoSessaoID()
+	var sess *runtime.Session
+	if loja != nil {
+		sess = runtime.NewSessionWithStore(cfg, loja, id)
+	} else {
+		sess = runtime.NewSession(cfg)
+	}
+	conj, avisos := wiring.Montar(nil, cfg, sess, cwd)
+	for _, aviso := range avisos {
+		os.Stderr.WriteString("aviso: " + aviso + "\n")
+	}
+	if abertos != nil {
+		*abertos = append(*abertos, conj)
+	}
+	return sess, id
 }

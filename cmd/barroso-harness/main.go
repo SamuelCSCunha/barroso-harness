@@ -23,6 +23,12 @@ import (
 var Versao = "dev"
 
 func main() {
+	// O REPL precisa da versão para o /update comparar o instalado com o
+	// publicado. O -X do deployer alcança ESTA variável, não a do pacote cli,
+	// então o main repassa — sem isso o /update sempre se veria como "dev" e
+	// trataria qualquer release como novidade.
+	cli.Versao = Versao
+
 	var (
 		pedido = flag.String("p", "", "pedido de um único turno (modo print)")
 		idInit = flag.Bool("init", false, "cria estrutura de dados em ~/.barroso-harness sem sobrescrever arquivos")
