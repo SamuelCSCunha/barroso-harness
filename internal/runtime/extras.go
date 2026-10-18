@@ -201,6 +201,9 @@ func (s *Session) catalogoTools(cwd string) []tools.Spec {
 	base = append(base, EspecificacoesContextoVivoSessao(s)...)
 	base = append(base, web.Especificacoes(s.busca())...)
 	base = append(base, specsDeSkills(cwd)...)
+	if politica(s.config.PoliticaContexto) == PoliticaAgente {
+		base = append(base, specCompactar())
+	}
 	s.muExtras.Lock()
 	injetadas := append([]tools.Spec(nil), s.injetadas...)
 	s.muExtras.Unlock()

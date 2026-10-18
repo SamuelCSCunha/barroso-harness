@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/ruanbarroso/barroso-harness/internal/config"
+	"github.com/ruanbarroso/barroso-harness/internal/dealer"
 	"github.com/ruanbarroso/barroso-harness/internal/runtime"
 )
 
@@ -53,7 +54,19 @@ const (
 	MetSessionNovo = "session/new"
 	MetPrompt      = "session/prompt"
 	MetCancel      = "session/cancel"
+	MetLoad        = "session/load"
 )
+
+// Carregador reabre uma sessão gravada pelo id. Devolve erro quando a sessão
+// não existe ou não pode ser lida. Opcional: sem ele o agente anuncia
+// loadSession=false e recusa session/load.
+type Carregador func(cfg config.Config, id string) (Turno, error)
+
+// comHistorico é o que o agente precisa de um Turno para reproduzir a
+// conversa ao cliente em session/load. runtime.Session satisfaz sem adaptador.
+type comHistorico interface {
+	History() []dealer.Mensagem
+}
 
 // sessao guarda o turno de um cliente ACP e o cancelamento do turno em voo.
 type sessao struct {
@@ -71,6 +84,8 @@ type Agente struct {
 	cfg     config.Config
 	log     func(string) // opcional; nil = silencioso
 	Fabrica func(config.Config) (Turno, string)
+	// Carregar reabre sessão gravada (session/load). nil = loadSession false.
+	Carregar Carregador
 
 	mu      sync.Mutex
 	sessoes map[string]*sessao
@@ -183,6 +198,8 @@ func (a *Agente) despachar(ctx context.Context, w io.Writer, req Request) error 
 		return a.prompt(ctx, w, req)
 	case MetCancel:
 		return a.cancel(w, req)
+	case MetLoad:
+		return a.carregarSessao(w, req)
 	default:
 		a.logf("acp: método desconhecido: %s", req.Method)
 		return WriteError(w, req.ID, CodMetodo, "método não encontrado: "+req.Method)
@@ -210,7 +227,7 @@ func (a *Agente) initialize(w io.Writer, req Request) error {
 	return a.responder(w, NovaResposta(req.ID, map[string]any{
 		"protocolVersion": v,
 		"agentCapabilities": map[string]any{
-			"loadSession": false,
+			"loadSession": a.Carregar != nil,
 		},
 		"authMethods": []any{},
 	}))
@@ -250,6 +267,120 @@ func (a *Agente) novaSessao(w io.Writer, req Request) error {
 	a.mu.Unlock()
 	a.logf("acp: sessão %s criada em %s", id, cwd)
 	return a.responder(w, NovaResposta(req.ID, map[string]any{"sessionId": id}))
+}
+
+// ── session/load ───────────────────────────────────────────────────────────
+
+// carregarSessao reabre uma sessão gravada. Pelo protocolo, o agente REPRODUZ
+// a conversa ao cliente como notificações session/update — user_message_chunk,
+// agent_message_chunk e tool_call — e só então responde. Assim o editor
+// redesenha o histórico sem guardar estado próprio.
+//
+// Sessão já viva neste processo é reaproveitada (não reabre o log por cima de
+// um turno em voo); sessão desconhecida no disco é erro -32602 com o id.
+func (a *Agente) carregarSessao(w io.Writer, req Request) error {
+	if a.Carregar == nil {
+		return WriteError(w, req.ID, CodMetodo, "session/load não suportado (loadSession=false)")
+	}
+	var p struct {
+		SessionID string `json:"sessionId"`
+		CWD       string `json:"cwd"`
+	}
+	if len(req.Params) > 0 {
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			return WriteError(w, req.ID, CodParams, "params inválidos: "+err.Error())
+		}
+	}
+	if p.SessionID == "" {
+		return WriteError(w, req.ID, CodParams, "params inválidos: sessionId obrigatório")
+	}
+	cwd := p.CWD
+	if cwd == "" {
+		if d, err := os.Getwd(); err == nil {
+			cwd = d
+		} else {
+			cwd = "."
+		}
+	}
+
+	a.mu.Lock()
+	viva, ok := a.sessoes[p.SessionID]
+	a.mu.Unlock()
+	var turno Turno
+	if ok {
+		if viva.cancel != nil {
+			return WriteError(w, req.ID, CodTurnoRodando, "turno em andamento nesta sessão")
+		}
+		turno = viva.turno
+	} else {
+		t, err := a.Carregar(a.cfg, p.SessionID)
+		if err != nil {
+			return WriteError(w, req.ID, CodParams, "sessão não carregada: "+p.SessionID+": "+mensagemErro(err))
+		}
+		turno = t
+		a.mu.Lock()
+		a.sessoes[p.SessionID] = &sessao{id: p.SessionID, cwd: cwd, turno: turno}
+		a.mu.Unlock()
+	}
+
+	if h, ok := turno.(comHistorico); ok {
+		a.reproduzir(w, p.SessionID, h.History())
+	}
+	a.logf("acp: sessão %s carregada em %s", p.SessionID, cwd)
+	return a.responder(w, NovaResposta(req.ID, map[string]any{}))
+}
+
+// reproduzir emite o transcript como notificações, na ordem. tool_call e o
+// resultado viram um único tool_call com o status final e a saída como
+// conteúdo — o mesmo formato que o cliente recebeu ao vivo.
+func (a *Agente) reproduzir(w io.Writer, sessao string, h []dealer.Mensagem) {
+	r := &acpRenderer{a: a, w: w, sessao: sessao}
+	ids := map[string]string{} // ToolID do log → toolCallId emitido
+	for _, m := range h {
+		switch m.Role {
+		case "user":
+			r.emitir("user_message_chunk", map[string]any{
+				"content": map[string]any{"type": "text", "text": m.Conteudo},
+			})
+		case "assistant":
+			if m.Conteudo != "" {
+				r.Resposta(m.Conteudo)
+			}
+		case "tool_call":
+			id := a.proximoID()
+			ids[m.ToolID] = id
+			r.emitir("tool_call", map[string]any{
+				"toolCallId": id,
+				"title":      m.ToolName,
+				"kind":       "other",
+				"status":     "pending",
+			})
+		case "tool_result":
+			id := ids[m.ToolID]
+			if id == "" {
+				continue
+			}
+			estado := "completed"
+			if m.IsErro {
+				estado = "failed"
+			}
+			upd := map[string]any{"toolCallId": id, "status": estado}
+			if eco := ecoCurto(m.Conteudo); eco != "" {
+				upd["content"] = []map[string]any{{"type": "text", "text": eco}}
+			}
+			r.emitir("tool_call_update", upd)
+		}
+	}
+}
+
+// ecoCurto corta a saída reproduzida: o cliente redesenha histórico, não
+// precisa de 60 KiB de grep de três turnos atrás.
+func ecoCurto(s string) string {
+	const teto = 2 << 10
+	if len(s) > teto {
+		return s[:teto] + "…"
+	}
+	return s
 }
 
 // ── session/prompt ─────────────────────────────────────────────────────────

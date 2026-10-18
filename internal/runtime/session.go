@@ -195,6 +195,7 @@ func (s *Session) Send(ctx context.Context, r Renderer, cwd, pedido string) erro
 			r.Guardrail(true)
 			s.registrar("guardrail", map[string]any{
 				"tipo":       "proativa",
+				"politica":   politica(s.config.PoliticaContexto),
 				"veredito":   av.Veredito(),
 				"janela":     s.config.Janela,
 				"estimativa": av.TokensEntrada + av.TokensSaida,
@@ -210,8 +211,9 @@ func (s *Session) Send(ctx context.Context, r Renderer, cwd, pedido string) erro
 				reativaFeita = true
 				r.Guardrail(false)
 				s.registrar("guardrail", map[string]any{
-					"tipo":   "reativa",
-					"motivo": umaLinha(err.Error()),
+					"tipo":     "reativa",
+					"politica": politica(s.config.PoliticaContexto),
+					"motivo":   umaLinha(err.Error()),
 				})
 				podado := podar(working, &piso, budget.ReservaOperacional)
 				if podado != nil {
@@ -284,6 +286,21 @@ func (s *Session) Send(ctx context.Context, r Renderer, cwd, pedido string) erro
 		}
 		working = append(working, turn...)
 		working = append(working, results...)
+		if estado := estadoCompactado(rodada.Tools, results); estado != "" {
+			antes := bytesHistorico(working)
+			working = compactarHistorico(working, estado)
+			piso = 0 // o histórico mudou de forma; a poda recomeça do início
+			compactou = true
+			r.Guardrail(true)
+			s.registrar("compactacao", map[string]any{
+				"politica":     PoliticaAgente,
+				"ciclo":        ciclo,
+				"bytes_antes":  antes,
+				"bytes_depois": bytesHistorico(working),
+				"estado_bytes": len(estado),
+				"estado":       estado,
+			})
+		}
 	}
 	return fmt.Errorf("turno excedeu 64 ciclos; teto técnico configurável (não é permissionamento)")
 }

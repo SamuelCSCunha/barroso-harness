@@ -104,6 +104,17 @@ func eventosParaMensagens(st *store.Store, eventos []store.Event) []dealer.Mensa
 	for _, e := range eventos {
 		switch e.Kind {
 		case "user_message", "assistant", "tool_call", "tool_result":
+		case "compactacao":
+			// Reaplica a compactação do agente no ponto em que aconteceu: sem
+			// isso, /resume e session/load trariam de volta a conversa que o
+			// modelo já tinha resumido.
+			var c struct {
+				Estado string `json:"estado"`
+			}
+			if json.Unmarshal([]byte(e.Payload), &c) == nil && strings.TrimSpace(c.Estado) != "" {
+				out = compactarHistorico(out, c.Estado)
+			}
+			continue
 		default:
 			continue
 		}

@@ -225,6 +225,27 @@ func (g *Gerente) Tarefas() []*Tarefa {
 	return out
 }
 
+// Fotos devolve CÓPIAS de todas as tarefas, na ordem de criação, lidas sob o
+// mesmo lock que os workers usam para escrever. É o que a UI deve usar: os
+// ponteiros de Tarefas são vivos, e ler Estado/Resultado deles enquanto um
+// worker escreve é corrida de dados.
+func (g *Gerente) Fotos() []Tarefa {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	out := make([]Tarefa, 0, len(g.ordem))
+	for _, id := range g.ordem {
+		t := g.tarefas[id]
+		if t == nil {
+			continue
+		}
+		cp := *t
+		cp.transcript = append([]string(nil), t.transcript...)
+		cp.cancel, cp.ctx = nil, nil
+		out = append(out, cp)
+	}
+	return out
+}
+
 // snapshot devolve uma cópia consistente de uma tarefa (a leitura inteira
 // acontece sob o mesmo lock que os workers usam para escrever).
 func (g *Gerente) snapshot(id string) (Tarefa, bool) {

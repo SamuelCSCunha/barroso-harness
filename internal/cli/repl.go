@@ -475,6 +475,12 @@ func repl(io IO, cfg *config.Config) {
 			ajuda(io)
 		case "/update":
 			cmdUpdate(io)
+		case "/contexto":
+			cmdContexto(io.Out, cfg, loja)
+		case "/skills":
+			listarSkills(io.Out, runtime.SkillsDisponiveis(cwd))
+		case "/tasks":
+			cmdTasks(io.Out, conjunto.Gerente(), arg)
 		case "/model":
 			if arg != "" {
 				// troca direta por id se ele existir no catálogo atual
@@ -503,14 +509,22 @@ func repl(io IO, cfg *config.Config) {
 			sess.Configure(*cfg)
 			statusbar(io.Out, cfg)
 		default:
+			pedido := strings.TrimSpace(linha)
 			if strings.HasPrefix(campos[0], "/") {
-				fmt.Fprintf(io.Out, "comando desconhecido: %s (/help lista)\n", campos[0])
-				continue
+				// /<nome-de-skill> [args] executa a skill; qualquer outro / é
+				// comando desconhecido.
+				expandido, nome, ok := runtime.ExpandirSkill(cwd, pedido)
+				if !ok {
+					fmt.Fprintf(io.Out, "comando desconhecido: %s (/help lista; /skills lista as skills)\n", campos[0])
+					continue
+				}
+				okFmt(io.Out, "skill "+nome)
+				pedido = expandido
 			}
 			// turno do modelo: Ctrl+C abre mão da rodada corrente; um segundo
 			// sinal (ou /exit) encerra o REPL.
 			ctx, cancel := io.cancelarTurno(fechar)
-			errTurno := sess.Send(ctx, rendererTurno(io.Out), cwd, strings.TrimSpace(linha))
+			errTurno := sess.Send(ctx, rendererTurno(io.Out), cwd, pedido)
 			cancel()
 			if errTurno != nil {
 				erroFmt(io.ErrOut, "erro", errTurno)
@@ -536,6 +550,9 @@ func ajuda(io IO) {
   /resume           lista as últimas sessões e retoma uma
   /save [título]    dá título à sessão atual e grava o log
   /update           baixa e instala a release mais nova do canal
+  /contexto         política de compactação ativa e o que cada uma já fez
+  /skills           lista as skills; /<nome> [args] executa uma
+  /tasks            lista os sub-agentes; /tasks <id> detalha; /tasks cancel <id>
   /help             esta ajuda
   /exit, /quit      sair
 `)

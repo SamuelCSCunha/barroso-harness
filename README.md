@@ -50,6 +50,9 @@ Comandos dentro da sessão:
 /provider              troca base URL + chave; valida /models antes de salvar
 /new                   limpa o transcript da sessão (conversa nova, config intacta)
 /update                baixa e instala a release mais nova do canal
+/skills                lista as skills; /<nome> [args] executa uma
+/tasks                 lista os sub-agentes; /tasks <id> detalha; /tasks cancel <id>
+/contexto              política de compactação ativa e o que cada uma já fez
 /help
 /exit                  também /quit
 ```
@@ -122,3 +125,20 @@ go vet ./... && go test ./... && go build ./...
 ```
 
 Releases são automáticas: push na `main` → webhook do `deploy.barroso.tec.br` → binários publicados como release (sem GitHub Actions — a conta proíbe; o contrato é o `.deploy/release.json`).
+
+## Contexto: quem decide compactar
+
+`"context_policy"` no `config.json` escolhe a política:
+
+- `agente` (padrão): o modelo tem a tool `ctx_compact` e compacta num marco da tarefa, escrevendo o estado de trabalho que substitui o histórico anterior ao pedido atual. O guardrail por orçamento continua como rede de segurança.
+- `limiar`: sem `ctx_compact`; só o guardrail compacta, ao estourar a janela.
+
+Cada compactação vai para o `sessions.db` com a política que a produziu, e `/contexto` agrega por política (compactações do agente, guardrail proativo, guardrail **reativo** — o sinal de que a política chegou tarde — e quanto o histórico encolheu). `/resume` e `session/load` reaplicam a compactação, então a sessão retomada volta com o estado, não com a conversa já resumida.
+
+## Busca
+
+`web_search` usa o SearXNG de `search_url` quando configurado; sem ele, cai no DuckDuckGo lite. A busca funciona de fábrica.
+
+## ACP: `session/load`
+
+Com o `sessions.db` disponível, `initialize` anuncia `loadSession: true`. `session/load` reabre a sessão pelo id, reproduz a conversa ao cliente como `session/update` (`user_message_chunk`, `tool_call`, `tool_call_update`, `agent_message_chunk`) e deixa a sessão pronta para `session/prompt`. Id desconhecido é `-32602`.

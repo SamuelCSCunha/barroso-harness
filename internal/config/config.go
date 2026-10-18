@@ -61,6 +61,11 @@ type Config struct {
 	// MCPServidores lista servidores MCP (stdio ou HTTP streamable). As
 	// ferramentas publicadas entram no catálogo do turno.
 	MCPServidores []MCPServidor `json:"mcp_servers,omitempty"`
+
+	// PoliticaContexto escolhe quem decide compactar: "agente" (padrão; o
+	// modelo chama ctx_compact num marco da tarefa, com o guardrail de rede)
+	// ou "limiar" (só o guardrail, ao estourar a janela).
+	PoliticaContexto string `json:"context_policy,omitempty"`
 }
 
 // MCPServidor espelha mcp.Servidor sem importar o pacote — config é a raiz da

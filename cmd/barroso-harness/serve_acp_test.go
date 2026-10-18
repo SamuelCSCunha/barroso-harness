@@ -108,3 +108,25 @@ func TestNovaSessaoACPFuncionaSemLoja(t *testing.T) {
 		t.Fatal("sem loja a sessão não deveria reportar persistência")
 	}
 }
+
+// session/load: sessão gravada volta com o transcript; id desconhecido é erro
+// (não pode virar sessão vazia com o id pedido).
+func TestCarregarSessaoACPReabreDoBanco(t *testing.T) {
+	fabrica, loja := novaFabricaACPDeTeste(t)
+	_, id := fabrica(config.Config{})
+	if _, err := loja.StoreEvent(id, "user_message", map[string]any{"role": "user", "content": "olá de antes"}); err != nil {
+		t.Fatalf("StoreEvent: %v", err)
+	}
+	var abertos []*wiring.Conjunto
+	turno, err := carregarSessaoACP(config.Config{}, loja, t.TempDir(), id, &abertos)
+	if err != nil {
+		t.Fatalf("carregarSessaoACP: %v", err)
+	}
+	h := turno.(*runtime.Session).History()
+	if len(h) != 1 || h[0].Conteudo != "olá de antes" {
+		t.Fatalf("histórico não reconstruído: %+v", h)
+	}
+	if _, err := carregarSessaoACP(config.Config{}, loja, t.TempDir(), "bh-nao-existe", &abertos); err == nil {
+		t.Fatal("id desconhecido deveria dar erro")
+	}
+}

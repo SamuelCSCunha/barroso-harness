@@ -513,29 +513,109 @@ func TestWebSearchNao2XX(t *testing.T) {
 	}
 }
 
-// endpoint ausente: erro ACIONÁVEL citando search_url.
-func TestWebSearchSemEndpointErroAcionavel(t *testing.T) {
+// fixtureDDG reproduz a marcação da página lite medida em 2026-10-18: link pelo
+// redirecionador (uddg), um anúncio (y.js) que tem de sumir, e um resultado
+// sem snippet para provar que o pareamento por ordem não desalinha.
+const fixtureDDG = `<table>
+<tr><td>1.&nbsp;</td><td><a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fgo.dev%2Fdoc%2Fdevel%2Frelease&amp;rut=abc" class='result-link'>Release History - The <b>Go</b> Programming Language</a></td></tr>
+<tr><td>&nbsp;</td><td class='result-snippet'>Go 1.3 is a major <b>release</b> &amp; more.</td></tr>
+<tr><td>2.&nbsp;</td><td><a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fduckduckgo.com%2Fy.js%3Fad%3D1&amp;rut=x" class='result-link'>Anúncio</a></td></tr>
+<tr><td>&nbsp;</td><td class='result-snippet'>compre já</td></tr>
+<tr><td>3.&nbsp;</td><td><a rel="nofollow" href="https://example.org/direto" class='result-link'>Direto</a></td></tr>
+</table>`
+
+// Sem search_url a busca NÃO falha: cai no DuckDuckGo lite. Antes deste
+// fallback a tool devolvia erro de configuração e a busca ficava desligada na
+// prática para qualquer instalação nova.
+func TestWebSearchSemEndpointUsaDuckDuckGo(t *testing.T) {
+	var consulta string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		consulta = r.URL.Query().Get("q")
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(fixtureDDG))
+	}))
+	defer srv.Close()
+	antes := endpointDDG
+	endpointDDG = srv.URL + "/lite/"
+	t.Cleanup(func() { endpointDDG = antes })
+
 	for nome, busca := range map[string]*Busca{
 		"nil":    nil,
 		"vazio":  {},
 		"espaco": {Endpoint: "   "},
 	} {
 		t.Run(nome, func(t *testing.T) {
-			out, err := rodar(t, especificas(t, busca)["web_search"], map[string]any{"query": "algo"})
-			if err == nil {
-				t.Fatalf("esperava erro de configuração, voltou:\n%s", out)
+			out, err := rodar(t, especificas(t, busca)["web_search"], map[string]any{"query": "go release"})
+			if err != nil {
+				t.Fatalf("sem search_url deveria cair no DuckDuckGo, veio erro: %v", err)
 			}
-			msg := err.Error()
-			if !strings.Contains(msg, "search_url") {
-				t.Errorf("mensagem não cita search_url: %q", msg)
+			if consulta != "go release" {
+				t.Errorf("consulta enviada = %q", consulta)
 			}
-			if !strings.Contains(msg, "config.json") {
-				t.Errorf("mensagem não cita config.json: %q", msg)
+			if !strings.Contains(out, "https://go.dev/doc/devel/release") {
+				t.Errorf("URL real (decodificada do uddg) ausente:\n%s", out)
 			}
-			if strings.Contains(msg, "\n") {
-				t.Errorf("erro não é de uma linha: %q", msg)
+			if !strings.Contains(out, "Release History - The Go Programming Language") {
+				t.Errorf("título sem tags ausente:\n%s", out)
+			}
+			if !strings.Contains(out, "Go 1.3 is a major release & more.") {
+				t.Errorf("snippet sem tags/entidades ausente:\n%s", out)
+			}
+			if strings.Contains(out, "y.js") || strings.Contains(out, "Anúncio") {
+				t.Errorf("anúncio deveria ser descartado:\n%s", out)
+			}
+			if !strings.Contains(out, "https://example.org/direto") {
+				t.Errorf("link direto deveria passar:\n%s", out)
 			}
 		})
+	}
+}
+
+// Erro HTTP do fallback continua sendo de uma linha e cita a origem.
+func TestWebSearchDuckDuckGoErroHTTP(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+	antes := endpointDDG
+	endpointDDG = srv.URL
+	t.Cleanup(func() { endpointDDG = antes })
+
+	_, err := rodar(t, especificas(t, nil)["web_search"], map[string]any{"query": "x"})
+	if err == nil {
+		t.Fatal("esperava erro do HTTP 429")
+	}
+	if !strings.Contains(err.Error(), "DuckDuckGo") || !strings.Contains(err.Error(), "429") {
+		t.Errorf("erro deveria citar DuckDuckGo e o status: %q", err)
+	}
+	if strings.Contains(err.Error(), "\n") {
+		t.Errorf("erro não é de uma linha: %q", err)
+	}
+}
+
+// Com search_url configurado, o SearXNG continua sendo o caminho — o fallback
+// não pode roubar a busca de quem configurou.
+func TestWebSearchComEndpointNaoUsaDuckDuckGo(t *testing.T) {
+	ddg := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("DuckDuckGo não deveria ser chamado com search_url configurado")
+	}))
+	defer ddg.Close()
+	antes := endpointDDG
+	endpointDDG = ddg.URL
+	t.Cleanup(func() { endpointDDG = antes })
+
+	sx := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[{"title":"T","url":"https://sx.example/a","content":"c"}]}`))
+	}))
+	defer sx.Close()
+
+	out, err := rodar(t, especificas(t, &Busca{Endpoint: sx.URL})["web_search"], map[string]any{"query": "x"})
+	if err != nil {
+		t.Fatalf("SearXNG: %v", err)
+	}
+	if !strings.Contains(out, "https://sx.example/a") {
+		t.Errorf("resultado do SearXNG ausente:\n%s", out)
 	}
 }
 

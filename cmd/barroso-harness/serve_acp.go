@@ -52,6 +52,13 @@ func serveACP() {
 	ag := acp.NovoComFabrica(cfg, fabrica).ComLog(func(linha string) {
 		os.Stderr.WriteString(linha + "\n")
 	})
+	// session/load só é anunciado quando há banco para ler: sem loja não há o
+	// que reabrir, e o agente responde loadSession=false.
+	if loja != nil {
+		ag.Carregar = func(c config.Config, id string) (acp.Turno, error) {
+			return carregarSessaoACP(c, loja, cwd, id, &abertos)
+		}
+	}
 	if err := ag.Handle(nil, os.Stdin, os.Stdout); err != nil {
 		os.Stderr.WriteString("erro: " + err.Error() + "\n")
 		os.Exit(1)
@@ -86,4 +93,29 @@ func novaSessaoACP(cfg config.Config, loja *store.Store, cwd string, abertos *[]
 		*abertos = append(*abertos, conj)
 	}
 	return sess, id
+}
+
+// carregarSessaoACP reabre uma sessão do sessions.db para session/load: a
+// mesma sessão que o REPL lista em /resume. Id que o banco não conhece é erro
+// — criar uma sessão vazia com o id pedido faria o cliente achar que carregou
+// uma conversa que não existe.
+func carregarSessaoACP(cfg config.Config, loja *store.Store, cwd, id string, abertos *[]*wiring.Conjunto) (acp.Turno, error) {
+	if loja == nil {
+		return nil, store.ErrSessaoInexistente
+	}
+	if _, err := loja.GetSession(id); err != nil {
+		return nil, err
+	}
+	sess := runtime.NewSessionWithStore(cfg, loja, id)
+	if err := sess.Resume(); err != nil {
+		return nil, err
+	}
+	conj, avisos := wiring.Montar(nil, cfg, sess, cwd)
+	for _, aviso := range avisos {
+		os.Stderr.WriteString("aviso: " + aviso + "\n")
+	}
+	if abertos != nil {
+		*abertos = append(*abertos, conj)
+	}
+	return sess, nil
 }
