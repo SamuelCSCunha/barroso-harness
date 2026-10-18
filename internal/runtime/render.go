@@ -33,6 +33,17 @@ type Renderer interface {
 	Tokens(prompt, saida int, dur time.Duration, compactou bool)
 }
 
+// RendererDetalhado é OPCIONAL: quem implementa recebe também o início de
+// cada tool (com os argumentos, antes de executar) e o tamanho do contexto do
+// último request. A TUI usa para mostrar "executando <tool>" e o % de contexto;
+// ACP, sub-agente e modo puro não precisam e seguem só com Renderer.
+type RendererDetalhado interface {
+	// Pensando: o request ao modelo vai sair (a TUI anima a espera).
+	Pensando()
+	ToolInicio(nome, args string)
+	Contexto(promptTokens int)
+}
+
 // RendererPuro é a implementação sem adorno.
 type RendererPuro struct{ out io.Writer }
 

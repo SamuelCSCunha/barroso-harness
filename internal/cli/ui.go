@@ -147,7 +147,11 @@ func erroFmt(out io.Writer, prefixo string, err error) {
 	if i := strings.IndexByte(msg, '\n'); i >= 0 {
 		msg = msg[:i] // erro é uma linha; o resto é detalhe de protocolo
 	}
-	fmt.Fprintf(out, "%s %s\n", vermelhof(glifoErro), vermelhof(prefixo+": "+msg))
+	recuo := ""
+	if coresLigadas {
+		recuo = "  " // alinhado com as linhas do turno na TUI
+	}
+	fmt.Fprintf(out, "%s%s %s\n", recuo, vermelhof(glifoErro), vermelhof(prefixo+": "+msg))
 }
 
 // okFmt imprime confirmação em verde.
@@ -261,4 +265,12 @@ func rendererTurno(out io.Writer) runtime.Renderer {
 		return tuiTurno{out: out}
 	}
 	return runtime.RendererDe(out)
+}
+
+// larguraTerminal devolve as colunas do stdout; 100 quando não dá para saber.
+func larguraTerminal() int {
+	if w, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 20 {
+		return w
+	}
+	return 100
 }

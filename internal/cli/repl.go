@@ -89,6 +89,8 @@ func run(io IO) error {
 			}
 			return err
 		}
+	} else if coresLigadas {
+		cabecalhoTUI(io.Out, Versao)
 	} else {
 		banner(io.Out)
 	}
@@ -363,6 +365,7 @@ func repl(io IO, cfg *config.Config) {
 	cwd, _ := os.Getwd()
 	fechar := make(chan struct{})
 	sair := false
+	ultimoContexto := 0 // prompt tokens do último request, para o % de contexto
 
 	// ── subsistemas com dono de processo (MCP, sub-agentes) ───────────────
 	// O ctx aqui é de VIDA DO PROCESSO: os sub-agentes precisam sobreviver ao
@@ -392,8 +395,13 @@ func repl(io IO, cfg *config.Config) {
 			despedida(io.Out)
 			return
 		}
-		statusbarSessao(io.Out, cfg, sess.ID())
-		prompto(io.Out, cfg.Model, cfg.Effort)
+		if coresLigadas {
+			statusEntrada(io.Out, cfg, sess.ID(), len(conjunto.MCP()), ultimoContexto)
+			promptoTUI(io.Out)
+		} else {
+			statusbarSessao(io.Out, cfg, sess.ID())
+			prompto(io.Out, cfg.Model, cfg.Effort)
+		}
 		linha, err := br.ReadString('\n')
 		if err != nil { // EOF / Ctrl+D: sair limpo
 			fmt.Fprintln(io.Out)
@@ -524,7 +532,22 @@ func repl(io IO, cfg *config.Config) {
 			// turno do modelo: Ctrl+C abre mão da rodada corrente; um segundo
 			// sinal (ou /exit) encerra o REPL.
 			ctx, cancel := io.cancelarTurno(fechar)
-			errTurno := sess.Send(ctx, rendererTurno(io.Out), cwd, pedido)
+			rend := rendererTurno(io.Out)
+			var tui *turnoTUI
+			if coresLigadas {
+				ecoPedido(io.Out, strings.TrimSpace(linha))
+				tui = novoTurnoTUI(io.Out, cfg)
+				rend = tui
+			}
+			errTurno := sess.Send(ctx, rend, cwd, pedido)
+			if tui != nil {
+				tui.pararSpin()
+				tui.mu.Lock()
+				if tui.contexto > 0 {
+					ultimoContexto = tui.contexto
+				}
+				tui.mu.Unlock()
+			}
 			cancel()
 			if errTurno != nil {
 				erroFmt(io.ErrOut, "erro", errTurno)

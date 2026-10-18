@@ -210,6 +210,9 @@ func (s *Session) Send(ctx context.Context, r Renderer, cwd, pedido string) erro
 			continue
 		}
 
+		if rd, ok := r.(RendererDetalhado); ok {
+			rd.Pensando()
+		}
 		rodada, err := s.dealer.RodarContext(ctx, system, working, schemas)
 		if err != nil {
 			if estouraContexto(err) && s.config.Janela > 0 && !reativaFeita {
@@ -230,6 +233,9 @@ func (s *Session) Send(ctx context.Context, r Renderer, cwd, pedido string) erro
 			return err
 		}
 		if rodada.Usage != nil {
+			if rd, ok := r.(RendererDetalhado); ok {
+				rd.Contexto(rodada.Usage.PromptTokens)
+			}
 			s.est.Calibrar(len(corpo), rodada.Usage.PromptTokens)
 			if rodada.Usage.PromptTokens > 0 {
 				usoPrompt += rodada.Usage.PromptTokens
@@ -274,6 +280,9 @@ func (s *Session) Send(ctx context.Context, r Renderer, cwd, pedido string) erro
 			})
 		}
 		for _, call := range rodada.Tools {
+			if rd, ok := r.(RendererDetalhado); ok {
+				rd.ToolInicio(call.Nome, call.Args)
+			}
 			inicio := time.Now()
 			saida, exeErr := ferramenta(ctx, lista, cwd, call)
 			dur := time.Since(inicio)
