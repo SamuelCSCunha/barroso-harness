@@ -604,6 +604,11 @@ func runTela(io IO) int {
 				if t.aviso != "" && time.Since(ultimoCC) > 2*time.Second {
 					t.aviso = ""
 				}
+				// Reafirma o nome da aba: processos filhos que rodam pelo
+				// cmd.exe (npx.cmd do MCP do Playwright, terminal_run com
+				// cmd /C) sobrescrevem o título do console, e não há como o
+				// bh impedir. Esvaziar força o reenvio no quadro seguinte.
+				t.tituloAba = ""
 			})
 		case k, ok := <-teclas:
 			if !ok {
