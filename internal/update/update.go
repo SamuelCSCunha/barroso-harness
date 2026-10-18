@@ -201,9 +201,16 @@ func escolherMaisNova(releases []releaseAPI) (Lancamento, error) {
 		}
 		lanc := Lancamento{Version: r.TagName, TagName: r.TagName}
 		for _, a := range r.Assets {
-			u := a.BrowserDownloadURL
+			// A URL de ASSET da API vem primeiro, e a ordem não é detalhe: num
+			// repositório PRIVADO o browser_download_url redireciona para
+			// objects.githubusercontent.com, e o header de autorização não
+			// sobrevive ao salto — o download volta 404 "Not Found" mesmo com
+			// token válido. A URL da API aceita o Bearer direto e devolve os
+			// bytes com Accept: application/octet-stream. Medido no canal real
+			// em 2026-10-18: browser 404, API 200, com a mesma credencial.
+			u := a.URL
 			if u == "" {
-				u = a.URL
+				u = a.BrowserDownloadURL
 			}
 			lanc.Assets = append(lanc.Assets, Asset{Name: a.Name, URL: u, Bytes: a.Size})
 		}
