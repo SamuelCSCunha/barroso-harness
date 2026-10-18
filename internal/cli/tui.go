@@ -1,7 +1,7 @@
 // Visual do turno no estilo do OpenCode: spinner enquanto o modelo pensa,
 // cada tool numa linha "✓ nome  argumento-resumido" com a saída recuada e
 // apagada, a resposta com markdown básico (títulos, negrito, código, listas)
-// e um rodapé "Build · modelo · duração · tok/s · contexto %".
+// e um rodapé "modelo · duração · tok/s · contexto %".
 //
 // Tudo isto só roda com cores ligadas (terminal real). Pipe, -p e testes
 // continuam no RendererPuro, sem um escape sequer.
@@ -59,7 +59,13 @@ func novoTurnoTUI(out io.Writer, cfg *config.Config) *turnoTUI {
 
 var quadrosSpin = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
-// Pensando anima "⠋ Thinking" na linha atual até a próxima saída do turno.
+// Sequências de cursor do spinner.
+const (
+	esconderCursor = "\033[?25l"
+	mostrarCursor  = "\033[?25h"
+)
+
+// Pensando anima "⠋ Pensando" na linha atual até a próxima saída do turno.
 func (t *turnoTUI) Pensando() {
 	t.pararSpin()
 	t.mu.Lock()
@@ -67,6 +73,9 @@ func (t *turnoTUI) Pensando() {
 	t.spinFim = make(chan struct{})
 	parar, fim := t.spin, t.spinFim
 	t.mu.Unlock()
+	// Cursor escondido enquanto anima: piscando ao lado de "Pensando" ele
+	// parece campo de digitação. Volta ao parar o spinner.
+	fmt.Fprint(t.out, esconderCursor)
 	go func() {
 		defer close(fim)
 		tick := time.NewTicker(90 * time.Millisecond)
@@ -79,7 +88,7 @@ func (t *turnoTUI) Pensando() {
 			i++
 			select {
 			case <-parar:
-				fmt.Fprint(t.out, "\r\033[K")
+				fmt.Fprint(t.out, "\r\033[K"+mostrarCursor)
 				return
 			case <-tick.C:
 			}
@@ -167,10 +176,11 @@ func (t *turnoTUI) Resposta(texto string) {
 	fmt.Fprintln(t.out, renderMarkdown(texto, larguraTerminal()))
 }
 
-// Tokens é o rodapé do OpenCode: "Build · modelo · 12.3s · 25.3 tok/s · 9.8K (5%)".
+// Tokens é o rodapé do turno: "modelo · 12.3s · 25.3 tok/s · 9.8K (5%)". Sem
+// rótulo de modo: o BH não tem modos, é sempre YOLO.
 func (t *turnoTUI) Tokens(prompt, saida int, dur time.Duration, compactou bool) {
 	t.pararSpin()
-	partes := []string{azulf("Build"), cor(corTexto, t.cfg.Model), fmtDur(dur)}
+	partes := []string{cor(corTexto, t.cfg.Model), fmtDur(dur)}
 	if saida > 0 && dur > 0 {
 		partes = append(partes, fmt.Sprintf("%.1f tok/s", float64(saida)/dur.Seconds()))
 	}
@@ -198,13 +208,14 @@ func cabecalhoTUI(out io.Writer, versao string) {
 }
 
 // statusEntrada é a linha sob a caixa de entrada: modelo, provider, effort,
-// contexto e MCPs — no lugar do "Build auto · GLM · max" do OpenCode.
+// contexto e MCPs. Sem rótulo de modo como o "Build" do OpenCode: o BH é
+// sempre YOLO.
 func statusEntrada(out io.Writer, cfg *config.Config, sessao string, mcps int, contexto int) {
 	modelo := cfg.Model
 	if modelo == "" {
 		modelo = "sem modelo"
 	}
-	partes := []string{azulf("Build"), negritof(cor(corTexto, modelo)), cinzaf(cfg.CurrentProvider)}
+	partes := []string{negritof(cor(corTexto, modelo)), cinzaf(cfg.CurrentProvider)}
 	if cfg.Effort != "" {
 		partes = append(partes, laranjaf(cfg.Effort))
 	}

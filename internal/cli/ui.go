@@ -139,7 +139,14 @@ func prompto(out io.Writer, modelo, effort string) {
 }
 
 // despedida encerra limpo.
-func despedida(out io.Writer) { fmt.Fprintln(out, dimf("╰─ até logo")) }
+func despedida(out io.Writer) {
+	if coresLigadas {
+		// Garantia: o cursor nunca fica escondido depois que o bh sai, mesmo
+		// que o spinner tenha sido interrompido no meio.
+		fmt.Fprint(out, mostrarCursor)
+	}
+	fmt.Fprintln(out, dimf("╰─ até logo"))
+}
 
 // erroFmt imprime erro em vermelho, uma linha, sem markup cru.
 func erroFmt(out io.Writer, prefixo string, err error) {
