@@ -100,6 +100,9 @@ func run(io IO) error {
 
 var errCancelar = fmt.Errorf("cancelado")
 
+// errMantido: a seleção de modelo terminou sem troca (Enter vazio).
+var errMantido = fmt.Errorf("modelo mantido")
+
 // ── onboarding ───────────────────────────────────────────────────────────
 
 // Onboarding guia: base URL (default keys.barroso) → chave oculta →
@@ -289,6 +292,12 @@ func selecionarModelo(io IO, cfg *config.Config) error {
 		}
 		v := strings.TrimSpace(linha)
 		if v == "" {
+			// Enter vazio com um modelo válido do catálogo = sair sem trocar.
+			// Sem modelo (onboarding, provider novo que não tem o atual) não
+			// há o que manter, então a escolha continua obrigatória.
+			if cfg.Model != "" && catalogoTem(cfg.Model, ls) {
+				return errMantido
+			}
 			fmt.Fprintln(io.Out, "escolha um item (número ou id) — sem modelo não há turno.")
 			continue
 		}
@@ -486,7 +495,10 @@ func repl(io IO, cfg *config.Config) {
 					erroFmt(io.ErrOut, "erro", err)
 					continue
 				}
-			} else if err := selecionarModelo(io, cfg); err != nil {
+			} else if err := selecionarModelo(io, cfg); err == errMantido {
+				okFmt(io.Out, "modelo mantido: "+cfg.Model)
+				continue
+			} else if err != nil {
 				erroFmt(io.ErrOut, "erro", err)
 				continue
 			} else {

@@ -281,3 +281,32 @@ func TestReplMensagemComumNaoEComando(t *testing.T) {
 		_ = io.ErrOut
 	}
 }
+
+// Enter vazio na seleção do /model sai sem trocar o modelo atual.
+func TestReplModelEnterVazioMantem(t *testing.T) {
+	srv := providerFakeModelos(t, "z-modelo", "a-modelo", "m-modelo")
+	defer srv.Close()
+	cfgPronta(t, srv.URL+"/v1", "k", "a-modelo")
+
+	io, outIO, _ := ponteIO(t, "/model\n\n/exit\n")
+	if code := RunInteractive(io); code != 0 {
+		t.Fatalf("repl saiu com código %d", code)
+	}
+	saida := outIO.String()
+	if !strings.Contains(saida, "Enter vazio mantém a-modelo") {
+		t.Fatalf("dica do Enter vazio ausente:\n%s", saida)
+	}
+	if !strings.Contains(saida, "modelo mantido: a-modelo") {
+		t.Fatalf("confirmação ausente:\n%s", saida)
+	}
+	if strings.Contains(saida, "sem modelo não há turno") {
+		t.Fatalf("Enter vazio não deveria insistir quando há modelo:\n%s", saida)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Model != "a-modelo" {
+		t.Fatalf("modelo mudou para %q", cfg.Model)
+	}
+}

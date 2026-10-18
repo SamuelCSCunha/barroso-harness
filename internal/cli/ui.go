@@ -206,7 +206,11 @@ func listarModelos(out io.Writer, ls []dealer.CatalogModel, atual string) {
 		}
 		fmt.Fprintf(out, "%s%s %s%s%s\n", marca, dimf(fmt.Sprintf("%3d", i+1)), nome, pad, extra)
 	}
-	fmt.Fprintln(out, dimf("digite o número ou o id"))
+	dica := "digite o número ou o id"
+	if atual != "" {
+		dica += " · Enter vazio mantém " + atual
+	}
+	fmt.Fprintln(out, dimf(dica))
 }
 
 // tuiTurno é a roupa TUI de um turno: glifo ▶ com nome de tool em magenta,
