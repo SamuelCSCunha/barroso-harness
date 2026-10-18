@@ -17,6 +17,12 @@ import (
 	"time"
 )
 
+// UserAgent identificado. Go, por padrão, manda "Go-http-client/1.1" — e há
+// WAF (Cloudflare entre eles) que bloqueia exatamente isso com 403 antes de
+// olhar a chave. Um UA nomeado evita o falso-negativo e ainda ajuda o
+// provider a identificar o cliente nos logs dele.
+const UserAgent = "barroso-harness"
+
 // Config provider. A chave vem da config local persistida pela CLI.
 type Config struct {
 	BaseURL      string `json:"base_url"`
@@ -173,6 +179,7 @@ func (c *Cliente) RodarContext(ctx context.Context, system string, msgs []Mensag
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", UserAgent)
 	if c.cfg.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
 	}
@@ -199,6 +206,7 @@ func (c *Cliente) Rodar(system string, msgs []Mensagem, tools []map[string]any) 
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", UserAgent)
 	if c.cfg.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
 	}
@@ -408,6 +416,7 @@ func Catalogo(ctx context.Context, baseURL, apiKey string) (*ModelsResponse, err
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", UserAgent)
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}

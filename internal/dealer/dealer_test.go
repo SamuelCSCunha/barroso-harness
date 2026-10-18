@@ -6,6 +6,7 @@ package dealer
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -238,5 +239,52 @@ func TestCatalogo403HTMLGeraErroCurto(t *testing.T) {
 	}
 	if !strings.Contains(msg, "403") {
 		t.Fatalf("erro deveria informar o status: %s", msg)
+	}
+}
+
+// TestRequestsMandamUserAgent é a cravação da causa raiz de um 403 falso:
+// Go manda "Go-http-client/1.1" por padrão e há WAF (Cloudflare entre eles)
+// que bloqueia isso ANTES de olhar a chave. O dealer precisa mandar um UA
+// nomeado nos DOIS caminhos — catálogo e chat completions.
+func TestRequestsMandamUserAgent(t *testing.T) {
+	var uasCatalogo, uasChat string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/models":
+			uasCatalogo = r.Header.Get("User-Agent")
+			io.WriteString(w, `{"data":[{"id":"m1","input":["text"]}]}`)
+		case r.URL.Path == "/chat/completions":
+			uasChat = r.Header.Get("User-Agent")
+			w.Header().Set("Content-Type", "text/event-stream")
+			io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	// catálogo
+	ls, err := Modelos(context.Background(), srv.URL, "k")
+	if err != nil {
+		t.Fatalf("catálogo: %v", err)
+	}
+	if len(ls) == 0 {
+		t.Fatal("catálogo vazio")
+	}
+	if uasCatalogo != UserAgent {
+		t.Fatalf("catálogo mandou User-Agent %q, esperado %q", uasCatalogo, UserAgent)
+	}
+
+	// chat completions
+	c := Novo(Config{BaseURL: srv.URL, Model: "m1", APIKey: "k"})
+	if _, err := c.Rodar("sys", []Mensagem{{Role: "user", Conteudo: "oi"}}, nil); err != nil {
+		t.Fatalf("rodar: %v", err)
+	}
+	if uasChat != UserAgent {
+		t.Fatalf("chat mandou User-Agent %q, esperado %q", uasChat, UserAgent)
+	}
+
+	if uasCatalogo == "Go-http-client/1.1" || uasChat == "Go-http-client/1.1" {
+		t.Fatal("request saiu com o User-Agent padrão do Go — volta a quebrar em WAF")
 	}
 }
