@@ -26,7 +26,7 @@ func Turno(out io.Writer, cfg config.Config, cwd, pedido string) error {
 			"configuração incompleta (%s) — rode `bh` sem argumentos para configurar provider/model interativamente, ou edite %s",
 			strings.Join(cfg.Faltas(), ", "), filePath(cfg))
 	}
-	if err := NewSession(cfg).Send(context.Background(), out, cwd, pedido); err != nil {
+	if err := NewSession(cfg).Send(context.Background(), RendererDe(out), cwd, pedido); err != nil {
 		return err
 	}
 	return nil

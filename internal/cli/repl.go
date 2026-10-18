@@ -74,6 +74,7 @@ func run(io IO) error {
 	io.Reader() // inicializa o buffer ANTES de qualquer leitura: as cópias de IO
 	// passadas a Onboarding/repl precisam compartilhar o mesmo *bufio.Reader,
 	// senão o segundo leitor vê EOF e o REPL não recebe linha nenhuma.
+	ligarCores(io)
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -88,7 +89,7 @@ func run(io IO) error {
 			return err
 		}
 	} else {
-		banner(io.Out, cfg.Resumo())
+		banner(io.Out)
 	}
 	repl(io, &cfg)
 	return nil
@@ -276,7 +277,8 @@ func selecionarModelo(io IO, cfg *config.Config) error {
 	if len(ls) == 0 {
 		return fmt.Errorf("catálogo sem modelos plausíveis de chat")
 	}
-	listarModelos(io.Out, ls, cfg.Model)
+	pagina := 1
+	listarModelos(io.Out, ls, cfg.Model, pagina, catalogoPorPagina)
 	for {
 		fmt.Fprint(io.Out, "model: ")
 		linha, err := io.Reader().ReadString('\n')
@@ -287,6 +289,15 @@ func selecionarModelo(io IO, cfg *config.Config) error {
 		if v == "" {
 			fmt.Fprintln(io.Out, "escolha um item (número ou id) — sem modelo não há turno.")
 			continue
+		}
+		// pg<N> pagina o catálogo; só captura quando o resto é número, para ids
+		// que começam em "pg" continuarem resolvidos como id.
+		if strings.HasPrefix(v, "pg") {
+			if n, errP := strconv.Atoi(v[2:]); errP == nil && n >= 1 {
+				pagina = n
+				listarModelos(io.Out, ls, cfg.Model, pagina, catalogoPorPagina)
+				continue
+			}
 		}
 		id := ""
 		if n, errA := strconv.Atoi(v); errA == nil && n >= 1 && n <= len(ls) {
@@ -318,7 +329,8 @@ func (io IO) cancelarTurno(fechar chan<- struct{}) (context.Context, context.Can
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		<-signais
-		fmt.Fprintln(io.Out, "\n[Ctrl+C] cancelando a rodada — de novo para sair")
+		fmt.Fprintln(io.Out)
+		avisoFmt(io.Out, "cancelando a rodada — de novo para sair")
 		cancel()
 		select {
 		case <-signais:
@@ -338,19 +350,23 @@ func repl(io IO, cfg *config.Config) {
 	sair := false
 
 	for {
-		prompto(io.Out, cfg.Model, cfg.Effort)
+		// Encerramentos vindos de um turno (Ctrl+C duas vezes) saem ANTES de
+		// desenhar prompt novo; o EOF fecha no meio da linha e pede a quebra.
 		select {
 		case <-fechar:
 			despedida(io.Out)
 			return
 		default:
 		}
-		linha, err := br.ReadString('\n')
-		if err != nil { // EOF / Ctrl+D: sair limpo
+		if sair {
 			despedida(io.Out)
 			return
 		}
-		if sair {
+		statusbar(io.Out, cfg)
+		prompto(io.Out, cfg.Model, cfg.Effort)
+		linha, err := br.ReadString('\n')
+		if err != nil { // EOF / Ctrl+D: sair limpo
+			fmt.Fprintln(io.Out)
 			despedida(io.Out)
 			return
 		}
@@ -367,6 +383,12 @@ func repl(io IO, cfg *config.Config) {
 		case "/exit", "/quit":
 			despedida(io.Out)
 			return
+		case "/new":
+			// A caixa faia do /new: limpar o transcript da sessão sem trocar
+			// provider (CONFIG fica onde está). Pode ser usado após terminar algo
+			// pra não carregar o contexto pro próximo pedido.
+			sess.ClearHistory()
+			okFmt(io.Out, "história limpa; conversa nova")
 		case "/help":
 			ajuda(io)
 		case "/model":
@@ -386,7 +408,7 @@ func repl(io IO, cfg *config.Config) {
 				}
 				sess.Configure(*cfg)
 			}
-			fmt.Fprintln(io.Out, cfg.Resumo())
+			statusbar(io.Out, cfg)
 		case "/effort":
 			procEffort(io, cfg, sess, arg)
 		case "/provider":
@@ -395,7 +417,7 @@ func repl(io IO, cfg *config.Config) {
 				continue
 			}
 			sess.Configure(*cfg)
-			fmt.Fprintln(io.Out, cfg.Resumo())
+			statusbar(io.Out, cfg)
 		default:
 			if strings.HasPrefix(campos[0], "/") {
 				fmt.Fprintf(io.Out, "comando desconhecido: %s (/help lista)\n", campos[0])
@@ -404,7 +426,7 @@ func repl(io IO, cfg *config.Config) {
 			// turno do modelo: Ctrl+C abre mão da rodada corrente; um segundo
 			// sinal (ou /exit) encerra o REPL.
 			ctx, cancel := io.cancelarTurno(fechar)
-			errTurno := sess.Send(ctx, io.Out, cwd, strings.TrimSpace(linha))
+			errTurno := sess.Send(ctx, rendererTurno(io.Out), cwd, strings.TrimSpace(linha))
 			cancel()
 			if errTurno != nil {
 				erroFmt(io.ErrOut, "erro", errTurno)
@@ -418,25 +440,19 @@ func repl(io IO, cfg *config.Config) {
 	}
 }
 
-func effortTag(e string) string {
-	if e == "" {
-		return ""
-	}
-	return " e:" + e
-}
-
 func ajuda(io IO) {
-	fmt.Fprint(io.Out, `comandos:
-  /model            lista o catálogo (alfabética) e troca o modelo
+	fmt.Fprint(io.Out, cianof("comandos")+`
+  /model            lista o catálogo (alfabético, paginado) e troca o modelo
   /model <id>       troca direta quando o id está no catálogo
   /effort           mostra effort atual e níveis comuns
   /effort <nivel>   grava e entra na próxima requisição
   /effort -         limpa (request volta sem reasoning_effort)
   /provider         troca base URL + chave; valida /models antes de salvar
+  /new              limpa a história da sessão (conversa nova)
   /help             esta ajuda
   /exit, /quit      sair
-texto livre vai direto ao modelo; Ctrl+C cancela a rodada em curso.
 `)
+	fmt.Fprint(io.Out, dimf("texto livre vai direto ao modelo; Ctrl+C cancela a rodada em curso.")+"\n\n")
 }
 
 // trocarModeloDireto resolve /model <índice|id>: aceita número da lista

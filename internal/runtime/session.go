@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"strings"
 	"time"
 
@@ -80,7 +79,10 @@ func (s *Session) ClearHistory() { s.history = nil }
 // mensagem do usuário e das rodadas fica num buffer privado e só é confirmado
 // em sucesso completo; tool execution de YOLO já realizada não pode ser
 // revertida, mas o histórico do provider nunca fica em estado malformado.
-func (s *Session) Send(ctx context.Context, out io.Writer, cwd, pedido string) error {
+func (s *Session) Send(ctx context.Context, r Renderer, cwd, pedido string) error {
+	if r == nil {
+		r = RendererDe(&strings.Builder{})
+	}
 	if strings.TrimSpace(pedido) == "" {
 		return fmt.Errorf("pedido vazio")
 	}
@@ -92,6 +94,7 @@ func (s *Session) Send(ctx context.Context, out io.Writer, cwd, pedido string) e
 		ctx, cancelado = context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancelado()
 	}
+	inicio := time.Now()
 	baroMD, err := instructions.Resolve(cwd)
 	if err != nil {
 		return err
@@ -102,6 +105,10 @@ func (s *Session) Send(ctx context.Context, out io.Writer, cwd, pedido string) e
 	working = append(working, dealer.Mensagem{Role: "user", Conteudo: pedido})
 	piso := 0
 	reativaFeita := false
+	compactou := false
+	// Soma do turno inteiro: cada ciclo de tool gasta request e resposta, e o
+	// rodapé da UI mostra o total, não o do último ciclo.
+	usoPrompt, usoSaida := 0, 0
 
 	for ciclo := 0; ciclo < 64; ciclo++ {
 		system := "Você é o agente Barroso Harness, rodando localmente na máquina do usuário em modo YOLO: as ferramentas executam sem pedir aprovação.\n" +
@@ -121,7 +128,8 @@ func (s *Session) Send(ctx context.Context, out io.Writer, cwd, pedido string) e
 			if podado == nil {
 				return fmt.Errorf("guardrail: request não cabe (%s) e a poda não aliviou o suficiente", av.Veredito())
 			}
-			fmt.Fprintln(out, "[guardrail] compactação proativa por previsão de estouro")
+			r.Guardrail(true)
+			compactou = true
 			working = podado
 			continue
 		}
@@ -130,9 +138,10 @@ func (s *Session) Send(ctx context.Context, out io.Writer, cwd, pedido string) e
 		if err != nil {
 			if estouraContexto(err) && s.config.Janela > 0 && !reativaFeita {
 				reativaFeita = true
-				fmt.Fprintln(out, "[guardrail] provider recusou por contexto; compactação reativa")
+				r.Guardrail(false)
 				podado := podar(working, &piso, budget.ReservaOperacional)
 				if podado != nil {
+					compactou = true
 					working = podado
 					continue
 				}
@@ -141,12 +150,14 @@ func (s *Session) Send(ctx context.Context, out io.Writer, cwd, pedido string) e
 		}
 		if rodada.Usage != nil {
 			s.est.Calibrar(len(corpo), rodada.Usage.PromptTokens)
+			if rodada.Usage.PromptTokens > 0 {
+				usoPrompt += rodada.Usage.PromptTokens
+			}
+			usoSaida += rodada.Usage.OutputTokens
 		}
 		if len(rodada.Tools) == 0 {
-			if rodada.Texto != "" {
-				fmt.Fprint(out, rodada.Texto)
-			}
-			fmt.Fprintln(out)
+			r.Resposta(rodada.Texto)
+			r.Tokens(usoPrompt, usoSaida, time.Since(inicio), compactou)
 			working = append(working, dealer.Mensagem{Role: "assistant", Conteudo: rodada.Texto, Usage: rodada.Usage})
 			s.history = working
 			return nil
@@ -171,14 +182,8 @@ func (s *Session) Send(ctx context.Context, out io.Writer, cwd, pedido string) e
 				saida = "erro: " + exeErr.Error()
 			}
 			results = append(results, dealer.Mensagem{Role: "tool_result", Conteudo: saida, ToolID: call.ID, ToolName: call.Nome, IsErro: isErr})
-			estado := "ok"
-			if isErr {
-				estado = "erro"
-			}
-			fmt.Fprintf(out, "[tool %s %s em %s]\n", call.Nome, estado, dur.Round(time.Millisecond))
-			if eco := resultadoSaida(saida); eco != "" {
-				fmt.Fprintln(out, eco)
-			}
+			r.Tool(call.Nome, dur, isErr)
+			r.Eco(resultadoSaida(saida))
 		}
 		working = append(working, turn...)
 		working = append(working, results...)
