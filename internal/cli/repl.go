@@ -34,6 +34,11 @@ type IO struct {
 	Out    io.Writer
 	ErrOut io.Writer
 	reader *bufio.Reader
+
+	// tela != nil quando o REPL roda por trás da tela cheia (tela.go): Out e
+	// ErrOut viram linhas da conversa e cancelar recebe o Esc/Ctrl+C do turno.
+	tela     *tela
+	cancelar chan struct{}
 }
 
 func (io *IO) Reader() *bufio.Reader {
@@ -64,6 +69,11 @@ var buscarModelos = func(ctx context.Context, base, key string) ([]dealer.Catalo
 // RunInteractive é o caminho de `bh` sem argumentos: onboarding se a config
 // estiver incompleta, REPL em seguida.
 func RunInteractive(io IO) int {
+	if io.tela == nil && usarTela(io) {
+		if c := runTela(io); c >= 0 {
+			return c
+		}
+	}
 	if err := run(io); err != nil {
 		fmt.Fprintf(io.ErrOut, "erro: %v\n", err)
 		return 1
@@ -75,7 +85,11 @@ func run(io IO) error {
 	io.Reader() // inicializa o buffer ANTES de qualquer leitura: as cópias de IO
 	// passadas a Onboarding/repl precisam compartilhar o mesmo *bufio.Reader,
 	// senão o segundo leitor vê EOF e o REPL não recebe linha nenhuma.
-	ligarCores(io)
+	if io.tela != nil {
+		coresLigadas = true // Out é o escritor da tela, que é terminal de verdade
+	} else {
+		ligarCores(io)
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -89,6 +103,8 @@ func run(io IO) error {
 			}
 			return err
 		}
+	} else if io.tela != nil {
+		// a tela cheia já tem título, painel e rodapé
 	} else if coresLigadas {
 		cabecalhoTUI(io.Out, Versao)
 	} else {
@@ -329,6 +345,16 @@ func (io IO) cancelarTurno(fechar chan<- struct{}) (context.Context, context.Can
 	signais := make(chan os.Signal, 2)
 	signal.Notify(signais, os.Interrupt, syscall.SIGTERM)
 	ctx, cancel := context.WithCancel(context.Background())
+	if io.cancelar != nil {
+		// Tela cheia: o raw mode não gera sinal; Esc/Ctrl+C chegam por aqui.
+		go func() {
+			select {
+			case <-io.cancelar:
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+	}
 	go func() {
 		<-signais
 		fmt.Fprintln(io.Out)
@@ -394,7 +420,17 @@ func repl(io IO, cfg *config.Config) {
 			despedida(io.Out)
 			return
 		}
-		if coresLigadas {
+		if io.tela != nil {
+			var mcps []string
+			for _, c := range conjunto.MCP() {
+				mcps = append(mcps, c.Fonte())
+			}
+			io.tela.Estado(estadoPainel{
+				titulo: tituloSessao(sess.History()), modelo: cfg.Model,
+				provider: cfg.CurrentProvider, effort: cfg.Effort, cwd: cwdCurto(cwd),
+				contexto: ultimoContexto, janela: cfg.Janela, mcps: mcps,
+			})
+		} else if coresLigadas {
 			statusEntrada(io.Out, cfg, sess.ID(), len(conjunto.MCP()), ultimoContexto)
 			promptoTUI(io.Out)
 		} else {
@@ -431,6 +467,10 @@ func repl(io IO, cfg *config.Config) {
 			// provider (CONFIG fica onde está). Pode ser usado após terminar algo
 			// pra não carregar o contexto pro próximo pedido.
 			sess.ClearHistory()
+			ultimoContexto = 0
+			if io.tela != nil {
+				io.tela.Limpar()
+			}
 			okFmt(io.Out, "história limpa; conversa nova")
 		case "/resume":
 			if loja == nil {
@@ -536,12 +576,25 @@ func repl(io IO, cfg *config.Config) {
 			ctx, cancel := io.cancelarTurno(fechar)
 			rend := rendererTurno(io.Out)
 			var tui *turnoTUI
-			if coresLigadas {
+			var tt *turnoTela
+			if io.tela != nil {
+				io.tela.Usuario(strings.TrimSpace(linha))
+				io.tela.Ocupado(true)
+				tt = &turnoTela{t: io.tela, modelo: cfg.Model}
+				rend = tt
+			} else if coresLigadas {
 				ecoPedido(io.Out, strings.TrimSpace(linha))
 				tui = novoTurnoTUI(io.Out, cfg)
 				rend = tui
 			}
 			errTurno := sess.Send(ctx, rend, cwd, pedido)
+			if tt != nil {
+				io.tela.pararSpin()
+				io.tela.Ocupado(false)
+				if tt.contexto > 0 {
+					ultimoContexto = tt.contexto
+				}
+			}
 			if tui != nil {
 				tui.pararSpin()
 				tui.mu.Lock()

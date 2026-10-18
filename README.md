@@ -153,3 +153,11 @@ O modelo gerencia os próprios servidores MCP e skills, sem editar o `config.jso
 - `skill_create` / `skill_remove` — cria ou apaga `<escopo>/<nome>/SKILL.md` (escopo `projeto` = `.barroso/skills`, `global` = `~/.barroso-harness/skills`); a skill criada é invocável com `/<nome>`.
 
 A gravação relê o `config.json` do disco e troca só a lista de servidores, para não desfazer uma troca de provider/modelo feita no REPL.
+
+## Tela cheia
+
+Num terminal de verdade, `bh` abre em tela cheia no layout do OpenCode: título da sessão no topo, conversa no meio, painel lateral (título, contexto usado, servidores MCP conectados), caixa de entrada fixa embaixo e rodapé com diretório e contexto. O painel aparece com 110 colunas ou mais.
+
+Teclas: `Enter` envia · `↑`/`↓` histórico do que você digitou · `PgUp`/`PgDn` rola a conversa · `Esc` ou `Ctrl+C` interrompe a resposta em curso · `Ctrl+C` duas vezes sai · `Ctrl+U` apaga a linha · `Ctrl+L` redesenha.
+
+`BH_SIMPLES=1 bh` volta ao modo de rolagem. Pipe, redirecionamento e `bh -p` nunca usam a tela cheia.

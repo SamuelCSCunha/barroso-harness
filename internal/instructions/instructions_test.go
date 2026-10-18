@@ -7,7 +7,17 @@ import (
 	"testing"
 )
 
+// isolarHome aponta o diretório global para um temporário: os testes não
+// podem depender do BARROSO.md real da máquina.
+func isolarHome(t *testing.T) string {
+	t.Helper()
+	h := t.TempDir()
+	t.Setenv("BARROSO_HARNESS_HOME", h)
+	return h
+}
+
 func TestResolveSemArquivoDevolveVazio(t *testing.T) {
+	isolarHome(t)
 	dir := t.TempDir()
 	s, err := Resolve(dir)
 	if err != nil {
@@ -42,6 +52,7 @@ func TestResolveFilhoAntesDoPai(t *testing.T) {
 }
 
 func TestResolveArquivoVazioNaoEntra(t *testing.T) {
+	isolarHome(t)
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "BARROSO.md"), []byte("   \n"), 0o644); err != nil {
 		t.Fatal(err)

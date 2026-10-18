@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/ruanbarroso/barroso-harness/internal/config"
 )
 
 // Resolve devolve o(s) BARROSO.md aplicáveis concatenados em ordem de
@@ -33,13 +35,13 @@ func Resolve(cwd string) (string, error) {
 		dir = pai
 	}
 
-	if home, err := os.UserHomeDir(); err == nil {
-		g := filepath.Join(home, ".barroso-harness", "BARROSO.md")
-		if b, err := os.ReadFile(g); err == nil {
-			if t := strings.TrimSpace(string(b)); t != "" && !ja[t] {
-				ja[t] = true
-				partes = append(partes, "# BARROSO.md — global\n\n"+t)
-			}
+	// Mesmo diretório do config.json (config.Dir respeita BARROSO_HARNESS_HOME):
+	// sem isso o BARROSO.md global e o config viriam de lugares diferentes.
+	g := filepath.Join(config.Dir(), "BARROSO.md")
+	if b, err := os.ReadFile(g); err == nil {
+		if t := strings.TrimSpace(string(b)); t != "" && !ja[t] {
+			ja[t] = true
+			partes = append(partes, "# BARROSO.md — global\n\n"+t)
 		}
 	}
 
