@@ -184,3 +184,59 @@ func TestRodarEnviaEffort(t *testing.T) {
 }
 
 func TestMain(m *testing.M) { os.Exit(m.Run()) }
+
+// TestResumoErroHTMLNaoDespejaMarkup é a cravação da correção pedida: quando
+// o provider devolve HTML (página de bloqueio do WAF/edge), o erro que chega
+// ao terminal é UMA linha útil — nunca o markup inteiro enterrando a causa.
+func TestResumoErroHTMLNaoDespejaMarkup(t *testing.T) {
+	htmlBloqueio := []byte(`<!DOCTYPE html>
+<html lang="en-US">
+<head><title>Attention Required! | Cloudflare</title></head>
+<body><div class="cf-error-details"><h1>Sorry, you have been blocked</h1></div></body>
+</html>`)
+	got := resumoErro(htmlBloqueio, 300)
+	if strings.Contains(got, "<") || strings.Contains(got, ">") {
+		t.Fatalf("resumo de erro vazou markup: %q", got)
+	}
+	if strings.Contains(got, "Attention Required") == false && strings.Contains(got, "blocked") == false {
+		t.Fatalf("resumo perdeu a informação útil: %q", got)
+	}
+	if strings.Contains(got, "\n") {
+		t.Fatalf("resumo de erro deve ser uma linha: %q", got)
+	}
+}
+
+// JSON de erro no formato OpenAI continua entregando a mensagem, não o envelope.
+func TestResumoErroJSONExtraiMensagem(t *testing.T) {
+	corpo := []byte(`{"error":{"message":"Chave de API inválida ou ausente.","code":"invalid_api_key"}}`)
+	got := resumoErro(corpo, 300)
+	if got != "Chave de API inválida ou ausente." {
+		t.Fatalf("mensagem do JSON não foi extraída: %q", got)
+	}
+}
+
+// Página de bloqueio real servida por um catálogo 403: o erro que sobe para a
+// CLI é curto e legível, sem `<html>` no caminho.
+func TestCatalogo403HTMLGeraErroCurto(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(403)
+		_, _ = w.Write([]byte(`<!DOCTYPE html><html><head><title>Sorry, you have been blocked</title></head><body>security service</body></html>`))
+	}))
+	defer srv.Close()
+
+	_, err := Catalogo(context.Background(), srv.URL, "chave-errada")
+	if err == nil {
+		t.Fatal("catálogo 403 deveria errar")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "<html") || strings.Contains(msg, "<head") {
+		t.Fatalf("erro do catálogo vazou HTML:\n%s", msg)
+	}
+	if len(msg) > 400 {
+		t.Fatalf("erro do catálogo ficou longo demais (%d bytes): %s", len(msg), msg)
+	}
+	if !strings.Contains(msg, "403") {
+		t.Fatalf("erro deveria informar o status: %s", msg)
+	}
+}

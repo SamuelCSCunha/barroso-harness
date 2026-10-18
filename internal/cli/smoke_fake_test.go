@@ -40,8 +40,8 @@ func TestOnboardingEnterVazioUsaDefaultBaseURL(t *testing.T) {
 
 	// "" na primeira linha = Enter vazio. Depois escolho o 1º modelo.
 	entrada := strings.Join([]string{
-		"",   // base URL: Enter vazio → default
-		"1",  // modelo
+		"",  // base URL: Enter vazio → default
+		"1", // modelo
 		"/exit",
 	}, "\n") + "\n"
 

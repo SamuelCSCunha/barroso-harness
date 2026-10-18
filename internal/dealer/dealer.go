@@ -212,7 +212,7 @@ func (c *Cliente) Rodar(system string, msgs []Mensagem, tools []map[string]any) 
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		return nil, fmt.Errorf("provider HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+		return nil, fmt.Errorf("provider HTTP %d: %s", resp.StatusCode, resumoErro(b, 300))
 	}
 	return lerRodada(resp, context.Background())
 }
@@ -221,7 +221,7 @@ func (c *Cliente) Rodar(system string, msgs []Mensagem, tools []map[string]any) 
 func lerRodada(resp *http.Response, ctx context.Context) (*Rodada, error) {
 	if resp.StatusCode != 200 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		return nil, fmt.Errorf("provider HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+		return nil, fmt.Errorf("provider HTTP %d: %s", resp.StatusCode, resumoErro(b, 300))
 	}
 	r := &Rodada{}
 	sc := bufio.NewScanner(resp.Body)
@@ -331,6 +331,75 @@ const (
 	tetoBodyCatalog = 1 << 20 // 1 MiB: catálogo nunca é gigante; corta abuse
 )
 
+// resumoErro transforma o corpo de uma resposta de erro em UMA linha útil.
+// Provider nenhum devolve HTML puro em API — quando acontece (página de
+// bloqueio do WAF, catálogo 403 de edge), despejar o corpo cru no terminal
+// enterra o erro real sob markup. Então: se não for JSON, extrai o <title>
+// ou o primeiro texto visível e corta.
+func resumoErro(body []byte, max int) string {
+	s := strings.TrimSpace(string(body))
+	if s == "" {
+		return "(corpo vazio)"
+	}
+	if strings.HasPrefix(s, "{") || strings.HasPrefix(s, "[") {
+		// JSON: tenta o formato OpenAI {"error":{"message":...}} antes de cortar.
+		var env struct {
+			Error json.RawMessage `json:"error"`
+		}
+		if json.Unmarshal([]byte(s), &env) == nil && len(env.Error) > 0 {
+			var msg struct {
+				Message string `json:"message"`
+			}
+			if json.Unmarshal(env.Error, &msg) == nil && msg.Message != "" {
+				return cortarLinha(msg.Message, max)
+			}
+			return cortarLinha(string(env.Error), max)
+		}
+		return cortarLinha(s, max)
+	}
+	// HTML: <title> costuma ser o mais informativo ("Attention Required!",
+	// "Sorry, you have been blocked").
+	if i := strings.Index(strings.ToLower(s), "<title>"); i >= 0 {
+		if j := strings.Index(s[i:], "</title>"); j > 0 {
+			titulo := strings.TrimSpace(tirarTags(s[i+7 : i+j]))
+			if titulo != "" {
+				return cortarLinha(titulo, max)
+			}
+		}
+	}
+	// fallback: primeiro pedaço de texto visível, sem markup.
+	if txt := tirarTags(s); txt != "" {
+		return cortarLinha(txt, max)
+	}
+	return cortarLinha(s, max)
+}
+
+// tirarTags remove markup e colapsa espaços: sobra o texto que o usuário lê.
+func tirarTags(s string) string {
+	var sb strings.Builder
+	dentro := false
+	for _, r := range s {
+		switch {
+		case r == '<':
+			dentro = true
+		case r == '>':
+			dentro = false
+			sb.WriteRune(' ')
+		case !dentro:
+			sb.WriteRune(r)
+		}
+	}
+	return strings.Join(strings.Fields(sb.String()), " ")
+}
+
+func cortarLinha(s string, max int) string {
+	s = strings.Join(strings.Fields(s), " ") // uma linha só, sem quebra
+	if len(s) > max {
+		return s[:max] + "…"
+	}
+	return s
+}
+
 // Catalogo faz GET {baseURL}/models com Bearer e devolve o envelope cru.
 func Catalogo(ctx context.Context, baseURL, apiKey string) (*ModelsResponse, error) {
 	endpoint := NormalizarURL(baseURL) + "/models"
@@ -350,7 +419,7 @@ func Catalogo(ctx context.Context, baseURL, apiKey string) (*ModelsResponse, err
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		return nil, fmt.Errorf("catálogo HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+		return nil, fmt.Errorf("catálogo HTTP %d: %s", resp.StatusCode, resumoErro(b, 300))
 	}
 	b, err := io.ReadAll(io.LimitReader(resp.Body, tetoBodyCatalog+1))
 	if err != nil {

@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	tetoSaida     = 64 << 10           // teto de saída por tool call
-	timeoutPadrao = 120 * time.Second  // terminal_run
+	tetoSaida     = 64 << 10                               // teto de saída por tool call
+	timeoutPadrao = 120 * time.Second                      // terminal_run
 	caudaPodada   = "(conteúdo compactado pelo guardrail)" // reservado p/ runtime
 )
 

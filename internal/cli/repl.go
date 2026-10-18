@@ -88,8 +88,7 @@ func run(io IO) error {
 			return err
 		}
 	} else {
-		fmt.Fprintln(io.Out, "Barroso Harness —", cfg.Resumo())
-		fmt.Fprintln(io.Out, "/help lista os comandos.")
+		banner(io.Out, cfg.Resumo())
 	}
 	repl(io, &cfg)
 	return nil
@@ -277,14 +276,7 @@ func selecionarModelo(io IO, cfg *config.Config) error {
 	if len(ls) == 0 {
 		return fmt.Errorf("catálogo sem modelos plausíveis de chat")
 	}
-	fmt.Fprintln(io.Out, "modelos (ordem alfabética; digite o número ou o id):")
-	for i, m := range ls {
-		linha := fmt.Sprintf("  %2d. %s", i+1, m.ID)
-		if m.ContextLength > 0 {
-			linha += fmt.Sprintf("  [%d ctx]", m.ContextLength)
-		}
-		fmt.Fprintln(io.Out, linha)
-	}
+	listarModelos(io.Out, ls, cfg.Model)
 	for {
 		fmt.Fprint(io.Out, "model: ")
 		linha, err := io.Reader().ReadString('\n')
@@ -346,20 +338,20 @@ func repl(io IO, cfg *config.Config) {
 	sair := false
 
 	for {
-		fmt.Fprintf(io.Out, "\n[%s]%s> ", cfg.Model, effortTag(cfg.Effort))
+		prompto(io.Out, cfg.Model, cfg.Effort)
 		select {
 		case <-fechar:
-			fmt.Fprintln(io.Out, "tchau")
+			despedida(io.Out)
 			return
 		default:
 		}
 		linha, err := br.ReadString('\n')
 		if err != nil { // EOF / Ctrl+D: sair limpo
-			fmt.Fprintln(io.Out, "\ntchau")
+			despedida(io.Out)
 			return
 		}
 		if sair {
-			fmt.Fprintln(io.Out, "tchau")
+			despedida(io.Out)
 			return
 		}
 		partes := strings.SplitN(strings.TrimSpace(linha), " ", 2)
@@ -373,7 +365,7 @@ func repl(io IO, cfg *config.Config) {
 		}
 		switch campos[0] {
 		case "/exit", "/quit":
-			fmt.Fprintln(io.Out, "tchau")
+			despedida(io.Out)
 			return
 		case "/help":
 			ajuda(io)
@@ -381,15 +373,15 @@ func repl(io IO, cfg *config.Config) {
 			if arg != "" {
 				// troca direta por id se ele existir no catálogo atual
 				if err := trocarModeloDireto(io, cfg, arg); err != nil {
-					fmt.Fprintln(io.ErrOut, "erro:", err)
+					erroFmt(io.ErrOut, "erro", err)
 					continue
 				}
 			} else if err := selecionarModelo(io, cfg); err != nil {
-				fmt.Fprintln(io.ErrOut, "erro:", err)
+				erroFmt(io.ErrOut, "erro", err)
 				continue
 			} else {
 				if err := cfg.Save(); err != nil {
-					fmt.Fprintln(io.ErrOut, "erro salvando:", err)
+					erroFmt(io.ErrOut, "erro salvando", err)
 					continue
 				}
 				sess.Configure(*cfg)
@@ -399,7 +391,7 @@ func repl(io IO, cfg *config.Config) {
 			procEffort(io, cfg, sess, arg)
 		case "/provider":
 			if err := cmdProvider(io, cfg); err != nil {
-				fmt.Fprintln(io.ErrOut, "erro:", err)
+				erroFmt(io.ErrOut, "erro", err)
 				continue
 			}
 			sess.Configure(*cfg)
@@ -415,7 +407,7 @@ func repl(io IO, cfg *config.Config) {
 			errTurno := sess.Send(ctx, io.Out, cwd, strings.TrimSpace(linha))
 			cancel()
 			if errTurno != nil {
-				fmt.Fprintln(io.ErrOut, "erro:", errTurno)
+				erroFmt(io.ErrOut, "erro", errTurno)
 			}
 			select {
 			case <-fechar:
