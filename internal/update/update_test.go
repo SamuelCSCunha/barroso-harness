@@ -267,3 +267,44 @@ func TestEscolherMaisNovaListaVazia(t *testing.T) {
 		t.Fatal("lista vazia deveria dar erro")
 	}
 }
+
+// A URL escolhida tem de ser a de ASSET DA API, não a de browser.
+//
+// Não é gosto: num repositório privado o browser_download_url redireciona para
+// objects.githubusercontent.com e o header Authorization não sobrevive ao
+// salto — o download dá 404 "Not Found" com token válido. A URL da API aceita
+// o Bearer e devolve bytes com Accept: application/octet-stream. Se este teste
+// falhar, todo /update quebra em produção sem que nada mais denuncie.
+func TestEscolherMaisNovaPrefereURLDeAssetDaAPI(t *testing.T) {
+	r := releaseDe("v0.1.0-bh.11")
+	r.Assets[0].URL = "https://api.github.com/repos/ruanbarroso/barroso-harness/releases/assets/653642039"
+	r.Assets[0].BrowserDownloadURL = "https://github.com/ruanbarroso/barroso-harness/releases/download/v0.1.0-bh.11/barroso-harness-windows-amd64.exe"
+
+	lanc, err := escolherMaisNova([]releaseAPI{r})
+	if err != nil {
+		t.Fatalf("escolherMaisNova: %v", err)
+	}
+	asset, err := lanc.AssetDaPlataforma()
+	if err != nil {
+		t.Fatalf("AssetDaPlataforma: %v", err)
+	}
+	if !strings.HasPrefix(asset.URL, "https://api.github.com/") {
+		t.Fatalf("URL escolhida %q deveria ser a de asset da API (browser_download_url perde o token no redirect de repo privado)", asset.URL)
+	}
+}
+
+// A única release sem URL de API cai no browser: degradação, não falha.
+func TestEscolherMaisNovaCaiNoBrowserSemURLDaAPI(t *testing.T) {
+	r := releaseDe("v0.1.0-bh.11")
+	r.Assets[0].URL = ""
+	r.Assets[0].BrowserDownloadURL = "https://github.com/ruanbarroso/barroso-harness/releases/download/v0.1.0-bh.11/binario"
+
+	lanc, err := escolherMaisNova([]releaseAPI{r})
+	if err != nil {
+		t.Fatalf("escolherMaisNova: %v", err)
+	}
+	asset, _ := lanc.AssetDaPlataforma()
+	if asset.URL != "https://github.com/ruanbarroso/barroso-harness/releases/download/v0.1.0-bh.11/binario" {
+		t.Fatalf("sem URL da API deveria usar a de browser, veio %q", asset.URL)
+	}
+}
