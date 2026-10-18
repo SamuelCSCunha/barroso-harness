@@ -287,9 +287,16 @@ func (t *tela) desenharTrancado() {
 	// Sem linha de título: o nome da sessão vai para a aba do terminal (OSC 0)
 	// e para o painel. O bh tem uma sessão por terminal, então a barra de abas
 	// do OpenCode não faz sentido aqui.
-	if t.estado.titulo != t.tituloAba {
-		t.tituloAba = t.estado.titulo
-		sb.WriteString(tituloAba(t.estado.titulo))
+	// Sessão ainda sem nome aparece como "Nova sessão", igual ao painel. O
+	// título é comparado já resolvido: comparar o cru deixava a aba sem
+	// título na abertura (vazio == valor inicial de tituloAba).
+	nomeAba := t.estado.titulo
+	if strings.TrimSpace(nomeAba) == "" {
+		nomeAba = "Nova sessão"
+	}
+	if nomeAba != t.tituloAba {
+		t.tituloAba = nomeAba
+		sb.WriteString(tituloAba(nomeAba))
 	}
 
 	// conversa

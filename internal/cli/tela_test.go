@@ -38,3 +38,19 @@ func TestTelaSemLinhaDeTitulo(t *testing.T) {
 		t.Fatalf("conversa deveria começar na linha 1")
 	}
 }
+
+// Ao abrir, sem nenhuma mensagem, a aba já mostra "bh | Nova sessão".
+func TestAbaNovaSessaoNaAbertura(t *testing.T) {
+	coresLigadas = true
+	defer func() { coresLigadas = false }()
+	antes := tamanhoTela
+	tamanhoTela = func() (int, int) { return 140, 30 }
+	defer func() { tamanhoTela = antes }()
+
+	var sb strings.Builder
+	tl := &tela{out: &sb}
+	tl.Estado(estadoPainel{modelo: "m"})
+	if !strings.Contains(sb.String(), "\033]0;bh | Nova sessão\a") {
+		t.Fatal("aba deveria abrir como 'bh | Nova sessão'")
+	}
+}
