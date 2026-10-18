@@ -91,44 +91,55 @@ func ligarCores(io IO) {
 		os.Getenv("TERM") != "dumb"
 }
 
-// banner é a faixa de abertura: só a marca e a dica. O estado da sessão mora
-// na status line, re-renderizada a cada iteração do REPL.
+// banner é a faixa de abertura — limpa e estável, no espírito do OpenCode.
+// Estado volátil fica na statusbar; a marca não se repete a cada turno.
 func banner(out io.Writer) {
 	fmt.Fprintln(out)
-	fmt.Fprintln(out, negritof(cianof("Barroso Harness")))
-	fmt.Fprintln(out, dimf("digite /help para os comandos · texto livre vai ao modelo"))
+	fmt.Fprintln(out, cianof("╭─ ")+negritof(cianof("Barroso Harness")))
+	fmt.Fprintln(out, cianof("╰─ ")+dimf("digite /help para os comandos · texto livre vai ao modelo"))
 	fmt.Fprintln(out)
 }
 
-// statusbar imprime a faixa de estado ANTES do prompt: provider, model,
-// effort e janela — a cada iteração, para /effort e /model refletirem na hora.
-// Compacta a janela em k tokens; a forma longa continua no /help e no Resumo.
+// statusbar imprime uma faixa compacta antes de cada prompt. Ela substitui o
+// formato cru de Config.Resumo e torna mudanças de /model, /effort e /provider
+// imediatamente visíveis sem empurrar um bloco de texto desnecessário.
 func statusbar(out io.Writer, cfg *config.Config) {
-	linha := "provider " + cfg.CurrentProvider
+	provider := cfg.CurrentProvider
+	if provider == "" {
+		provider = "sem-provider"
+	}
+	modelo := cfg.Model
+	if modelo == "" {
+		modelo = "selecione um modelo"
+	}
+	linha := provider + " · " + modelo
 	if cfg.Effort != "" {
 		linha += " · effort " + cfg.Effort
+	} else {
+		linha += " · effort off"
 	}
-	linha += " · model " + cfg.Model
 	if cfg.Janela > 0 {
-		linha += fmt.Sprintf(" · janela %dk", cfg.Janela/1000)
+		linha += fmt.Sprintf(" · %dk", cfg.Janela/1000)
 	}
-	fmt.Fprintln(out, dimf(linha))
+	fmt.Fprintln(out, dimf("╭─ "+linha))
 }
 
-// prompto é a linha de entrada: seta, modelo em destaque e effort discreto.
-// Termina em espaço para o cursor colar nela; há espaço entre o modelo e o marcador.
+// prompto é a linha de entrada: o chevron do OpenCode, modelo em destaque e
+// effort discreto. Termina em espaço para o cursor colar nela.
 func prompto(out io.Writer, modelo, effort string) {
-	seta := dimf(">")
-	mod := negritof(modelo)
-	if effort != "" {
-		fmt.Fprintf(out, "%s %s %s ", seta, mod, amarelof("·"+effort))
-		return
+	mod := modelo
+	if mod == "" {
+		mod = "barroso"
 	}
-	fmt.Fprintf(out, "%s %s ", seta, mod)
+	fmt.Fprint(out, verdof("❯")+" "+negritof(mod))
+	if effort != "" {
+		fmt.Fprint(out, " "+amarelof("·"+effort))
+	}
+	fmt.Fprint(out, " ")
 }
 
 // despedida encerra limpo.
-func despedida(out io.Writer) { fmt.Fprintln(out, dimf("ate")) }
+func despedida(out io.Writer) { fmt.Fprintln(out, dimf("╰─ até logo")) }
 
 // erroFmt imprime erro em vermelho, uma linha, sem markup cru.
 func erroFmt(out io.Writer, prefixo string, err error) {
@@ -169,7 +180,9 @@ func listarModelos(out io.Writer, ls []dealer.CatalogModel, atual string, pagina
 	if fim > len(ls) {
 		fim = len(ls)
 	}
-	fmt.Fprintln(out, cianof("catálogo")+dimf(fmt.Sprintf(" %d modelos · página %d/%d · pg<N> navega", len(ls), pagina, totalPaginas)))
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, cianof(fmt.Sprintf("Modelos  %d disponíveis  ·  página %d/%d", len(ls), pagina, totalPaginas)))
+	fmt.Fprintln(out, dimf("────────────────────────────────────────────────────────────"))
 	largura := 0
 	for _, m := range ls[inicio:fim] {
 		if len(m.ID) > largura {

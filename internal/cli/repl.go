@@ -280,7 +280,7 @@ func selecionarModelo(io IO, cfg *config.Config) error {
 	pagina := 1
 	listarModelos(io.Out, ls, cfg.Model, pagina, catalogoPorPagina)
 	for {
-		fmt.Fprint(io.Out, "model: ")
+		fmt.Fprint(io.Out, cianof("selecionar modelo > "))
 		linha, err := io.Reader().ReadString('\n')
 		if err != nil {
 			return errCancelar
