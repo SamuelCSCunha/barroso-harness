@@ -159,8 +159,6 @@ func (s *Session) Send(ctx context.Context, r Renderer, cwd, pedido string) erro
 	if err != nil {
 		return err
 	}
-	lista := s.catalogoTools(cwd)
-	schemas := toolSchemas(lista)
 	working := append([]dealer.Mensagem(nil), s.history...)
 	working = append(working, dealer.Mensagem{Role: "user", Conteudo: pedido})
 	piso := 0
@@ -175,6 +173,13 @@ func (s *Session) Send(ctx context.Context, r Renderer, cwd, pedido string) erro
 	s.registrar("user_message", map[string]any{"role": "user", "content": pedido})
 
 	for ciclo := 0; ciclo < 64; ciclo++ {
+		// Catálogo remontado a CADA ciclo: mcp_add, mcp_remove e skill_create
+		// mudam as tools no meio do turno, e a próxima rodada já precisa ver.
+		// Montado uma vez só, a tool recém-conectada ficava invisível até o
+		// pedido seguinte — o modelo via o servidor em mcp_list e não podia
+		// chamar a tool dele.
+		lista := s.catalogoTools(cwd)
+		schemas := toolSchemas(lista)
 		system := "Você é o agente Barroso Harness, rodando localmente na máquina do usuário em modo YOLO: as ferramentas executam sem pedir aprovação.\n" +
 			"Use as ferramentas para agir (terminal, arquivos) e TEXTO para falar com o usuário. Quando a tarefa terminar, responda com texto puro.\n"
 		if baroMD != "" {

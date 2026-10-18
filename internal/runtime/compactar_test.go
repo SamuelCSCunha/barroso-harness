@@ -11,6 +11,7 @@ import (
 
 	"github.com/ruanbarroso/barroso-harness/internal/config"
 	"github.com/ruanbarroso/barroso-harness/internal/dealer"
+	"github.com/ruanbarroso/barroso-harness/internal/tools"
 )
 
 func TestCompactarHistoricoPreservaPedidoAtualERodada(t *testing.T) {
@@ -178,5 +179,72 @@ func TestResumeReaplicaCompactacao(t *testing.T) {
 	h := r.History()
 	if len(h) != 3 || !strings.Contains(h[0].Conteudo, "objetivo: Y") || h[1].Conteudo != "pedido atual" || h[2].Conteudo != "ok" {
 		t.Fatalf("resume deveria reaplicar a compactação: %+v", h)
+	}
+}
+
+// Tool injetada NO MEIO do turno (mcp_add, skill_create) tem de aparecer já
+// no ciclo seguinte. Com o catálogo montado uma vez por turno, a tool nova só
+// valia no pedido seguinte — provado contra o modelo real em 2026-10-18.
+func TestToolInjetadaNoTurnoApareceNoCicloSeguinte(t *testing.T) {
+	var (
+		mu     sync.Mutex
+		vistas [][]string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Tools []struct {
+				Function struct{ Name string } `json:"function"`
+			} `json:"tools"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		var nomes []string
+		for _, tl := range req.Tools {
+			nomes = append(nomes, tl.Function.Name)
+		}
+		mu.Lock()
+		vistas = append(vistas, nomes)
+		n := len(vistas)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		emitir := func(p any) { b, _ := json.Marshal(p); _, _ = w.Write([]byte("data: " + string(b) + "\n\n")) }
+		if n == 1 {
+			emitir(map[string]any{"choices": []map[string]any{{"delta": map[string]any{"tool_calls": []map[string]any{{
+				"index": 0, "id": "c1", "type": "function", "function": map[string]any{"name": "conectar_extra", "arguments": `{}`},
+			}}}}}})
+		} else {
+			emitir(map[string]any{"choices": []map[string]any{{"delta": map[string]any{"content": "ok"}}}})
+		}
+		emitir(map[string]any{"choices": []map[string]any{{"delta": map[string]any{}, "finish_reason": "stop"}}})
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	s := NewSession(config.Config{BaseURL: srv.URL, Model: "fake", APIKey: "k", Janela: 100_000})
+	s.Injetar(tools.Spec{
+		Name: "conectar_extra", Schema: map[string]any{"type": "object"},
+		Exec: func(context.Context, string, json.RawMessage) (string, error) {
+			s.Injetar(tools.Spec{Name: "tool_nova", Schema: map[string]any{"type": "object"},
+				Exec: func(context.Context, string, json.RawMessage) (string, error) { return "", nil }})
+			return "conectado", nil
+		},
+	})
+	if err := s.Send(context.Background(), nil, t.TempDir(), "conecte"); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(vistas) != 2 {
+		t.Fatalf("esperava 2 requests, vieram %d", len(vistas))
+	}
+	tem := func(l []string) bool {
+		for _, n := range l {
+			if n == "tool_nova" {
+				return true
+			}
+		}
+		return false
+	}
+	if tem(vistas[0]) || !tem(vistas[1]) {
+		t.Fatalf("tool_nova deveria surgir no 2º ciclo: %v", vistas)
 	}
 }

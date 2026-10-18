@@ -29,8 +29,8 @@ import (
 // precisam ser FECHADOS no fim do processo. Um Conjunto sem recurso aberto
 // (subtasks desligado, nenhum servidor MCP) é válido — Fechar é no-op.
 type Conjunto struct {
-	gerente  *subagent.Gerente // nil quando subtasks está off
-	clientes []*mcp.Cliente    // servidores MCP conectados; nil se nenhum
+	gerente *subagent.Gerente // nil quando subtasks está off
+	gestor  *gestorMCP        // servidores MCP (conectados ou não) e suas tools
 }
 
 // Gerente devolve o gerente de tarefas-irmãs (nil quando desligado). Útil para
@@ -44,10 +44,10 @@ func (c *Conjunto) Gerente() *subagent.Gerente {
 
 // MCP devolve os clientes MCP conectados, na ordem dos servidores da config.
 func (c *Conjunto) MCP() []*mcp.Cliente {
-	if c == nil {
+	if c == nil || c.gestor == nil {
 		return nil
 	}
-	return c.clientes
+	return c.gestor.clientes()
 }
 
 // Montar conecta os servidores MCP, sobe o gerente de sub-agentes (se
@@ -72,22 +72,24 @@ func Montar(ctx context.Context, cfg config.Config, sess *runtime.Session, cwd s
 	var avisos []string
 
 	// ── MCP ────────────────────────────────────────────────────────────────
-	// ConectarTodos conecta em paralelo e devolve falhas por servidor; as
-	// ferramentas de cada cliente que ABRIU entram no catálogo.
-	clientes, falhas := mcp.ConectarTodos(ctx, servidoresDe(cfg.MCPServidores))
-	for _, f := range falhas {
-		avisos = append(avisos, f.Error())
-	}
-	for _, c := range clientes {
-		specs, err := c.Ferramentas(ctx)
-		if err != nil {
-			// Conectou mas não listou: a conexão fica para ser fechada e a
-			// sessão segue sem as tools daquele servidor.
-			avisos = append(avisos, fmt.Sprintf("servidor MCP %q: tools/list: %v", c.Fonte(), umaLinha(err)))
+	// O gestor conecta os servidores da config (falha de um vira aviso) e
+	// publica mcp_list/mcp_add/mcp_remove: o agente gerencia os próprios
+	// servidores sem editar o config.json à mão.
+	gestor := novoGestorMCP(ctx, sess)
+	vistos := map[string]bool{}
+	for _, s := range cfg.MCPServidores {
+		nome := strings.TrimSpace(s.Nome)
+		if nome == "" || vistos[nome] {
 			continue
 		}
-		sess.Injetar(specs...)
+		vistos[nome] = true
+		e := gestor.conectar(s)
+		gestor.registrar(e)
+		if e.erro != "" {
+			avisos = append(avisos, fmt.Sprintf("servidor MCP %q: %s", nome, e.erro))
+		}
 	}
+	sess.Injetar(gestor.specs()...)
 
 	// ── sub-agentes ────────────────────────────────────────────────────────
 	// OFF por padrão: sub-agente gasta tokens do MESMO provider sem pedido.
@@ -104,17 +106,17 @@ func Montar(ctx context.Context, cfg config.Config, sess *runtime.Session, cwd s
 		sess.Injetar(subagent.Especificacoes(gerente, cfg)...)
 	}
 
-	return &Conjunto{gerente: gerente, clientes: clientes}, avisos
+	return &Conjunto{gerente: gerente, gestor: gestor}, avisos
 }
 
 // Fechar encerra os servidores MCP. Sub-agentes não têm fechamento: o registro
 // é em memória e as tarefas morrem com o processo (persistência de tarefa está
 // fora deste slice). Devolve nil quando não há cliente aberto.
 func (c *Conjunto) Fechar() error {
-	if c == nil || len(c.clientes) == 0 {
+	if c == nil || c.gestor == nil {
 		return nil
 	}
-	return mcp.FechaTodos(c.clientes)
+	return c.gestor.fechar()
 }
 
 // ── conversão config → mcp ────────────────────────────────────────────────

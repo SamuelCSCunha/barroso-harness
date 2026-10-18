@@ -45,6 +45,27 @@ import (
 //
 // Seguro para chamar concorrentemente; não é o caminho quente (o wiring chama
 // uma vez), e o lock cobre o caso de um /model trocar a config no meio.
+// Retirar remove do catálogo as specs injetadas com esses nomes — o caminho
+// de mcp_remove: o servidor sai e as tools dele somem já no próximo turno.
+func (s *Session) Retirar(nomes ...string) {
+	if len(nomes) == 0 {
+		return
+	}
+	fora := make(map[string]bool, len(nomes))
+	for _, n := range nomes {
+		fora[strings.TrimSpace(n)] = true
+	}
+	s.muExtras.Lock()
+	defer s.muExtras.Unlock()
+	mantidas := s.injetadas[:0]
+	for _, sp := range s.injetadas {
+		if !fora[strings.TrimSpace(sp.Name)] {
+			mantidas = append(mantidas, sp)
+		}
+	}
+	s.injetadas = mantidas
+}
+
 func (s *Session) Injetar(specs ...tools.Spec) {
 	if len(specs) == 0 {
 		return
@@ -97,9 +118,13 @@ func (s *Session) busca() *web.Busca {
 func specsDeSkills(cwd string) []tools.Spec {
 	hab, err := skills.Descobrir(fontesDeSkills(cwd))
 	if err != nil {
-		return skills.Especificacoes(nil)
+		hab = nil
 	}
-	return skills.Especificacoes(hab)
+	gestao := skills.EspecificacoesGestao(map[string]string{
+		"projeto": filepath.Join(cwd, ".barroso", "skills"),
+		"global":  filepath.Join(config.Dir(), "skills"),
+	})
+	return append(skills.Especificacoes(hab), gestao...)
 }
 
 // fontesDeSkills compõe as raízes de skills na ordem de precedência:
@@ -209,3 +234,7 @@ func (s *Session) catalogoTools(cwd string) []tools.Spec {
 	s.muExtras.Unlock()
 	return semSombra(semRepetir(base), injetadas)
 }
+
+// Catalogo expõe a receita do turno para wiring e testes conferirem o que o
+// modelo vai ver.
+func (s *Session) Catalogo(cwd string) []tools.Spec { return s.catalogoTools(cwd) }

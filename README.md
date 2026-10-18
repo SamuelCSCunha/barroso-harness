@@ -142,3 +142,14 @@ Cada compactação vai para o `sessions.db` com a política que a produziu, e `/
 ## ACP: `session/load`
 
 Com o `sessions.db` disponível, `initialize` anuncia `loadSession: true`. `session/load` reabre a sessão pelo id, reproduz a conversa ao cliente como `session/update` (`user_message_chunk`, `tool_call`, `tool_call_update`, `agent_message_chunk`) e deixa a sessão pronta para `session/prompt`. Id desconhecido é `-32602`.
+
+## Gestão de MCP e skills pelo agente
+
+O modelo gerencia os próprios servidores MCP e skills, sem editar o `config.json` à mão:
+
+- `mcp_list` — servidores configurados, se conectaram, quantas tools e o erro de quem não conectou.
+- `mcp_add` — adiciona (ou substitui) um servidor `stdio` (`command`, `args`, `env`) ou `http` (`url`, `headers`), conecta na hora e grava no `config.json`. As tools do servidor valem já na próxima rodada do mesmo turno.
+- `mcp_remove` — desconecta, tira as tools do catálogo e apaga do `config.json`.
+- `skill_create` / `skill_remove` — cria ou apaga `<escopo>/<nome>/SKILL.md` (escopo `projeto` = `.barroso/skills`, `global` = `~/.barroso-harness/skills`); a skill criada é invocável com `/<nome>`.
+
+A gravação relê o `config.json` do disco e troca só a lista de servidores, para não desfazer uma troca de provider/modelo feita no REPL.
