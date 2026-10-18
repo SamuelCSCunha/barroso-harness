@@ -249,3 +249,29 @@ func TestResumeSemSessoesAvisa(t *testing.T) {
 		t.Fatalf("/resume vazio não avisou:\n%s", outIO.String())
 	}
 }
+
+// /rename grava o nome da sessão; sem argumento, mostra o uso.
+func TestRenameGravaNome(t *testing.T) {
+	semCores(t)
+	srv := providerFakeModelos(t, "barroso-chat")
+	defer srv.Close()
+	cfgPronta(t, srv.URL+"/v1", "k", "barroso-chat")
+
+	io, outIO, _ := ponteIO(t, "/rename\n/rename   refatorar   o parser\n/exit\n")
+	if code := RunInteractive(io); code != 0 {
+		t.Fatalf("código %d", code)
+	}
+	saida := outIO.String()
+	if !strings.Contains(saida, "uso: /rename") || !strings.Contains(saida, "sessão renomeada: refatorar o parser") {
+		t.Fatalf("saída:\n%s", saida)
+	}
+	loja, err := store.Open(filepath.Join(config.Dir(), "sessions.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loja.Fechar()
+	ls, _ := loja.ListSessions(10)
+	if len(ls) != 1 || ls[0].Title != "refatorar o parser" {
+		t.Fatalf("título gravado: %+v", ls)
+	}
+}

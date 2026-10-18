@@ -426,7 +426,7 @@ func repl(io IO, cfg *config.Config) {
 				mcps = append(mcps, c.Fonte())
 			}
 			io.tela.Estado(estadoPainel{
-				titulo: tituloSessao(sess.History()), modelo: cfg.Model,
+				titulo: tituloAtual(loja, sess), modelo: cfg.Model,
 				provider: cfg.CurrentProvider, effort: cfg.Effort, cwd: cwdCurto(cwd),
 				contexto: ultimoContexto, janela: cfg.Janela, mcps: mcps,
 			})
@@ -518,6 +518,21 @@ func repl(io IO, cfg *config.Config) {
 				continue
 			}
 			okFmt(io.Out, "sessão "+sess.ID()+" salva — "+strings.TrimSpace(titulo))
+		case "/rename":
+			nome := strings.Join(strings.Fields(arg), " ")
+			if nome == "" {
+				avisoFmt(io.Out, "uso: /rename novo nome da sessão")
+				continue
+			}
+			if loja == nil {
+				avisoFmt(io.Out, "sessão sem persistência: não há onde gravar o nome")
+				continue
+			}
+			if err := loja.SetTitle(sess.ID(), nome); err != nil {
+				erroFmt(io.ErrOut, "erro renomeando", err)
+				continue
+			}
+			okFmt(io.Out, "sessão renomeada: "+nome)
 		case "/help":
 			ajuda(io)
 		case "/update":
@@ -627,6 +642,7 @@ func ajuda(io IO) {
   /new              limpa a história da sessão (conversa nova)
   /resume           lista as últimas sessões e retoma uma
   /save [título]    dá título à sessão atual e grava o log
+  /rename <nome>    renomeia a sessão atual (aba do terminal e painel)
   /update           baixa e instala a release mais nova do canal
   /contexto         política de compactação ativa e o que cada uma já fez
   /skills           lista as skills; /<nome> [args] executa uma

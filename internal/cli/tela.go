@@ -24,6 +24,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/ruanbarroso/barroso-harness/internal/dealer"
+	"github.com/ruanbarroso/barroso-harness/internal/runtime"
+	"github.com/ruanbarroso/barroso-harness/internal/store"
 	"golang.org/x/term"
 )
 
@@ -71,8 +73,10 @@ type tela struct {
 	ocultar bool // a resposta digitada é segredo (chave da API)
 	ocupado bool // turno do modelo em curso
 	aviso   string
-	spin    chan struct{}
-	spinFim chan struct{}
+	// tituloAba é o último título enviado à aba (só reenvia quando muda).
+	tituloAba string
+	spin      chan struct{}
+	spinFim   chan struct{}
 }
 
 func novaTela(out io.Writer) *tela {
@@ -82,7 +86,28 @@ func novaTela(out io.Writer) *tela {
 
 func (t *tela) encerrar() {
 	t.pararSpin()
-	fmt.Fprint(t.out, escCurVisiv+escNormal)
+	// A aba volta ao título neutro: o shell (cmd/PowerShell) não reescreve o
+	// título sozinho, e o nome da sessão ficaria preso na aba depois do bh.
+	fmt.Fprint(t.out, escCurVisiv+escNormal+tituloAba(""))
+}
+
+// tituloAba é a sequência OSC 0 que troca o nome da aba/janela do terminal.
+// Caracteres de controle saem do título para não quebrar a sequência.
+func tituloAba(sessao string) string {
+	nome := "bh"
+	if s := strings.TrimSpace(sessao); s != "" {
+		limpo := strings.Map(func(r rune) rune {
+			if r < 32 || r == 127 {
+				return -1
+			}
+			return r
+		}, s)
+		if r := []rune(limpo); len(r) > 60 {
+			limpo = string(r[:60]) + "…"
+		}
+		nome = "bh | " + limpo
+	}
+	return "\033]0;" + nome + "\a"
 }
 
 // ── API usada pelo REPL e pelo renderer do turno ──────────────────────────
@@ -240,7 +265,7 @@ func (t *tela) larguraConversa() int {
 
 // desenharTrancado pinta o quadro inteiro. Chamado com t.mu travado.
 //
-// Linhas: 1 título · 2 vazio · 3..h-5 conversa · h-4 vazio/rolagem ·
+// Linhas: 1..h-5 conversa · h-4 vazio/rolagem ·
 // h-3..h-1 caixa de entrada · h rodapé. O painel ocupa as colunas da direita
 // nas linhas 1..h-1; nada é escrito na última coluna da última linha (isso
 // faria o terminal rolar).
@@ -248,7 +273,7 @@ func (t *tela) desenharTrancado() {
 	limpar := t.medir()
 	w, h := t.w, t.h
 	larg := t.larguraConversa()
-	altura := max(3, h-7)
+	altura := max(3, h-5)
 
 	var sb strings.Builder
 	sb.WriteString(escSyncIni + escCurOcult)
@@ -259,12 +284,13 @@ func (t *tela) desenharTrancado() {
 		fmt.Fprintf(&sb, "\033[%d;1H%s%s%s", r, reset, s, escApagaLin)
 	}
 
-	titulo := t.estado.titulo
-	if titulo == "" {
-		titulo = "Nova sessão"
+	// Sem linha de título: o nome da sessão vai para a aba do terminal (OSC 0)
+	// e para o painel. O bh tem uma sessão por terminal, então a barra de abas
+	// do OpenCode não faz sentido aqui.
+	if t.estado.titulo != t.tituloAba {
+		t.tituloAba = t.estado.titulo
+		sb.WriteString(tituloAba(t.estado.titulo))
 	}
-	linha(1, "  "+negritof(cor(corTexto, cortarVis(titulo, larg-4))))
-	linha(2, "")
 
 	// conversa
 	var todas []string
@@ -287,7 +313,7 @@ func (t *tela) desenharTrancado() {
 		if i < len(vis) {
 			s = " " + vis[i]
 		}
-		linha(3+i, s)
+		linha(1+i, s)
 	}
 	if t.rolagem > 0 {
 		linha(h-4, "  "+cinzaf(fmt.Sprintf("↓ %d linhas abaixo · PgDn volta", t.rolagem)))
@@ -335,8 +361,8 @@ func (t *tela) desenharTrancado() {
 		conteudo := t.linhasPainel()
 		for r := 1; r <= h-1; r++ {
 			s := ""
-			if r-2 >= 0 && r-2 < len(conteudo) {
-				s = conteudo[r-2]
+			if r-1 >= 0 && r-1 < len(conteudo) {
+				s = conteudo[r-1]
 			}
 			fmt.Fprintf(&sb, "\033[%d;%dH%s%s", r, col, reset, comFundo(s, fundoPainel, larguraPain-1))
 		}
@@ -347,7 +373,7 @@ func (t *tela) desenharTrancado() {
 		if t.parcial == "" {
 			fmt.Fprintf(&sb, "\033[%d;%dH", h-3, 5+larguraVis(t.entradaVisivel()))
 		} else if len(vis) > 0 {
-			fmt.Fprintf(&sb, "\033[%d;%dH", 3+len(vis)-1, 2+larguraVis(vis[len(vis)-1]))
+			fmt.Fprintf(&sb, "\033[%d;%dH", 1+len(vis)-1, 2+larguraVis(vis[len(vis)-1]))
 		}
 		sb.WriteString(escCurVisiv)
 	}
@@ -880,4 +906,15 @@ func (r *turnoTela) Tokens(_, saida int, dur time.Duration, compactou bool) {
 	}
 	r.t.Adicionar("")
 	r.t.Adicionar("  " + strings.Join(partes, cinzaf(" · ")))
+}
+
+// tituloAtual é o nome da sessão: o gravado (/rename, /save) ou, sem ele, a
+// primeira fala do usuário, como o OpenCode nomeia a sessão.
+func tituloAtual(loja *store.Store, sess *runtime.Session) string {
+	if loja != nil && sess.ID() != "" {
+		if se, err := loja.GetSession(sess.ID()); err == nil && strings.TrimSpace(se.Title) != "" {
+			return strings.TrimSpace(se.Title)
+		}
+	}
+	return tituloSessao(sess.History())
 }
