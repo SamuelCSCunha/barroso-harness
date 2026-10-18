@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -11,7 +12,66 @@ import (
 	"testing"
 
 	"github.com/ruanbarroso/barroso-harness/internal/config"
+	"github.com/ruanbarroso/barroso-harness/internal/dealer"
 )
+
+// TestOnboardingEnterVazioUsaDefaultBaseURL prova o caso que o usuário exigiu:
+// apertar Enter sem digitar nada no prompt de base URL adota o default
+// (https://keys.barroso.tec.br/v1) — e a tela mostra esse default entre
+// colchetes, nunca um placeholder genérico.
+func TestOnboardingEnterVazioUsaDefaultBaseURL(t *testing.T) {
+	srv, _ := smokeServer(t, catálogoSmoke)
+	defer srv.Close()
+	t.Setenv("BARROSO_HARNESS_HOME", t.TempDir())
+
+	// O default tem de ser visível na tela antes da escolha. Como Enter vazio
+	// adota o default real (keys.barroso.tec.br), o catálogo precisa ser
+	// injetado — senão o teste bateria na rede de verdade.
+	antigoKey, antigoBusca := PromptKey, buscarModelos
+	PromptKey = func(string) (string, error) { return "fake-key", nil }
+	buscarModelos = func(context.Context, string, string) ([]dealer.CatalogModel, error) {
+		return []dealer.CatalogModel{
+			{ID: "barroso-chat", Input: []string{"text", "image"}, ContextLength: 250000},
+			{ID: "zz-ultimo", Input: []string{"text"}},
+			{ID: "audio-x", Input: []string{"audio"}},
+		}, nil
+	}
+	defer func() { PromptKey, buscarModelos = antigoKey, antigoBusca }()
+
+	// "" na primeira linha = Enter vazio. Depois escolho o 1º modelo.
+	entrada := strings.Join([]string{
+		"",   // base URL: Enter vazio → default
+		"1",  // modelo
+		"/exit",
+	}, "\n") + "\n"
+
+	var out, errOut strings.Builder
+	if code := RunInteractive(IO{In: strings.NewReader(entrada), Out: &out, ErrOut: &errOut}); code != 0 {
+		t.Fatalf("exit %d\nout=%s\nerr=%s", code, out.String(), errOut.String())
+	}
+	tela := out.String() + errOut.String()
+
+	// 1. o default tem de estar impresso no prompt
+	if !strings.Contains(tela, "base URL ["+config.DefaultBaseURL+"]") {
+		t.Fatalf("prompt não exibiu o default da casa:\n%s", tela)
+	}
+	// 2. nenhum placeholder genérico pode aparecer
+	if strings.Contains(tela, "seu-endpoint") || strings.Contains(tela, "exemplo") {
+		t.Fatalf("vazou placeholder genérico na tela:\n%s", tela)
+	}
+
+	// 3. o provider ativo gravado é o default, não o do server fake
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := cfg.Ativo(); p == nil || p.BaseURL != config.DefaultBaseURL {
+		t.Fatalf("provider ativo = %+v, esperado base_url default %q", p, config.DefaultBaseURL)
+	}
+	if cfg.Model == "" {
+		t.Fatalf("modelo não foi escolhido após Enter vazio na base URL:\n%s", tela)
+	}
+}
 
 // smokeServer cobre /v1/models e /v1/chat/completions com roteiro previsível
 // e devolve a lista de requests capturados (para inspecionar reasoning_effort).

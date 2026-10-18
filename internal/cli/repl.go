@@ -53,6 +53,13 @@ var PromptKey = func(prompt string) (string, error) {
 	return strings.TrimSpace(string(b)), nil
 }
 
+// buscarModelos é a costura de rede do catálogo: produção chama
+// dealer.Modelos, testes substituem para não sair da máquina. Separado do
+// PromptKey porque aqui a substituição precisa de URL e chave.
+var buscarModelos = func(ctx context.Context, base, key string) ([]dealer.CatalogModel, error) {
+	return dealer.Modelos(ctx, base, key)
+}
+
 // RunInteractive é o caminho de `bh` sem argumentos: onboarding se a config
 // estiver incompleta, REPL em seguida.
 func RunInteractive(io IO) int {
@@ -151,7 +158,7 @@ func perguntar(io IO, rótulo, def string) string {
 func configurarProvider(io IO, cfg *config.Config, base, key string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	ls, err := dealer.Modelos(ctx, base, key)
+	ls, err := buscarModelos(ctx, base, key)
 	if err != nil {
 		return fmt.Errorf("provider recusou %s: %v (rollback — nada foi salvo)", base, err)
 	}
@@ -263,7 +270,7 @@ func selecionarModelo(io IO, cfg *config.Config) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	ls, err := dealer.Modelos(ctx, base, key)
+	ls, err := buscarModelos(ctx, base, key)
 	if err != nil {
 		return err
 	}
@@ -451,7 +458,7 @@ func trocarModeloDireto(io IO, cfg *config.Config, entrada string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	ls, err := dealer.Modelos(ctx, base, key)
+	ls, err := buscarModelos(ctx, base, key)
 	if err != nil {
 		return err
 	}
