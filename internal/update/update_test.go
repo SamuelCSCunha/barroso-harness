@@ -289,7 +289,7 @@ func TestEscolherMaisNovaPrefereURLDeAssetDaAPI(t *testing.T) {
 		t.Fatalf("AssetDaPlataforma: %v", err)
 	}
 	if !strings.HasPrefix(asset.URL, "https://api.github.com/") {
-		t.Fatalf("URL escolhida %q deveria ser a de asset da API (browser_download_url perde o token no redirect de repo privado)", asset.URL)
+		t.Fatalf("URL escolhida %q deveria ser a de asset da API (browser_download_url devolve 404 em repo privado; a URL da API devolve os bytes)", asset.URL)
 	}
 }
 

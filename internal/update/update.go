@@ -201,13 +201,19 @@ func escolherMaisNova(releases []releaseAPI) (Lancamento, error) {
 		}
 		lanc := Lancamento{Version: r.TagName, TagName: r.TagName}
 		for _, a := range r.Assets {
-			// A URL de ASSET da API vem primeiro, e a ordem não é detalhe: num
-			// repositório PRIVADO o browser_download_url redireciona para
-			// objects.githubusercontent.com, e o header de autorização não
-			// sobrevive ao salto — o download volta 404 "Not Found" mesmo com
-			// token válido. A URL da API aceita o Bearer direto e devolve os
-			// bytes com Accept: application/octet-stream. Medido no canal real
-			// em 2026-10-18: browser 404, API 200, com a mesma credencial.
+			// A URL de ASSET DA API vem primeiro, e a ordem não é detalhe: num
+			// repositório PRIVADO o browser_download_url devolve 404 "Not Found"
+			// no download de asset, enquanto a URL da API devolve os bytes com
+			// Accept: application/octet-stream. Medido em A/B no canal real em
+			// 2026-10-18, mesmo Accept e mesmo Bearer nas duas URLs, variando
+			// só o tipo: browser 404, API 200. User-Agent não muda o resultado.
+			//
+			// NÃO registre aqui uma explicação de redirect: ela foi testada e é
+			// FALSA. A URL da API também redireciona (302 para
+			// release-assets.githubusercontent.com) e o cliente padrão do Go a
+			// segue e recebe 200 — se o header morresse no salto, a URL da API
+			// falharia igual. O 404 do browser fica sem mecanismo explicado, e
+			// a escolha não depende dele.
 			u := a.URL
 			if u == "" {
 				u = a.BrowserDownloadURL
