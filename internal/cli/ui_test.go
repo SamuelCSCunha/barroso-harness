@@ -3,9 +3,11 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ruanbarroso/barroso-harness/internal/dealer"
 )
@@ -51,39 +53,54 @@ func TestPuroSemEscapes(t *testing.T) {
 	}
 }
 
-// TestPaginacaoModelos: página 2 de 120 modelos abre no nº 51; o cabeçalho
-// anuncia 3 páginas; página além do fim cai na última.
-func TestPaginacaoModelos(t *testing.T) {
+// TestListaModelosCompleta: o catálogo inteiro sai numa lista só, sem
+// paginação, e a coluna da janela fica alinhada também na linha do modelo
+// atual (o negrito não pode entrar na conta do preenchimento).
+func TestListaModelosCompleta(t *testing.T) {
 	antiga := coresLigadas
-	coresLigadas = false
 	defer func() { coresLigadas = antiga }()
 
 	ls := make([]dealer.CatalogModel, 0, 120)
 	for i := 0; i < 120; i++ {
 		ls = append(ls, dealer.CatalogModel{ID: fmt.Sprintf("m-%03d", i), Input: []string{"text"}, ContextLength: 250000})
 	}
+	ls = append(ls, dealer.CatalogModel{ID: "z-modelo-longo", ContextLength: 1048000})
+
+	coresLigadas = false
 	var sb strings.Builder
-	listarModelos(&sb, ls, "", 2, catalogoPorPagina)
+	listarModelos(&sb, ls, "m-050")
 	saida := sb.String()
-	if !strings.Contains(saida, "página 2/3") {
-		t.Fatalf("cabeçalho de página errado:\n%s", saida)
+	for _, quer := range []string{"121 disponíveis", "  1 m-000", " 51 m-050", "120 m-119", "121 z-modelo-longo"} {
+		if !strings.Contains(saida, quer) {
+			t.Fatalf("lista sem %q:\n%s", quer, saida)
+		}
 	}
-	linha50 := "  50 m-049"
-	linha51 := "  51 m-050"
-	if !strings.Contains(saida, linha51) {
-		t.Fatalf("página 2 devia abrir no nº 51 (m-050):\n%s", saida)
-	}
-	if strings.Contains(saida, "m-050\n") && !strings.Contains(saida, linha50) {
-		t.Fatalf("linha 50 no meio da página 2 deve preceder a 51:\n%s", saida)
-	}
-	if strings.Contains(saida, "m-100\n") {
-		t.Fatalf("página 2 devia terminar no nº 100:\n%s", saida)
+	if strings.Contains(saida, "página") || strings.Contains(saida, "pg<") {
+		t.Fatalf("não deveria haver paginação:\n%s", saida)
 	}
 
+	// Com cores, a coluna da janela começa na mesma posição visível na linha
+	// do modelo atual e numa linha comum.
+	coresLigadas = true
 	sb.Reset()
-	listarModelos(&sb, ls, "", 99, catalogoPorPagina)
-	if !strings.Contains(sb.String(), "página 3/3") {
-		t.Fatalf("pg99 deveria fechar na última página, veio:\n%s", sb.String())
+	listarModelos(&sb, ls, "m-050")
+	sem := regexp.MustCompile("" + `\[[0-9;]*m`)
+	col := func(id string) int {
+		for _, l := range strings.Split(sb.String(), "\n") {
+			l = sem.ReplaceAllString(l, "")
+			if strings.Contains(l, id+" ") {
+				// Coluna em CARACTERES, não bytes: o ▸ do modelo atual tem 3
+				// bytes e ocupa uma coluna, igual a um espaço.
+				if k := strings.Index(l, "250k"); k >= 0 {
+					return utf8.RuneCountInString(l[:k])
+				}
+				return -1
+			}
+		}
+		return -1
+	}
+	if a, b := col("m-050"), col("m-051"); a < 0 || a != b {
+		t.Fatalf("coluna desalinhada no modelo atual: %d vs %d", a, b)
 	}
 }
 

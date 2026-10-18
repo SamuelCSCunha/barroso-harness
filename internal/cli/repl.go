@@ -280,8 +280,7 @@ func selecionarModelo(io IO, cfg *config.Config) error {
 	if len(ls) == 0 {
 		return fmt.Errorf("catálogo sem modelos plausíveis de chat")
 	}
-	pagina := 1
-	listarModelos(io.Out, ls, cfg.Model, pagina, catalogoPorPagina)
+	listarModelos(io.Out, ls, cfg.Model)
 	for {
 		fmt.Fprint(io.Out, cianof("selecionar modelo > "))
 		linha, err := io.Reader().ReadString('\n')
@@ -292,15 +291,6 @@ func selecionarModelo(io IO, cfg *config.Config) error {
 		if v == "" {
 			fmt.Fprintln(io.Out, "escolha um item (número ou id) — sem modelo não há turno.")
 			continue
-		}
-		// pg<N> pagina o catálogo; só captura quando o resto é número, para ids
-		// que começam em "pg" continuarem resolvidos como id.
-		if strings.HasPrefix(v, "pg") {
-			if n, errP := strconv.Atoi(v[2:]); errP == nil && n >= 1 {
-				pagina = n
-				listarModelos(io.Out, ls, cfg.Model, pagina, catalogoPorPagina)
-				continue
-			}
 		}
 		id := ""
 		if n, errA := strconv.Atoi(v); errA == nil && n >= 1 && n <= len(ls) {
@@ -563,7 +553,7 @@ func repl(io IO, cfg *config.Config) {
 
 func ajuda(io IO) {
 	fmt.Fprint(io.Out, cianof("comandos")+`
-  /model            lista o catálogo (alfabético, paginado) e troca o modelo
+  /model            lista o catálogo completo (alfabético) e troca o modelo
   /model <id>       troca direta quando o id está no catálogo
   /effort           mostra effort atual e níveis comuns
   /effort <nivel>   grava e entra na próxima requisição

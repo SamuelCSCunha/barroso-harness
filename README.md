@@ -42,7 +42,7 @@ bh -init
 Comandos dentro da sessão:
 
 ```text
-/model                 lista modelos text-capable, alfabético, paginado (pg<N> navega)
+/model                 lista os modelos de texto, catálogo completo em ordem alfabética
 /model barroso-chat    troca diretamente se o ID estiver no catálogo
 /effort                mostra valor atual e níveis comuns (low, medium, high, xhigh, max)
 /effort high           envia reasoning_effort=high nas próximas requisições

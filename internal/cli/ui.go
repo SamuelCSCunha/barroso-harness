@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ruanbarroso/barroso-harness/internal/config"
 	"github.com/ruanbarroso/barroso-harness/internal/dealer"
@@ -45,10 +46,6 @@ const (
 	glifoGuard = "◆"
 	glifoAtual = "▸"
 )
-
-// catalogoPorPagina é o tamanho da página do /model: 416 modelos não podem
-// virar parede de texto.
-const catalogoPorPagina = 50
 
 // corCorMag está exposta para o teste afirmar que a paleta foi emitida (o
 // próprio cor() devolve texto limpo com coresLigadas=false, então o teste liga
@@ -171,41 +168,33 @@ func avisoFmt(out io.Writer, msg string) {
 	fmt.Fprintf(out, "%s %s\n", amarelof(glifoAviso), msg)
 }
 
-// listarModelos mostra UMA página do catálogo, em ordem alfabética, numerado
-// com índice GLOBAL (o mesmo número que /model <n> aceita), coluna da janela
-// alinhada e o modelo atual marcado com ▸.
-func listarModelos(out io.Writer, ls []dealer.CatalogModel, atual string, pagina, porPagina int) {
+// listarModelos mostra o catálogo INTEIRO, em ordem alfabética, numerado (o
+// mesmo número que a seleção aceita), com a coluna da janela alinhada e o
+// modelo atual marcado com ▸. Sem paginação: o terminal rola, e a lista
+// completa é o que permite achar um modelo pelo olho.
+func listarModelos(out io.Writer, ls []dealer.CatalogModel, atual string) {
 	if len(ls) == 0 {
 		fmt.Fprintln(out, amarelof("catalogo vazio"))
 		return
 	}
-	totalPaginas := (len(ls) + porPagina - 1) / porPagina
-	if pagina < 1 {
-		pagina = 1
-	}
-	if pagina > totalPaginas {
-		pagina = totalPaginas
-	}
-	inicio := (pagina - 1) * porPagina
-	fim := inicio + porPagina
-	if fim > len(ls) {
-		fim = len(ls)
-	}
 	fmt.Fprintln(out)
-	fmt.Fprintln(out, cianof(fmt.Sprintf("Modelos  %d disponíveis  ·  página %d/%d", len(ls), pagina, totalPaginas)))
+	fmt.Fprintln(out, cianof(fmt.Sprintf("Modelos  %d disponíveis", len(ls))))
 	fmt.Fprintln(out, dimf("────────────────────────────────────────────────────────────"))
 	largura := 0
-	for _, m := range ls[inicio:fim] {
-		if len(m.ID) > largura {
-			largura = len(m.ID)
+	for _, m := range ls {
+		if n := utf8.RuneCountInString(m.ID); n > largura {
+			largura = n
 		}
 	}
 	if largura > 44 {
 		largura = 44
 	}
-	for i, m := range ls[inicio:fim] {
-		num := inicio + i + 1
+	for i, m := range ls {
 		marca := "  "
+		// O preenchimento é calculado sobre o id CRU: aplicar a largura depois
+		// de colorir contaria os bytes do escape ANSI e desalinharia a coluna
+		// justamente na linha do modelo atual.
+		pad := strings.Repeat(" ", max(0, largura-utf8.RuneCountInString(m.ID)))
 		nome := m.ID
 		if m.ID == atual {
 			marca = verdof("▸ ")
@@ -215,9 +204,9 @@ func listarModelos(out io.Writer, ls []dealer.CatalogModel, atual string, pagina
 		if m.ContextLength > 0 {
 			extra = dimf(fmt.Sprintf("  %dk", m.ContextLength/1000))
 		}
-		fmt.Fprintf(out, "%s%s %-*s%s\n", marca, dimf(fmt.Sprintf("%3d", num)), largura, nome, extra)
+		fmt.Fprintf(out, "%s%s %s%s%s\n", marca, dimf(fmt.Sprintf("%3d", i+1)), nome, pad, extra)
 	}
-	fmt.Fprintln(out, dimf("digite o numero ou o id · pg<N> troca de página"))
+	fmt.Fprintln(out, dimf("digite o número ou o id"))
 }
 
 // tuiTurno é a roupa TUI de um turno: glifo ▶ com nome de tool em magenta,
