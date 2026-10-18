@@ -6,12 +6,16 @@ package runtime
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/ruanbarroso/barroso-harness/internal/config"
 	"github.com/ruanbarroso/barroso-harness/internal/dealer"
+	"github.com/ruanbarroso/barroso-harness/internal/store"
 )
 
 // Turno executa um pedido único (modo -p): streaming de texto na saída, tools
@@ -30,6 +34,39 @@ func Turno(out io.Writer, cfg config.Config, cwd, pedido string) error {
 		return err
 	}
 	return nil
+}
+
+// TurnoPersistente é o Turno do modo -p COM log. O store chega pronto de quem
+// chama (main.go abre em best-effort); sessionID é o id já gerado, para que o
+// caller possa comunicar. Sem store, degrada para Turno: o turno roda igual.
+func TurnoPersistente(out io.Writer, cfg config.Config, cwd, pedido string, st *store.Store, sessionID string) error {
+	if st == nil || strings.TrimSpace(sessionID) == "" {
+		return Turno(out, cfg, cwd, pedido)
+	}
+	if strings.TrimSpace(pedido) == "" {
+		return fmt.Errorf("pedido vazio: use -p \"...\"")
+	}
+	if !cfg.Pronta() {
+		return fmt.Errorf(
+			"configuração incompleta (%s) — rode `bh` sem argumentos para configurar provider/model interativamente, ou edite %s",
+			strings.Join(cfg.Faltas(), ", "), filePath(cfg))
+	}
+	return NewSessionWithStore(cfg, st, sessionID).Send(context.Background(), RendererDe(out), cwd, pedido)
+}
+
+// NovoSessaoID gera um id de sessão no mesmo formato do REPL
+// (bh-<YYYYMMDDHHMMSS>-<4hex>), para o modo -p gravar no MESMO log.
+func NovoSessaoID() string {
+	return fmt.Sprintf("bh-%s-%s", time.Now().Format("20060102150405"), hex4Rand())
+}
+
+func hex4Rand() string {
+	var b [2]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// Sem entropia, o relógio vira a segunda fonte do aleatório.
+		return fmt.Sprintf("%04x", time.Now().UnixNano()&0xffff)
+	}
+	return hex.EncodeToString(b[:])
 }
 
 // filePath devolve o caminho do config.json (não impresso em testes).

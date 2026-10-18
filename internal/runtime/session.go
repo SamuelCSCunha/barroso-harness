@@ -8,12 +8,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ruanbarroso/barroso-harness/internal/budget"
 	"github.com/ruanbarroso/barroso-harness/internal/config"
 	"github.com/ruanbarroso/barroso-harness/internal/dealer"
 	"github.com/ruanbarroso/barroso-harness/internal/instructions"
+	"github.com/ruanbarroso/barroso-harness/internal/store"
 	"github.com/ruanbarroso/barroso-harness/internal/tools"
 )
 
@@ -24,6 +26,23 @@ type Session struct {
 	history []dealer.Mensagem
 	est     budget.Estimador
 	key     string // calibração por (URL normalizada, model)
+
+	// Persistência é OPCIONAL. store nil = sessão só em memória (o caminho de
+	// NewSession, usado pelo modo -p e pelos testes). Quando há store, cada
+	// evento confirmado do turno entra no log — e a sessão pode ser retomada
+	// por Resume num processo novo.
+	store     *store.Store
+	sessionID string
+
+	// injetadas são as specs de subsistemas EXTERNOS (sub-agentes, MCP),
+	// acrescentadas pelo wiring com Injetar. Não vivem no catálogo estático
+	// porque essas ferramentas têm dono de processo: ver extras.go.
+	//
+	// muExtras só protege estes dois campos. O mutex é fino de propósito — o
+	// caminho quente (Send, montando a lista do turno) o segura só para
+	// copiar o slice, e nunca enquanto fala com o provider.
+	muExtras  sync.Mutex
+	injetadas []tools.Spec
 }
 
 // NewSession cria uma sessão vazia sobre a configuração fornecida.
@@ -32,6 +51,39 @@ func NewSession(cfg config.Config) *Session {
 	s.rebuild()
 	return s
 }
+
+// NewSessionWithStore cria uma sessão JÁ persistente, indexando o id no log
+// (se ele ainda não existir). É o caminho do REPL, que sabe de antemão onde
+// o banco está.
+func NewSessionWithStore(cfg config.Config, st *store.Store, sessionID string) *Session {
+	s := &Session{config: cfg}
+	s.rebuild()
+	s.Attach(st, sessionID)
+	return s
+}
+
+// Attach liga a sessão a um store existente. Pode ser chamado depois de
+// NewSession (quando o banco só abre depois, ex.: falha best-effort no REPL);
+// os eventos do próximo Send passam a ser gravados.
+func (s *Session) Attach(st *store.Store, sessionID string) {
+	if st == nil || strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	s.store = st
+	s.sessionID = sessionID
+	// Indexa sem apagar: NewSession usa INSERT OR IGNORE, então sessão antiga
+	// mantém created_at e todo o log.
+	if err := st.NewSession(sessionID); err != nil {
+		s.store = nil
+		s.sessionID = ""
+	}
+}
+
+// ID devolve o id da sessão (vazio quando não há persistência).
+func (s *Session) ID() string { return s.sessionID }
+
+// Persistente diz se há log gravando (usado pela CLI para mostrar `sess`).
+func (s *Session) Persistente() bool { return s.store != nil && s.sessionID != "" }
 
 func (s *Session) Config() config.Config { return s.config }
 
@@ -72,8 +124,16 @@ func (s *Session) rebuild() {
 func (s *Session) History() []dealer.Mensagem { return append([]dealer.Mensagem(nil), s.history...) }
 
 // ClearHistory limpa o transcript. Usado só quando faz sentido iniciar uma
-// nova conversa explicitamente no futuro; não é chamado ao trocar modelo.
-func (s *Session) ClearHistory() { s.history = nil }
+// nova conversa explicitamente; não é chamado ao trocar modelo.
+//
+// Com persistência, a quebra também entra no log (session_reset): o log é
+// append-only e não pode "desfazer" os eventos anteriores, mas precisa
+// registrar que a conversa foi cortada — senão um Resume montaria um
+// transcript que o usuário acha que descartou.
+func (s *Session) ClearHistory() {
+	s.history = nil
+	s.registrar("session_reset", map[string]any{"role": "system", "content": "história limpa; conversa nova"})
+}
 
 // Send executa um turno e mantém transcript entre chamadas. O append da
 // mensagem do usuário e das rodadas fica num buffer privado e só é confirmado
@@ -100,6 +160,14 @@ func (s *Session) Send(ctx context.Context, r Renderer, cwd, pedido string) erro
 		return err
 	}
 	lista := tools.SpecsBuiltins()
+	// As tools de recuperação do log entram junto das built-in: elas fecham
+	// sobre esta sessão (precisam do store), por isso são montadas aqui e não
+	// vivem no catálogo estático do pacote tools.
+	lista = append(lista, SessaoSpecs(s)...)
+	// Por último o catálogo estendido: contexto vivo, web, skills e o que o
+	// wiring injetou (sub-agentes, MCP). A política de colisão de nome está
+	// em extras.go — externo nunca sombreia interno.
+	lista = append(lista, s.extrasDoTurno(cwd)...)
 	schemas := toolSchemas(lista)
 	working := append([]dealer.Mensagem(nil), s.history...)
 	working = append(working, dealer.Mensagem{Role: "user", Conteudo: pedido})
@@ -109,6 +177,10 @@ func (s *Session) Send(ctx context.Context, r Renderer, cwd, pedido string) erro
 	// Soma do turno inteiro: cada ciclo de tool gasta request e resposta, e o
 	// rodapé da UI mostra o total, não o do último ciclo.
 	usoPrompt, usoSaida := 0, 0
+
+	// O pedido do usuário entra no log ANTES do loop: se o turno falhar no
+	// meio, o log ainda registra o que foi pedido.
+	s.registrar("user_message", map[string]any{"role": "user", "content": pedido})
 
 	for ciclo := 0; ciclo < 64; ciclo++ {
 		system := "Você é o agente Barroso Harness, rodando localmente na máquina do usuário em modo YOLO: as ferramentas executam sem pedir aprovação.\n" +
@@ -129,6 +201,12 @@ func (s *Session) Send(ctx context.Context, r Renderer, cwd, pedido string) erro
 				return fmt.Errorf("guardrail: request não cabe (%s) e a poda não aliviou o suficiente", av.Veredito())
 			}
 			r.Guardrail(true)
+			s.registrar("guardrail", map[string]any{
+				"tipo":       "proativa",
+				"veredito":   av.Veredito(),
+				"janela":     s.config.Janela,
+				"estimativa": av.TokensEntrada + av.TokensSaida,
+			})
 			compactou = true
 			working = podado
 			continue
@@ -139,6 +217,10 @@ func (s *Session) Send(ctx context.Context, r Renderer, cwd, pedido string) erro
 			if estouraContexto(err) && s.config.Janela > 0 && !reativaFeita {
 				reativaFeita = true
 				r.Guardrail(false)
+				s.registrar("guardrail", map[string]any{
+					"tipo":   "reativa",
+					"motivo": umaLinha(err.Error()),
+				})
 				podado := podar(working, &piso, budget.ReservaOperacional)
 				if podado != nil {
 					compactou = true
@@ -160,6 +242,16 @@ func (s *Session) Send(ctx context.Context, r Renderer, cwd, pedido string) erro
 			r.Tokens(usoPrompt, usoSaida, time.Since(inicio), compactou)
 			working = append(working, dealer.Mensagem{Role: "assistant", Conteudo: rodada.Texto, Usage: rodada.Usage})
 			s.history = working
+			// Texto confirmado entra no log DEPOIS da confirmação do transcript:
+			// uma rodada que falhou não deixa rastro de resposta que não existiu.
+			assistente := map[string]any{"role": "assistant", "content": rodada.Texto}
+			if rodada.Usage != nil {
+				assistente["usage"] = map[string]any{
+					"prompt_tokens": rodada.Usage.PromptTokens,
+					"output_tokens": rodada.Usage.OutputTokens,
+				}
+			}
+			s.registrar("assistant", assistente)
 			return nil
 		}
 
@@ -172,6 +264,15 @@ func (s *Session) Send(ctx context.Context, r Renderer, cwd, pedido string) erro
 		results := make([]dealer.Mensagem, 0, len(rodada.Tools))
 		for _, call := range rodada.Tools {
 			turn = append(turn, dealer.Mensagem{Role: "tool_call", ToolID: call.ID, ToolName: call.Nome, ToolArgs: call.Args})
+			// A chamada entra no log aqui, antes de executar: se a execução
+			// travar ou estourar, o log ainda mostra o que foi pedido e com
+			// quais argumentos.
+			s.registrar("tool_call", map[string]any{
+				"role":      "tool_call",
+				"tool_id":   call.ID,
+				"tool_name": call.Nome,
+				"tool_args": call.Args,
+			})
 		}
 		for _, call := range rodada.Tools {
 			inicio := time.Now()
@@ -182,6 +283,10 @@ func (s *Session) Send(ctx context.Context, r Renderer, cwd, pedido string) erro
 				saida = "erro: " + exeErr.Error()
 			}
 			results = append(results, dealer.Mensagem{Role: "tool_result", Conteudo: saida, ToolID: call.ID, ToolName: call.Nome, IsErro: isErr})
+			// Só grava o resultado quando o turno foi confirmado (a transação
+			// fecha logo abaixo, com working recebendo turn+results). Saídas
+			// acima de limiteBlob viram blob + preview.
+			s.registrarResultado(call.ID, call.Nome, saida, isErr)
 			r.Tool(call.Nome, dur, isErr)
 			r.Eco(resultadoSaida(saida))
 		}

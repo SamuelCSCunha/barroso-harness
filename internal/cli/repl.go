@@ -18,6 +18,7 @@ import (
 	"github.com/ruanbarroso/barroso-harness/internal/config"
 	"github.com/ruanbarroso/barroso-harness/internal/dealer"
 	"github.com/ruanbarroso/barroso-harness/internal/runtime"
+	"github.com/ruanbarroso/barroso-harness/internal/wiring"
 	"golang.org/x/term"
 )
 
@@ -343,11 +344,40 @@ func (io IO) cancelarTurno(fechar chan<- struct{}) (context.Context, context.Can
 }
 
 func repl(io IO, cfg *config.Config) {
-	sess := runtime.NewSession(*cfg)
+	// Persistência best-effort: sem banco, o REPL continua em memória (o aviso
+	// sai uma vez, em ErrOut, e nunca interrompe a conversa).
+	loja, idAtivo := abrirStore(io)
+	var sess *runtime.Session
+	if loja != nil {
+		sess = runtime.NewSessionWithStore(*cfg, loja, idAtivo)
+	} else {
+		sess = runtime.NewSession(*cfg)
+	}
+	defer func() {
+		if loja != nil {
+			_ = loja.TouchSession(idAtivo)
+			_ = loja.Fechar()
+		}
+	}()
 	br := io.Reader()
 	cwd, _ := os.Getwd()
 	fechar := make(chan struct{})
 	sair := false
+
+	// ── subsistemas com dono de processo (MCP, sub-agentes) ───────────────
+	// O ctx aqui é de VIDA DO PROCESSO: os sub-agentes precisam sobreviver ao
+	// turno que os criou, e o handshake do MCP não pode morrer com um Ctrl+C
+	// de rodada. Persistentes best-effort — falha de UM servidor vira aviso,
+	// não derrubada do REPL; /model trocando provider reinjeta na próxima linha.
+	ctxProcesso, cancelaProcesso := context.WithCancel(context.Background())
+	defer cancelaProcesso()
+	conjunto, avisosWiring := wiring.Montar(ctxProcesso, *cfg, sess, cwd)
+	for _, aviso := range avisosWiring {
+		avisoFmt(io.Out, aviso)
+	}
+	// Fechar ao sair: Fecha() do conjunto encerra subprocessos MCP; o gerente
+	// de sub-agentes é in-memory e morre com o processo.
+	defer func() { _ = conjunto.Fechar() }()
 
 	for {
 		// Encerramentos vindos de um turno (Ctrl+C duas vezes) saem ANTES de
@@ -362,11 +392,14 @@ func repl(io IO, cfg *config.Config) {
 			despedida(io.Out)
 			return
 		}
-		statusbar(io.Out, cfg)
+		statusbarSessao(io.Out, cfg, sess.ID())
 		prompto(io.Out, cfg.Model, cfg.Effort)
 		linha, err := br.ReadString('\n')
 		if err != nil { // EOF / Ctrl+D: sair limpo
 			fmt.Fprintln(io.Out)
+			if loja != nil {
+				_ = loja.TouchSession(sess.ID())
+			}
 			despedida(io.Out)
 			return
 		}
@@ -381,6 +414,9 @@ func repl(io IO, cfg *config.Config) {
 		}
 		switch campos[0] {
 		case "/exit", "/quit":
+			if loja != nil {
+				_ = loja.TouchSession(sess.ID())
+			}
 			despedida(io.Out)
 			return
 		case "/new":
@@ -389,6 +425,52 @@ func repl(io IO, cfg *config.Config) {
 			// pra não carregar o contexto pro próximo pedido.
 			sess.ClearHistory()
 			okFmt(io.Out, "história limpa; conversa nova")
+		case "/resume":
+			if loja == nil {
+				avisoFmt(io.Out, "sessão sem persistência: nada para retomar")
+				continue
+			}
+			lista := listarSessoesMonta(loja, 10)
+			if len(lista) == 0 {
+				listarSessaoResumo(io.Out, nil)
+				continue
+			}
+			listarSessaoResumo(io.Out, lista)
+			fmt.Fprint(io.Out, verdof("❯")+" "+dimf("número ou id (enter cancela)")+" ")
+			escolha, errLeitura := br.ReadString('\n')
+			if errLeitura != nil { // EOF no meio: sai limpo como no loop
+				fmt.Fprintln(io.Out)
+				_ = loja.TouchSession(sess.ID())
+				despedida(io.Out)
+				return
+			}
+			escolhido := resolverSessao(escolha, lista)
+			if escolhido == "" {
+				avisoFmt(io.Out, "escolha vazia ou inválida; sessão atual mantida")
+				continue
+			}
+			// Retomar = novo id ativo + transcript reconstruído do log.
+			idAtivo = escolhido
+			sess = runtime.NewSessionWithStore(*cfg, loja, idAtivo)
+			if err := sess.Resume(); err != nil {
+				erroFmt(io.ErrOut, "erro retomando sessão", err)
+				continue
+			}
+			okFmt(io.Out, "sessão "+sess.ID()+" retomada")
+		case "/save":
+			if loja == nil {
+				avisoFmt(io.Out, "sessão sem persistência: nada para salvar")
+				continue
+			}
+			titulo := arg
+			if titulo == "" {
+				titulo = tituloPadrao(sess)
+			}
+			if err := loja.SetTitle(sess.ID(), titulo); err != nil {
+				erroFmt(io.ErrOut, "erro salvando título", err)
+				continue
+			}
+			okFmt(io.Out, "sessão "+sess.ID()+" salva — "+strings.TrimSpace(titulo))
 		case "/help":
 			ajuda(io)
 		case "/model":
@@ -449,6 +531,8 @@ func ajuda(io IO) {
   /effort -         limpa (request volta sem reasoning_effort)
   /provider         troca base URL + chave; valida /models antes de salvar
   /new              limpa a história da sessão (conversa nova)
+  /resume           lista as últimas sessões e retoma uma
+  /save [título]    dá título à sessão atual e grava o log
   /help             esta ajuda
   /exit, /quit      sair
 `)

@@ -47,6 +47,75 @@ type Config struct {
 	BaseURL         string               `json:"-"`                               // resolvido do provider ativo
 	APIKey          string               `json:"-"`                               // resolvido do provider ativo; nunca logar
 	Home            string               `json:"-"`
+
+	// SearchURL é o endpoint do SearXNG com a API JSON habilitada. Vazio
+	// DESATIVA a tool: web_search entra no catálogo mesmo assim (a tool
+	// explica o que falta), então web_fetch continua útil sozinho.
+	SearchURL string `json:"search_url,omitempty"`
+
+	// Subtarefas liga o gerente de tarefas-irmãs (task_spawn/status/result).
+	// OFF por padrão: sub-agente gasta tokens do MESMO provider, e numa
+	// máquina configurada só para conversa isso é dinheiro sem pedido.
+	Subtarefas bool `json:"subtasks,omitempty"`
+
+	// MCPServidores lista servidores MCP (stdio ou HTTP streamable). As
+	// ferramentas publicadas entram no catálogo do turno.
+	MCPServidores []MCPServidor `json:"mcp_servers,omitempty"`
+}
+
+// MCPServidor espelha mcp.Servidor sem importar o pacote — config é a raiz da
+// árvore de dependências e não pode apontar para um pacote que fala protocolo.
+// A conversão para mcp.Servidor é uma linha no wiring.
+type MCPServidor struct {
+	Nome    string            `json:"name"`
+	Tipo    string            `json:"type"` // "stdio" | "http"
+	Command string            `json:"command,omitempty"`
+	Args    []string          `json:"args,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
+	URL     string            `json:"url,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
+	Timeout int               `json:"timeout_segundos,omitempty"` // segundos; 0 = padrão
+}
+
+// BuscaAtiva diz se há endpoint de busca configurado. A tool web_search entra
+// no catálogo de todo jeito (com o erro acionável dentro), mas quem precisa
+// SABER — wiring, UI, teste — pergunta por aqui em vez de comparar string.
+func (c Config) BuscaAtiva() bool { return strings.TrimSpace(c.SearchURL) != "" }
+
+// SubtarefasAtivas diz se as tasks irmãs estão habilitadas. EXPLICITAMENTE
+// ligadas: ausência do campo é OFF, e OFF não liga por presença de MCP.
+func (c Config) SubtarefasAtivas() bool { return c.Subtarefas }
+
+// servidoresValidos devolve só os servidores MCP com nome e tipo
+// reconhecíveis. A validação FINA é do pacote mcp (ele conhece o protocolo);
+// aqui só se descarta o que nunca abriria, para o wiring não tentar.
+func (c Config) servidoresValidos() []MCPServidor {
+	var out []MCPServidor
+	vistos := map[string]bool{}
+	for _, s := range c.MCPServidores {
+		nome := strings.TrimSpace(s.Nome)
+		if nome == "" || vistos[nome] {
+			continue
+		}
+		tipo := strings.ToLower(strings.TrimSpace(s.Tipo))
+		tipo = strings.NewReplacer("_", "-", " ", "-").Replace(tipo)
+		switch {
+		case tipo == "stdio":
+			if strings.TrimSpace(s.Command) == "" {
+				continue
+			}
+		case tipo == "http", tipo == "streamable-http", tipo == "http-streamable",
+			tipo == "http-streaming", tipo == "streamablehttp":
+			if strings.TrimSpace(s.URL) == "" {
+				continue
+			}
+		default:
+			continue
+		}
+		vistos[nome] = true
+		out = append(out, s)
+	}
+	return out
 }
 
 // Dir é a raiz dos dados da harness (~/.barroso-harness por padrão).
