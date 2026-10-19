@@ -502,9 +502,13 @@ func repl(io IO, cfg *config.Config) {
 				avisoFmt(io.Out, "empty or invalid choice; keeping the current session")
 				continue
 			}
-			// Retomar = novo id ativo + transcript reconstruído do log.
+			// Retomar = novo id ativo + transcript reconstruído do log, na
+			// MESMA sessão: as tools injetadas pelo wiring (task_spawn, MCP)
+			// ficam na sessão em que foram injetadas. Trocar por uma sessão
+			// nova deixava a retomada sem sub-agentes e sem MCP.
 			idAtivo = escolhido
-			sess = runtime.NewSessionWithStore(*cfg, loja, idAtivo)
+			sess.Attach(loja, idAtivo)
+			_ = sess.ContextoVivoCarregar()
 			if err := sess.Resume(); err != nil {
 				erroFmt(io.ErrOut, "error resuming session", err)
 				continue
