@@ -24,12 +24,14 @@ func gerenteComTarefa(t *testing.T) (*subagent.Gerente, string) {
 	return g, id
 }
 
-func TestTasksDesligadoExplicaComoLigar(t *testing.T) {
+// O gerente nil agora só existe em caminho SEM wiring (Montar sempre cria);
+// a mensagem explica a situação em vez de mandar editar config.
+func TestTasksSemGerenteExplica(t *testing.T) {
 	semCores(t)
 	var out bytes.Buffer
 	cmdTasks(&out, nil, "")
-	if !strings.Contains(out.String(), "subtasks") {
-		t.Fatalf("deveria dizer como ligar: %q", out.String())
+	if !strings.Contains(out.String(), "sub-agentes") {
+		t.Fatalf("deveria explicar a ausência de sub-agentes: %q", out.String())
 	}
 }
 
@@ -37,7 +39,7 @@ func TestTasksVazioDiz(t *testing.T) {
 	semCores(t)
 	var out bytes.Buffer
 	cmdTasks(&out, subagent.Novo(subagent.Config{}), "")
-	if !strings.Contains(out.String(), "no tasks") {
+	if !strings.Contains(out.String(), "nenhuma tarefa") {
 		t.Fatalf("saída: %q", out.String())
 	}
 }
@@ -61,10 +63,10 @@ func TestTasksDetalhaComErro(t *testing.T) {
 	var out bytes.Buffer
 	cmdTasks(&out, g, id)
 	s := out.String()
-	if !strings.Contains(s, "prompt: investigar o bug do parser de datas") {
+	if !strings.Contains(s, "pedido: investigar o bug do parser de datas") {
 		t.Errorf("detalhe sem o pedido:\n%s", s)
 	}
-	if !strings.Contains(s, "error: config incompleta") {
+	if !strings.Contains(s, "erro: config incompleta") {
 		t.Errorf("detalhe sem o erro:\n%s", s)
 	}
 }
@@ -74,7 +76,7 @@ func TestTasksDetalheIdInexistente(t *testing.T) {
 	g, _ := gerenteComTarefa(t)
 	var out bytes.Buffer
 	cmdTasks(&out, g, "t99")
-	if !strings.Contains(out.String(), "not found") {
+	if !strings.Contains(out.String(), "não existe") {
 		t.Fatalf("saída: %q", out.String())
 	}
 }
@@ -85,12 +87,12 @@ func TestTasksCancelTerminadaAvisa(t *testing.T) {
 	g, id := gerenteComTarefa(t)
 	var out bytes.Buffer
 	cmdTasks(&out, g, "cancel "+id)
-	if !strings.Contains(out.String(), "nothing to cancel") {
+	if !strings.Contains(out.String(), "nada a cancelar") {
 		t.Fatalf("saída: %q", out.String())
 	}
 	out.Reset()
 	cmdTasks(&out, g, "cancel")
-	if !strings.Contains(out.String(), "usage: /tasks cancel") {
+	if !strings.Contains(out.String(), "uso: /tasks cancel") {
 		t.Fatalf("sem id deveria mostrar uso: %q", out.String())
 	}
 }

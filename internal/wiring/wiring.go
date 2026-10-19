@@ -27,14 +27,18 @@ import (
 
 // Conjunto é o que a sessão ganhou: as specs já injetadas e os recursos que
 // precisam ser FECHADOS no fim do processo. Um Conjunto sem recurso aberto
-// (subtasks desligado, nenhum servidor MCP) é válido — Fechar é no-op.
+// (nenhum servidor MCP; ou o Conjunto{} de sessão nil) é válido — Fechar é
+// no-op. O gerente de sub-agentes nasce SEMPRE: toda sessão principal tem
+// task_spawn/task_status/task_result; a sessão FILHA não as recebe porque o
+// runtime a monta de tools.SpecsBuiltins() (invariante por construção, não
+// por configuração).
 type Conjunto struct {
-	gerente *subagent.Gerente // nil quando subtasks está off
+	gerente *subagent.Gerente // sempre presente quando Montar passou por sessão real
 	gestor  *gestorMCP        // servidores MCP (conectados ou não) e suas tools
 }
 
-// Gerente devolve o gerente de tarefas-irmãs (nil quando desligado). Útil para
-// a UI mostrar contagem e para testes.
+// Gerente devolve o gerente de tarefas-irmãs (nil só num Conjunto vazio —
+// sessão nil). Útil para a UI mostrar contagem e para testes.
 func (c *Conjunto) Gerente() *subagent.Gerente {
 	if c == nil {
 		return nil
@@ -50,10 +54,9 @@ func (c *Conjunto) MCP() []*mcp.Cliente {
 	return c.gestor.clientes()
 }
 
-// Montar conecta os servidores MCP, sobe o gerente de sub-agentes (se
-// habilitado) e injeta tudo na sessão. Devolve o Conjunto para fechar depois e
-// os AVISOS — uma linha por servidor que falhou, para o chamador mostrar sem
-// interromper.
+// Montar conecta os servidores MCP, sobe o gerente de sub-agentes e injeta
+// tudo na sessão. Devolve o Conjunto para fechar depois e os AVISOS — uma
+// linha por servidor que falhou, para o chamador mostrar sem interromper.
 //
 // Regra de tolerância: falha de UM servidor MCP não invalida os demais nem o
 // turno. Ferramenta externa é conveniência; derrubar a sessão porque um
@@ -86,25 +89,25 @@ func Montar(ctx context.Context, cfg config.Config, sess *runtime.Session, cwd s
 		e := gestor.conectar(s)
 		gestor.registrar(e)
 		if e.erro != "" {
-			avisos = append(avisos, fmt.Sprintf("MCP server %q: %s", nome, e.erro))
+			avisos = append(avisos, fmt.Sprintf("servidor MCP %q: %s", nome, e.erro))
 		}
 	}
 	sess.Injetar(gestor.specs()...)
 
 	// ── sub-agentes ────────────────────────────────────────────────────────
-	// OFF por padrão: sub-agente gasta tokens do MESMO provider sem pedido.
-	var gerente *subagent.Gerente
-	if cfg.Subtarefas {
-		gerente = subagent.Novo(subagent.Config{
-			Nome:            subagenteNome(),
-			MaxConcorrentes: subagent.MaxPadrao,
-		})
-		gerente.DefinirCwd(cwd)
-		// Vincular ao ctx longo ANTES do primeiro Spawn: as tarefas derivam o
-		// contexto filho daqui, e o ctx do turno morre no fim da linha.
-		gerente.Vincular(ctx)
-		sess.Injetar(subagent.Especificacoes(gerente, cfg)...)
-	}
+	// SEMPRE ligados, sem flag de config: delegar é parte do catálogo base da
+	// sessão principal. O filho não herda a delegação por construção — o
+	// runtime.Session.Send monta a lista dele de tools.SpecsBuiltins(), que
+	// não tem task_* — então não há risco de recursão a administrar.
+	gerente := subagent.Novo(subagent.Config{
+		Nome:            subagenteNome(),
+		MaxConcorrentes: subagent.MaxPadrao,
+	})
+	gerente.DefinirCwd(cwd)
+	// Vincular ao ctx longo ANTES do primeiro Spawn: as tarefas derivam o
+	// contexto filho daqui, e o ctx do turno morre no fim da linha.
+	gerente.Vincular(ctx)
+	sess.Injetar(subagent.Especificacoes(gerente, cfg)...)
 
 	return &Conjunto{gerente: gerente, gestor: gestor}, avisos
 }
@@ -197,7 +200,7 @@ func subagenteNome() string { return subagent.PrefixoPadrao }
 // bloco.
 func umaLinha(err error) string {
 	if err == nil {
-		return "(no detail)"
+		return "(sem detalhe)"
 	}
 	s := strings.TrimSpace(err.Error())
 	if i := strings.IndexAny(s, "\r\n"); i >= 0 {

@@ -53,11 +53,6 @@ type Config struct {
 	// explica o que falta), então web_fetch continua útil sozinho.
 	SearchURL string `json:"search_url,omitempty"`
 
-	// Subtarefas liga o gerente de tarefas-irmãs (task_spawn/status/result).
-	// OFF por padrão: sub-agente gasta tokens do MESMO provider, e numa
-	// máquina configurada só para conversa isso é dinheiro sem pedido.
-	Subtarefas bool `json:"subtasks,omitempty"`
-
 	// MCPServidores lista servidores MCP (stdio ou HTTP streamable). As
 	// ferramentas publicadas entram no catálogo do turno.
 	MCPServidores []MCPServidor `json:"mcp_servers,omitempty"`
@@ -86,10 +81,6 @@ type MCPServidor struct {
 // no catálogo de todo jeito (com o erro acionável dentro), mas quem precisa
 // SABER — wiring, UI, teste — pergunta por aqui em vez de comparar string.
 func (c Config) BuscaAtiva() bool { return strings.TrimSpace(c.SearchURL) != "" }
-
-// SubtarefasAtivas diz se as tasks irmãs estão habilitadas. EXPLICITAMENTE
-// ligadas: ausência do campo é OFF, e OFF não liga por presença de MCP.
-func (c Config) SubtarefasAtivas() bool { return c.Subtarefas }
 
 // servidoresValidos devolve só os servidores MCP com nome e tipo
 // reconhecíveis. A validação FINA é do pacote mcp (ele conhece o protocolo);
