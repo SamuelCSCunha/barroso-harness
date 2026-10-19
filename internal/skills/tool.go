@@ -11,57 +11,57 @@ import (
 )
 
 const (
-	// tetoCorpo limita o corpo devolvido por skill_read. O catálogo inteiro de
-	// skills é pontual, então o guardrail opera aqui e não no runtime.
-	tetoCorpo = 48 << 10
+	// bodyCap limits the body returned by skill_read. The skills catalog as a
+	// whole is small, so the guardrail lives here and not in the runtime.
+	bodyCap = 48 << 10
 
-	// descobertaFonte é o rótulo genérico quando a skill veio de um
-	// Descobrir que não rotulou a fonte.
-	descobertaFonte = "desconhecida"
+	// unknownSource is the generic label when the skill came from a Descobrir
+	// call that did not label the source.
+	unknownSource = "unknown"
 )
 
-// Especificacoes devolve as duas tools de skills: skills_list (catálogo) e
-// skill_read (corpo inteiro de uma skill). Ambas compartilham o catálogo
-// passado; uma lista vazia devolve as specs com mensagens de "sem skills".
-func Especificacoes(hab []Skill) []tools.Spec {
+// Especificacoes returns the two skills tools: skills_list (catalog) and
+// skill_read (full body of one skill). Both share the given catalog; an empty
+// list yields specs that report "no skills".
+func Especificacoes(list []Skill) []tools.Spec {
 	return []tools.Spec{
-		specSkillsList(hab),
-		specSkillRead(hab),
+		specSkillsList(list),
+		specSkillRead(list),
 	}
 }
 
 // ── skills_list ───────────────────────────────────────────────────────────
 
-func specSkillsList(hab []Skill) tools.Spec {
+func specSkillsList(list []Skill) tools.Spec {
 	return tools.Spec{
 		Name: "skills_list",
-		Description: "Lista as skills disponíveis (nome, descrição e origem), numeradas. " +
-			"Para usar uma, chame skill_read com o nome exato — o corpo contém as instruções completas.",
+		Description: "Lists the available skills (name, description and origin), numbered. " +
+			"To use one, call skill_read with the exact name — the body contains the full instructions.",
 		Schema: map[string]any{"type": "object", "properties": map[string]any{}},
 		Exec: func(_ context.Context, _ string, _ json.RawMessage) (string, error) {
-			return catalogo(hab), nil
+			return catalog(list), nil
 		},
 	}
 }
 
-// catalogo monta as linhas numeradas do catálogo, na ordem já ordenada.
-func catalogo(hab []Skill) string {
-	if len(hab) == 0 {
-		return "nenhuma skill disponível neste projeto."
+// catalog builds the numbered catalog lines, in the already sorted order.
+func catalog(list []Skill) string {
+	if len(list) == 0 {
+		return "no skills available in this project."
 	}
 	var sb strings.Builder
-	for i, s := range hab {
-		fmt.Fprintf(&sb, "%d. %s — %s (%s)\n", i+1, s.Nome, descricaoCurta(s), fonteCurta(s))
+	for i, s := range list {
+		fmt.Fprintf(&sb, "%d. %s — %s (%s)\n", i+1, s.Nome, shortDescription(s), shortSource(s))
 	}
-	sb.WriteString("\nUse skill_read com o nome exato para carregar as instruções completas.")
+	sb.WriteString("\nUse skill_read with the exact name to load the full instructions.")
 	return strings.TrimRight(sb.String(), "\n")
 }
 
-// descricaoCurta evita descrição vazia e achata a primeira linha.
-func descricaoCurta(s Skill) string {
-	d := strings.TrimSpace(primeiraLinha(s.Descricao))
+// shortDescription avoids an empty description and flattens the first line.
+func shortDescription(s Skill) string {
+	d := strings.TrimSpace(firstLine(s.Descricao))
 	if d == "" {
-		return "(sem descrição)"
+		return "(no description)"
 	}
 	if r := []rune(d); len(r) > 120 {
 		d = string(r[:120]) + "…"
@@ -69,12 +69,12 @@ func descricaoCurta(s Skill) string {
 	return d
 }
 
-// fonteCurta é o caminho impresso no catálogo: o diretório que contém o
-// SKILL.md — um nível, legível e suficiente para achar a skill no disco.
-func fonteCurta(s Skill) string {
+// shortSource is the path printed in the catalog: the directory containing the
+// SKILL.md — one level, readable and enough to find the skill on disk.
+func shortSource(s Skill) string {
 	if s.Caminho == "" {
 		if s.Fontes == "" {
-			return descobertaFonte
+			return unknownSource
 		}
 		return s.Fontes
 	}
@@ -88,8 +88,8 @@ func fonteCurta(s Skill) string {
 	return dir
 }
 
-// primeiraLinha devolve a primeira linha não vazia do texto.
-func primeiraLinha(s string) string {
+// firstLine returns the first non-empty line of the text.
+func firstLine(s string) string {
 	for _, l := range strings.Split(s, "\n") {
 		if t := strings.TrimSpace(l); t != "" {
 			return t
@@ -100,15 +100,15 @@ func primeiraLinha(s string) string {
 
 // ── skill_read ────────────────────────────────────────────────────────────
 
-func specSkillRead(hab []Skill) tools.Spec {
+func specSkillRead(list []Skill) tools.Spec {
 	return tools.Spec{
 		Name: "skill_read",
-		Description: "Devolve o conteúdo completo (o markdown depois do frontmatter) de uma skill " +
-			"pelo nome exato que aparece em skills_list. Siga as instruções recebidas.",
+		Description: "Returns the full content (the markdown after the frontmatter) of a skill " +
+			"by the exact name shown in skills_list. Follow the instructions you receive.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"name": map[string]any{"type": "string", "description": "nome exato da skill, como em skills_list"},
+				"name": map[string]any{"type": "string", "description": "exact skill name, as in skills_list"},
 			},
 			"required": []string{"name"},
 		},
@@ -117,24 +117,24 @@ func specSkillRead(hab []Skill) tools.Spec {
 				Name string `json:"name"`
 			}
 			if err := json.Unmarshal(raw, &c); err != nil {
-				return "", fmt.Errorf("entrada inválida: %w", err)
+				return "", fmt.Errorf("invalid input: %w", err)
 			}
-			nome := strings.TrimSpace(c.Name)
-			if nome == "" {
-				return "", fmt.Errorf("skill não encontrada; use skills_list")
+			name := strings.TrimSpace(c.Name)
+			if name == "" {
+				return "", fmt.Errorf("skill not found; use skills_list")
 			}
-			for _, s := range hab {
-				if s.Nome != nome {
+			for _, s := range list {
+				if s.Nome != name {
 					continue
 				}
-				corpo := s.Corpo
-				if len(corpo) > tetoCorpo {
-					corpo = corpo[:tetoCorpo] + fmt.Sprintf(
-						"\n\n[corpo cortado em %d KiB de %d; o resto está em %s]", tetoCorpo>>10, len(s.Corpo)>>10, s.Caminho)
+				body := s.Corpo
+				if len(body) > bodyCap {
+					body = body[:bodyCap] + fmt.Sprintf(
+						"\n\n[body truncated at %d KiB of %d; the rest is in %s]", bodyCap>>10, len(s.Corpo)>>10, s.Caminho)
 				}
-				return "# " + s.Nome + "\n\n" + corpo, nil
+				return "# " + s.Nome + "\n\n" + body, nil
 			}
-			return "", fmt.Errorf("skill %s não encontrada; use skills_list", nome)
+			return "", fmt.Errorf("skill %s not found; use skills_list", name)
 		},
 	}
 }

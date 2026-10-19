@@ -13,88 +13,88 @@ import (
 	"github.com/ruanbarroso/barroso-harness/internal/dealer"
 )
 
-// endpointDDG é a versão "lite" do DuckDuckGo: HTML estático, sem JavaScript,
-// uma tabela por resultado. É o fallback do web_search quando não há SearXNG
-// configurado — a busca funciona de fábrica, e o search_url passa a ser
-// melhoria (mais fontes, sem raspagem), não pré-requisito.
+// endpointDDG is DuckDuckGo's "lite" version: static HTML, no JavaScript,
+// one table per result. It is web_search's fallback when no SearXNG is
+// configured — search works out of the box, and search_url becomes an
+// improvement (more sources, no scraping), not a prerequisite.
 //
-// Variável, não constante, só para o teste apontar para um servidor local.
+// A variable, not a constant, only so tests can point it at a local server.
 var endpointDDG = "https://lite.duckduckgo.com/lite/"
 
-// As duas marcas que importam na página lite, medidas em 2026-10-18:
+// The two markers that matter on the lite page, measured on 2026-10-18:
 //
-//	<a rel="nofollow" href="//duckduckgo.com/l/?uddg=<URL codificada>&amp;rut=…" class='result-link'>Título</a>
-//	<td class='result-snippet'>trecho com <b>destaque</b></td>
+//	<a rel="nofollow" href="//duckduckgo.com/l/?uddg=<encoded URL>&amp;rut=…" class='result-link'>Title</a>
+//	<td class='result-snippet'>snippet with <b>highlight</b></td>
 //
-// O link real vem no parâmetro uddg do redirecionador; o snippet segue o link
-// na mesma ordem. Regex basta: é uma página de formato fixo, e um parser de
-// árvore seria dependência nova para ler duas classes.
+// The real link comes in the redirector's uddg parameter; the snippet follows
+// the link in the same order. Regex is enough: the page has a fixed format,
+// and a tree parser would be a new dependency just to read two classes.
 var (
 	reLinkDDG    = regexp.MustCompile(`(?s)<a[^>]*href=["']([^"']+)["'][^>]*class=['"]result-link['"][^>]*>(.*?)</a>`)
 	reSnippetDDG = regexp.MustCompile(`(?s)<td[^>]*class=['"]result-snippet['"][^>]*>(.*?)</td>`)
 )
 
-// buscarDDG consulta o DuckDuckGo lite e devolve os resultados no mesmo
-// formato do SearXNG, para a formatação ser uma só.
-func buscarDDG(ctx context.Context, q string) ([]resultadoSearXNG, error) {
+// searchDDG queries DuckDuckGo lite and returns results in the same shape as
+// SearXNG, so formatting happens in one place.
+func searchDDG(ctx context.Context, q string) ([]searxngResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	alvo := endpointDDG + "?" + url.Values{"q": []string{q}}.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, alvo, nil)
+	target := endpointDDG + "?" + url.Values{"q": []string{q}}.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
-		return nil, fmt.Errorf("requisição: %w", err)
+		return nil, fmt.Errorf("request: %w", err)
 	}
 	req.Header.Set("User-Agent", dealer.UserAgent)
 	req.Header.Set("Accept", "text/html")
 
-	resp, err := novoHTTP(timeoutBusca).Do(req)
+	resp, err := newHTTPClient(searchTimeout).Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("busca (DuckDuckGo) falhou: %w", err)
+		return nil, fmt.Errorf("search (DuckDuckGo) failed: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		return nil, fmt.Errorf("DuckDuckGo HTTP %d: %s", resp.StatusCode, resumoHTTP(b))
+		return nil, fmt.Errorf("DuckDuckGo HTTP %d: %s", resp.StatusCode, summarizeHTTP(b))
 	}
-	b, err := io.ReadAll(io.LimitReader(resp.Body, tetoBodyBusca+1))
+	b, err := io.ReadAll(io.LimitReader(resp.Body, searchBodyCap+1))
 	if err != nil {
-		return nil, fmt.Errorf("leitura do corpo: %w", err)
+		return nil, fmt.Errorf("reading body: %w", err)
 	}
-	if len(b) > tetoBodyBusca {
-		return nil, fmt.Errorf("resposta excedeu %d bytes", tetoBodyBusca)
+	if len(b) > searchBodyCap {
+		return nil, fmt.Errorf("response exceeded %d bytes", searchBodyCap)
 	}
-	return analisarDDG(string(b)), nil
+	return parseDDG(string(b)), nil
 }
 
-// analisarDDG extrai (título, URL, snippet) da página lite. Links e snippets
-// são pareados por ordem; um resultado sem snippet não derruba o par seguinte
-// porque o snippet só é usado quando existe na mesma posição.
-func analisarDDG(pagina string) []resultadoSearXNG {
-	links := reLinkDDG.FindAllStringSubmatch(pagina, -1)
-	snippets := reSnippetDDG.FindAllStringSubmatch(pagina, -1)
-	out := make([]resultadoSearXNG, 0, len(links))
+// parseDDG extracts (title, URL, snippet) from the lite page. Links and
+// snippets are paired by order; a result without a snippet doesn't break the
+// next pair because the snippet is only used when present at the same index.
+func parseDDG(page string) []searxngResult {
+	links := reLinkDDG.FindAllStringSubmatch(page, -1)
+	snippets := reSnippetDDG.FindAllStringSubmatch(page, -1)
+	out := make([]searxngResult, 0, len(links))
 	for i, l := range links {
-		u := urlRealDDG(html.UnescapeString(l[1]))
+		u := realURLDDG(html.UnescapeString(l[1]))
 		if u == "" {
 			continue
 		}
-		r := resultadoSearXNG{
-			Titulo: textoDDG(l[2]),
-			URL:    u,
+		r := searxngResult{
+			Title: textDDG(l[2]),
+			URL:   u,
 		}
 		if i < len(snippets) {
-			r.Conteudo = textoDDG(snippets[i][1])
+			r.Content = textDDG(snippets[i][1])
 		}
 		out = append(out, r)
 	}
 	return out
 }
 
-// urlRealDDG tira a URL de destino do redirecionador (//duckduckgo.com/l/?uddg=…).
-// Link já direto (http/https) passa como está; anúncio e link interno do
-// DuckDuckGo sem uddg são descartados.
-func urlRealDDG(href string) string {
+// realURLDDG extracts the destination URL from the redirector (//duckduckgo.com/l/?uddg=…).
+// An already-direct link (http/https) passes through as is; ads and internal
+// DuckDuckGo links without uddg are dropped.
+func realURLDDG(href string) string {
 	href = strings.TrimSpace(href)
 	if strings.HasPrefix(href, "//") {
 		href = "https:" + href
@@ -103,11 +103,11 @@ func urlRealDDG(href string) string {
 	if err != nil {
 		return ""
 	}
-	if destino := u.Query().Get("uddg"); destino != "" {
-		if strings.Contains(destino, "duckduckgo.com/y.js") {
-			return "" // anúncio
+	if dest := u.Query().Get("uddg"); dest != "" {
+		if strings.Contains(dest, "duckduckgo.com/y.js") {
+			return "" // ad
 		}
-		return destino
+		return dest
 	}
 	if (u.Scheme == "http" || u.Scheme == "https") && !strings.HasSuffix(u.Host, "duckduckgo.com") {
 		return href
@@ -115,7 +115,7 @@ func urlRealDDG(href string) string {
 	return ""
 }
 
-// textoDDG tira tags e entidades e achata espaço.
-func textoDDG(s string) string {
-	return strings.Join(strings.Fields(html.UnescapeString(htmlTextoSemTags(s))), " ")
+// textDDG strips tags and entities and collapses whitespace.
+func textDDG(s string) string {
+	return strings.Join(strings.Fields(html.UnescapeString(stripHTMLTags(s))), " ")
 }

@@ -11,155 +11,155 @@ import (
 	"github.com/ruanbarroso/barroso-harness/internal/runtime"
 )
 
-// turnoComHistorico é um Turno que também expõe History — o que session/load
-// usa para reproduzir a conversa ao cliente.
-type turnoComHistorico struct {
-	*fakeTurno
+// turnWithHistory is a Turno that also exposes History — what session/load
+// uses to replay the conversation to the client.
+type turnWithHistory struct {
+	*fakeTurn
 	h []dealer.Mensagem
 }
 
-func (t *turnoComHistorico) History() []dealer.Mensagem { return t.h }
+func (t *turnWithHistory) History() []dealer.Mensagem { return t.h }
 
-var _ Turno = (*turnoComHistorico)(nil)
+var _ Turno = (*turnWithHistory)(nil)
 var _ runtime.Renderer = (*acpRenderer)(nil)
 
-// arranjarComCarga monta o agente com um Carregador, ANTES de ligar o Handle
-// (o campo é lido pelo laço; escrevê-lo depois seria corrida).
-func arranjarComCarga(t *testing.T, carregar Carregador) *arranjo {
+// setupWithLoader builds the agent with a Carregador BEFORE starting Handle
+// (the field is read by the loop; writing it afterwards would be a race).
+func setupWithLoader(t *testing.T, load Carregador) *harness {
 	t.Helper()
 	a := Novo(config.Config{})
-	a.Fabrica = fabrica(newFakeTurno())
-	a.Carregar = carregar
+	a.Fabrica = factory(newFakeTurn())
+	a.Carregar = load
 	a.RegistrarLog(func(string) {})
 	out := &pipe{}
 	pr, pw := io.Pipe()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	go func() { _ = a.Handle(ctx, pr, out) }()
-	return &arranjo{a: a, out: out, entrada: pw, cancelar: cancel}
+	return &harness{a: a, out: out, input: pw, cancel: cancel}
 }
 
-func historicoDeTeste() []dealer.Mensagem {
+func testHistory() []dealer.Mensagem {
 	return []dealer.Mensagem{
-		{Role: "user", Conteudo: "liste os arquivos"},
+		{Role: "user", Conteudo: "list the files"},
 		{Role: "tool_call", ToolID: "c1", ToolName: "list_dir", ToolArgs: `{}`},
 		{Role: "tool_result", ToolID: "c1", ToolName: "list_dir", Conteudo: "a.go\nb.go"},
-		{Role: "assistant", Conteudo: "há dois arquivos"},
+		{Role: "assistant", Conteudo: "there are two files"},
 	}
 }
 
-// Sem Carregador o agente não pode prometer o que não faz.
-func TestInitializeSemCarregadorNaoAnunciaLoad(t *testing.T) {
-	ar := arranjar(t, newFakeTurno())
-	ar.envia(t, MetInitialize, 1, nil)
-	ls := espereLinhas(t, ar.out, 1)
+// Without a Carregador the agent cannot promise what it does not do.
+func TestInitializeWithoutLoaderDoesNotAnnounceLoad(t *testing.T) {
+	h := setup(t, newFakeTurn())
+	h.send(t, MetInitialize, 1, nil)
+	ls := waitLines(t, h.out, 1)
 	caps := ls[0].Result["agentCapabilities"].(map[string]any)
 	if caps["loadSession"] != false {
-		t.Fatalf("sem Carregador loadSession deveria ser false: %v", caps)
+		t.Fatalf("without a Carregador loadSession should be false: %v", caps)
 	}
 }
 
-func TestInitializeComCarregadorAnunciaLoad(t *testing.T) {
-	ar := arranjarComCarga(t, func(config.Config, string) (Turno, error) { return newFakeTurno(), nil })
-	ar.envia(t, MetInitialize, 1, nil)
-	ls := espereLinhas(t, ar.out, 1)
+func TestInitializeWithLoaderAnnouncesLoad(t *testing.T) {
+	h := setupWithLoader(t, func(config.Config, string) (Turno, error) { return newFakeTurn(), nil })
+	h.send(t, MetInitialize, 1, nil)
+	ls := waitLines(t, h.out, 1)
 	caps := ls[0].Result["agentCapabilities"].(map[string]any)
 	if caps["loadSession"] != true {
-		t.Fatalf("com Carregador loadSession deveria ser true: %v", caps)
+		t.Fatalf("with a Carregador loadSession should be true: %v", caps)
 	}
 }
 
-func TestSessionLoadSemCarregadorRecusa(t *testing.T) {
-	ar := arranjar(t, newFakeTurno())
-	ar.envia(t, MetLoad, 1, map[string]any{"sessionId": "bh-x"})
-	ls := espereLinhas(t, ar.out, 1)
+func TestSessionLoadWithoutLoaderRefuses(t *testing.T) {
+	h := setup(t, newFakeTurn())
+	h.send(t, MetLoad, 1, map[string]any{"sessionId": "bh-x"})
+	ls := waitLines(t, h.out, 1)
 	if ls[0].Error == nil || ls[0].Error.Code != CodMetodo {
-		t.Fatalf("esperava erro de método, veio %+v", ls[0])
+		t.Fatalf("expected a method error, got %+v", ls[0])
 	}
 }
 
-// O caminho feliz: reproduz o histórico na ordem e só então responde {}.
-func TestSessionLoadReproduzHistoricoEResponde(t *testing.T) {
-	var pedido string
-	ar := arranjarComCarga(t, func(_ config.Config, id string) (Turno, error) {
-		pedido = id
-		return &turnoComHistorico{fakeTurno: newFakeTurno(), h: historicoDeTeste()}, nil
+// The happy path: replays the history in order and only then responds {}.
+func TestSessionLoadReplaysHistoryAndResponds(t *testing.T) {
+	var requested string
+	h := setupWithLoader(t, func(_ config.Config, id string) (Turno, error) {
+		requested = id
+		return &turnWithHistory{fakeTurn: newFakeTurn(), h: testHistory()}, nil
 	})
-	ar.envia(t, MetLoad, 7, map[string]any{"sessionId": "bh-antiga", "cwd": `C:\tmp`})
-	// user + tool_call + tool_call_update + agent_message + resposta
-	ls := espereLinhas(t, ar.out, 5)
+	h.send(t, MetLoad, 7, map[string]any{"sessionId": "bh-old", "cwd": `C:\tmp`})
+	// user + tool_call + tool_call_update + agent_message + response
+	ls := waitLines(t, h.out, 5)
 
-	if pedido != "bh-antiga" {
-		t.Fatalf("Carregador recebeu id %q", pedido)
+	if requested != "bh-old" {
+		t.Fatalf("Carregador received id %q", requested)
 	}
-	tipos := []string{}
+	kinds := []string{}
 	for _, l := range ls[:4] {
-		if l.Method != "session/update" || l.Params.SessionID != "bh-antiga" {
-			t.Fatalf("esperava session/update da sessão carregada, veio %+v", l)
+		if l.Method != "session/update" || l.Params.SessionID != "bh-old" {
+			t.Fatalf("expected session/update for the loaded session, got %+v", l)
 		}
-		tipos = append(tipos, l.Params.Update.SessionUpdate)
+		kinds = append(kinds, l.Params.Update.SessionUpdate)
 	}
-	quer := []string{"user_message_chunk", "tool_call", "tool_call_update", "agent_message_chunk"}
-	for i := range quer {
-		if tipos[i] != quer[i] {
-			t.Fatalf("ordem da reprodução = %v, queria %v", tipos, quer)
+	want := []string{"user_message_chunk", "tool_call", "tool_call_update", "agent_message_chunk"}
+	for i := range want {
+		if kinds[i] != want[i] {
+			t.Fatalf("replay order = %v, want %v", kinds, want)
 		}
 	}
-	if ls[0].Params.Update.Content.Blocos[0].Text != "liste os arquivos" {
-		t.Errorf("texto do usuário errado: %+v", ls[0].Params.Update.Content)
+	if ls[0].Params.Update.Content.Blocks[0].Text != "list the files" {
+		t.Errorf("wrong user text: %+v", ls[0].Params.Update.Content)
 	}
 	if ls[1].Params.Update.Title != "list_dir" {
-		t.Errorf("tool_call sem o nome da tool: %+v", ls[1].Params.Update)
+		t.Errorf("tool_call without the tool name: %+v", ls[1].Params.Update)
 	}
 	if ls[2].Params.Update.ToolCallID != ls[1].Params.Update.ToolCallID {
-		t.Errorf("update não referencia o tool_call: %q vs %q", ls[2].Params.Update.ToolCallID, ls[1].Params.Update.ToolCallID)
+		t.Errorf("update does not reference the tool_call: %q vs %q", ls[2].Params.Update.ToolCallID, ls[1].Params.Update.ToolCallID)
 	}
 	if ls[2].Params.Update.Status != "completed" {
-		t.Errorf("status do resultado = %q", ls[2].Params.Update.Status)
+		t.Errorf("result status = %q", ls[2].Params.Update.Status)
 	}
 	resp := ls[4]
 	if resp.Error != nil || string(resp.ID) != "7" {
-		t.Fatalf("resposta final inesperada: %+v", resp)
+		t.Fatalf("unexpected final response: %+v", resp)
 	}
 }
 
-// Depois do load a sessão é endereçável por session/prompt.
-func TestSessionLoadDeixaSessaoUtilizavel(t *testing.T) {
-	f := &fakeTurno{iniciou: make(chan struct{}), texto: "continuando"}
-	ar := arranjarComCarga(t, func(config.Config, string) (Turno, error) {
-		return &turnoComHistorico{fakeTurno: f}, nil
+// After load the session is addressable by session/prompt.
+func TestSessionLoadLeavesSessionUsable(t *testing.T) {
+	f := &fakeTurn{started: make(chan struct{}), text: "continuing"}
+	h := setupWithLoader(t, func(config.Config, string) (Turno, error) {
+		return &turnWithHistory{fakeTurn: f}, nil
 	})
-	ar.envia(t, MetLoad, 1, map[string]any{"sessionId": "bh-antiga"})
-	espereLinhas(t, ar.out, 1)
-	ar.envia(t, MetPrompt, 2, map[string]any{
-		"sessionId": "bh-antiga",
-		"prompt":    []map[string]string{{"type": "text", "text": "e agora?"}},
+	h.send(t, MetLoad, 1, map[string]any{"sessionId": "bh-old"})
+	waitLines(t, h.out, 1)
+	h.send(t, MetPrompt, 2, map[string]any{
+		"sessionId": "bh-old",
+		"prompt":    []map[string]string{{"type": "text", "text": "and now?"}},
 	})
-	ls := espereLinhas(t, ar.out, 3)
+	ls := waitLines(t, h.out, 3)
 	if ls[1].Params.Update.SessionUpdate != "agent_message_chunk" || ls[2].Error != nil {
-		t.Fatalf("prompt na sessão carregada falhou: %+v", ls)
+		t.Fatalf("prompt on the loaded session failed: %+v", ls)
 	}
-	if f.textoPedido() != "e agora?" {
-		t.Errorf("turno recebeu %q", f.textoPedido())
+	if f.promptText() != "and now?" {
+		t.Errorf("turn received %q", f.promptText())
 	}
 }
 
-func TestSessionLoadIdInexistente(t *testing.T) {
-	ar := arranjarComCarga(t, func(config.Config, string) (Turno, error) {
-		return nil, errors.New("sessão inexistente")
+func TestSessionLoadNonexistentId(t *testing.T) {
+	h := setupWithLoader(t, func(config.Config, string) (Turno, error) {
+		return nil, errors.New("nonexistent session")
 	})
-	ar.envia(t, MetLoad, 1, map[string]any{"sessionId": "bh-nao-ha"})
-	ls := espereLinhas(t, ar.out, 1)
+	h.send(t, MetLoad, 1, map[string]any{"sessionId": "bh-none"})
+	ls := waitLines(t, h.out, 1)
 	if ls[0].Error == nil || ls[0].Error.Code != CodParams {
-		t.Fatalf("esperava -32602, veio %+v", ls[0])
+		t.Fatalf("expected -32602, got %+v", ls[0])
 	}
 }
 
-func TestSessionLoadSemSessionId(t *testing.T) {
-	ar := arranjarComCarga(t, func(config.Config, string) (Turno, error) { return newFakeTurno(), nil })
-	ar.envia(t, MetLoad, 1, map[string]any{})
-	ls := espereLinhas(t, ar.out, 1)
+func TestSessionLoadWithoutSessionId(t *testing.T) {
+	h := setupWithLoader(t, func(config.Config, string) (Turno, error) { return newFakeTurn(), nil })
+	h.send(t, MetLoad, 1, map[string]any{})
+	ls := waitLines(t, h.out, 1)
 	if ls[0].Error == nil || ls[0].Error.Code != CodParams {
-		t.Fatalf("esperava -32602, veio %+v", ls[0])
+		t.Fatalf("expected -32602, got %+v", ls[0])
 	}
 }

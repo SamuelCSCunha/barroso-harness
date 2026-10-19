@@ -15,12 +15,12 @@ import (
 	"github.com/ruanbarroso/barroso-harness/internal/runtime"
 )
 
-// ── infra de teste ─────────────────────────────────────────────────────────
+// ── test infrastructure ────────────────────────────────────────────────────
 
-// pipe é um writer sincronizado: o teste escreve requests, o agente escreve as
-// respostas, e o teste lê o que já foi escrito. Diferente de io.Pipe — que
-// bloquearia o leitor à espera do escritor e faria o teste depender de
-// agendamento de goroutines.
+// pipe is a synchronized writer: the test writes requests, the agent writes
+// responses, and the test reads what has been written so far. Unlike io.Pipe —
+// which would block the reader waiting on the writer and make the test depend
+// on goroutine scheduling.
 type pipe struct {
 	mu  sync.Mutex
 	buf strings.Builder
@@ -38,20 +38,20 @@ func (p *pipe) String() string {
 	return p.buf.String()
 }
 
-// linha é uma mensagem JSON-RPC já parseada, o suficiente para inspecionar
-// resposta e notificação sem um tipo para cada.
-type linha struct {
+// line is an already-parsed JSON-RPC message, enough to inspect responses and
+// notifications without a type for each.
+type line struct {
 	ID     json.RawMessage `json:"id"`
 	Method string          `json:"method"`
 	Params struct {
 		SessionID string `json:"sessionId"`
 		Update    struct {
-			SessionUpdate string   `json:"sessionUpdate"`
-			ToolCallID    string   `json:"toolCallId"`
-			Title         string   `json:"title"`
-			Kind          string   `json:"kind"`
-			Status        string   `json:"status"`
-			Content       Conteudo `json:"content"`
+			SessionUpdate string  `json:"sessionUpdate"`
+			ToolCallID    string  `json:"toolCallId"`
+			Title         string  `json:"title"`
+			Kind          string  `json:"kind"`
+			Status        string  `json:"status"`
+			Content       Content `json:"content"`
 		} `json:"update"`
 	} `json:"params"`
 	Result map[string]any `json:"result"`
@@ -61,34 +61,34 @@ type linha struct {
 	} `json:"error"`
 }
 
-// Conteudo decora o campo content de um update ACP, que NÃO tem forma única:
-// agent_message_chunk usa um ÚNICO objeto de bloco ({type,text});
-// tool_call_update usa um ARRAY de blocos. Aceitar as duas é o que permite
-// inspecionar os dois tipos de update com o mesmo decodificador — e se o agente
-// um dia emitir a forma errada para um deles, o teste quebra aqui em vez de
-// passar em silêncio.
-type Conteudo struct {
-	Blocos []bloco
+// Content decodes the content field of an ACP update, which has NO single
+// shape: agent_message_chunk uses a SINGLE block object ({type,text});
+// tool_call_update uses an ARRAY of blocks. Accepting both is what lets us
+// inspect both update kinds with the same decoder — and if the agent ever
+// emits the wrong shape for one of them, the test breaks here instead of
+// passing silently.
+type Content struct {
+	Blocks []block
 }
 
-type bloco struct {
+type block struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
 }
 
-func (c *Conteudo) UnmarshalJSON(b []byte) error {
-	c.Blocos = nil
+func (c *Content) UnmarshalJSON(b []byte) error {
+	c.Blocks = nil
 	if len(trimSpaceJSON(b)) == 0 || string(trimSpaceJSON(b)) == "null" {
 		return nil
 	}
 	if trimSpaceJSON(b)[0] == '[' {
-		return json.Unmarshal(b, &c.Blocos)
+		return json.Unmarshal(b, &c.Blocks)
 	}
-	var um bloco
-	if err := json.Unmarshal(b, &um); err != nil {
+	var one block
+	if err := json.Unmarshal(b, &one); err != nil {
 		return err
 	}
-	c.Blocos = []bloco{um}
+	c.Blocks = []block{one}
 	return nil
 }
 
@@ -99,41 +99,41 @@ func trimSpaceJSON(b []byte) []byte {
 	return b
 }
 
-// leiaLinhas devolve as linhas já escritas nopipe, parseadas.
-func leiaLinhas(t *testing.T, p *pipe) []linha {
+// readLines returns the lines already written to the pipe, parsed.
+func readLines(t *testing.T, p *pipe) []line {
 	t.Helper()
-	cru := p.String()
-	if cru == "" {
+	raw := p.String()
+	if raw == "" {
 		return nil
 	}
-	partes := strings.Split(strings.TrimSuffix(cru, "\n"), "\n")
-	out := make([]linha, 0, len(partes))
-	for _, s := range partes {
+	parts := strings.Split(strings.TrimSuffix(raw, "\n"), "\n")
+	out := make([]line, 0, len(parts))
+	for _, s := range parts {
 		if strings.TrimSpace(s) == "" {
 			continue
 		}
-		var l linha
+		var l line
 		if err := json.Unmarshal([]byte(s), &l); err != nil {
-			t.Fatalf("linha não é JSON válido: %q: %v", s, err)
+			t.Fatalf("line is not valid JSON: %q: %v", s, err)
 		}
 		out = append(out, l)
 	}
 	return out
 }
 
-// espereLinhas espera até haver n linhas escritas (ou estourar o prazo). Turno
-// de session/prompt roda em goroutine, então a resposta não é síncrona com a
-// escrita do request.
-func espereLinhas(t *testing.T, p *pipe, n int) []linha {
+// waitLines waits until n lines have been written (or the deadline passes). A
+// session/prompt turn runs on a goroutine, so the response is not synchronous
+// with writing the request.
+func waitLines(t *testing.T, p *pipe, n int) []line {
 	t.Helper()
-	prazo := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for {
-		ls := leiaLinhas(t, p)
+		ls := readLines(t, p)
 		if len(ls) >= n {
 			return ls
 		}
-		if time.Now().After(prazo) {
-			t.Fatalf("tempo esgotado: esperava %d linhas, vieram %d:\n%s", n, len(ls), p.String())
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out: expected %d lines, got %d:\n%s", n, len(ls), p.String())
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
@@ -141,142 +141,142 @@ func espereLinhas(t *testing.T, p *pipe, n int) []linha {
 
 // ── fakes ──────────────────────────────────────────────────────────────────
 
-// fakeTurno é um Turno determinístico: emite eventos fixos na ordem do runtime
-// (tools, guardrail, tokens, texto) e devolve o erro configurado. Respeita o
-// ctx de propósito — se ele ignorasse o cancelamento, o teste de session/cancel
-// passaria por acidente sem nunca ter exercitado o caminho real.
-type fakeTurno struct {
-	texto     string
-	tools     []string      // tools que executam com sucesso
-	falhas    []string      // tools que falham
-	eco       string        // saída ecoada depois de cada tool
-	erro      error         // erro devolvido no fim
-	atraso    time.Duration // atraso antes de responder (cancelamento)
-	compactar bool          // emite Guardrail(true)
-	tokens    bool          // emite Tokens (não deve gerar notificação)
+// fakeTurn is a deterministic Turno: it emits fixed events in the runtime's
+// order (tools, guardrail, tokens, text) and returns the configured error. It
+// honours the ctx on purpose — if it ignored cancellation, the session/cancel
+// test would pass by accident without ever exercising the real path.
+type fakeTurn struct {
+	text    string
+	tools   []string      // tools that run successfully
+	fails   []string      // tools that fail
+	echo    string        // output echoed after each tool
+	err     error         // error returned at the end
+	delay   time.Duration // delay before responding (cancellation)
+	compact bool          // emits Guardrail(true)
+	tokens  bool          // emits Tokens (must not produce a notification)
 
-	iniciou chan struct{}
-	umaVez  sync.Once
+	started chan struct{}
+	once    sync.Once
 
-	mu       sync.Mutex
-	ctxViu   bool
-	pedido   string
-	cwdVisto string
+	mu      sync.Mutex
+	ctxSeen bool
+	prompt  string
+	cwdSeen string
 }
 
-func newFakeTurno() *fakeTurno { return &fakeTurno{iniciou: make(chan struct{})} }
+func newFakeTurn() *fakeTurn { return &fakeTurn{started: make(chan struct{})} }
 
-func (f *fakeTurno) Send(ctx context.Context, r runtime.Renderer, cwd, pedido string) error {
-	f.umaVez.Do(func() { close(f.iniciou) })
+func (f *fakeTurn) Send(ctx context.Context, r runtime.Renderer, cwd, prompt string) error {
+	f.once.Do(func() { close(f.started) })
 	f.mu.Lock()
-	f.pedido = pedido
-	f.cwdVisto = cwd
+	f.prompt = prompt
+	f.cwdSeen = cwd
 	f.mu.Unlock()
 
-	if f.atraso > 0 {
+	if f.delay > 0 {
 		select {
-		case <-time.After(f.atraso):
+		case <-time.After(f.delay):
 		case <-ctx.Done():
-			f.marcar()
+			f.mark()
 		}
 	}
-	for _, nome := range f.tools {
-		r.Tool(nome, 7*time.Millisecond, false)
-		if f.eco != "" {
-			r.Eco(f.eco)
+	for _, name := range f.tools {
+		r.Tool(name, 7*time.Millisecond, false)
+		if f.echo != "" {
+			r.Eco(f.echo)
 		}
 	}
-	for _, nome := range f.falhas {
-		r.Tool(nome, 3*time.Millisecond, true)
+	for _, name := range f.fails {
+		r.Tool(name, 3*time.Millisecond, true)
 	}
-	if f.compactar {
+	if f.compact {
 		r.Guardrail(true)
 	}
 	if f.tokens {
 		r.Tokens(10, 20, time.Second, false)
 	}
-	if f.texto != "" {
-		r.Resposta(f.texto)
+	if f.text != "" {
+		r.Resposta(f.text)
 	}
-	if f.erro != nil {
-		return f.erro
+	if f.err != nil {
+		return f.err
 	}
 	return nil
 }
 
-func (f *fakeTurno) marcar() {
+func (f *fakeTurn) mark() {
 	f.mu.Lock()
-	f.ctxViu = true
+	f.ctxSeen = true
 	f.mu.Unlock()
 }
 
-func (f *fakeTurno) viuCtx() bool {
+func (f *fakeTurn) sawCtx() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.ctxViu
+	return f.ctxSeen
 }
 
-func (f *fakeTurno) textoPedido() string {
+func (f *fakeTurn) promptText() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.pedido
+	return f.prompt
 }
 
-func (f *fakeTurno) cwdRecebido() string {
+func (f *fakeTurn) receivedCwd() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.cwdVisto
+	return f.cwdSeen
 }
 
-// turnoQueEspera bloqueia até o ctx ser cancelado e devolve o erro de
-// cancelamento — o formato que o runtime real entrega quando o cliente pede
-// session/cancel no meio de um turno.
-type turnoQueEspera struct {
-	iniciou chan struct{}
-	livrei  chan struct{}
+// blockingTurn blocks until the ctx is cancelled and returns the cancellation
+// error — the shape the real runtime delivers when the client sends
+// session/cancel mid-turn.
+type blockingTurn struct {
+	started  chan struct{}
+	released chan struct{}
 }
 
-func newTurnoQueEspera() *turnoQueEspera {
-	return &turnoQueEspera{iniciou: make(chan struct{}), livrei: make(chan struct{})}
+func newBlockingTurn() *blockingTurn {
+	return &blockingTurn{started: make(chan struct{}), released: make(chan struct{})}
 }
 
-func (t *turnoQueEspera) Send(ctx context.Context, _ runtime.Renderer, _, _ string) error {
-	close(t.iniciou)
+func (t *blockingTurn) Send(ctx context.Context, _ runtime.Renderer, _, _ string) error {
+	close(t.started)
 	<-ctx.Done()
-	close(t.livrei)
+	close(t.released)
 	return ctx.Err()
 }
 
-// fabrica devolve uma fábrica determinística: sempre o mesmo turno e sempre o
-// mesmo id, para os testes não dependerem de aleatoriedade.
-func fabrica(f Turno) func(config.Config) (Turno, string) {
+// factory returns a deterministic factory: always the same turn and always
+// the same id, so tests do not depend on randomness.
+func factory(f Turno) func(config.Config) (Turno, string) {
 	return func(config.Config) (Turno, string) { return f, "s-deadbeef" }
 }
 
-// arranjo monta agente + pipe de saída + escritor de requests, e liga o Handle
-// num goroutine com ctx do teste.
-type arranjo struct {
-	a        *Agente
-	out      *pipe
-	entrada  *io.PipeWriter
-	cancelar context.CancelFunc
+// harness wires agent + output pipe + request writer, and runs Handle on a
+// goroutine with the test's ctx.
+type harness struct {
+	a      *Agente
+	out    *pipe
+	input  *io.PipeWriter
+	cancel context.CancelFunc
 }
 
-func arranjar(t *testing.T, fake Turno) *arranjo {
+func setup(t *testing.T, fake Turno) *harness {
 	t.Helper()
 	a := Novo(config.Config{})
-	a.Fabrica = fabrica(fake)
+	a.Fabrica = factory(fake)
 	a.RegistrarLog(func(string) {})
 	out := &pipe{}
 	pr, pw := io.Pipe()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	go func() { _ = a.Handle(ctx, pr, out) }()
-	return &arranjo{a: a, out: out, entrada: pw, cancelar: cancel}
+	return &harness{a: a, out: out, input: pw, cancel: cancel}
 }
 
-// envia escreve um request no fio de entrada.
-func (ar *arranjo) envia(t *testing.T, method string, id any, params any) {
+// send writes a request to the input wire.
+func (h *harness) send(t *testing.T, method string, id any, params any) {
 	t.Helper()
 	b, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0",
@@ -287,143 +287,144 @@ func (ar *arranjo) envia(t *testing.T, method string, id any, params any) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ar.entrada.Write(append(b, '\n')); err != nil && !errors.Is(err, io.ErrClosedPipe) {
-		t.Fatalf("escrita do request %s: %v", method, err)
+	if _, err := h.input.Write(append(b, '\n')); err != nil && !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("writing request %s: %v", method, err)
 	}
 }
 
 // ── jsonrpc.go ─────────────────────────────────────────────────────────────
 
-func TestEscreverLinhaEmiteUmaLinhaJSON(t *testing.T) {
+func TestWriteLineEmitsOneJSONLine(t *testing.T) {
 	var b strings.Builder
 	if err := EscreverLinha(&b, map[string]any{"a": 1}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.HasSuffix(b.String(), "\n") {
-		t.Fatalf("linha sem terminador: %q", b.String())
+		t.Fatalf("line without terminator: %q", b.String())
 	}
 	if strings.Count(b.String(), "\n") != 1 {
-		t.Fatalf("esperava exatamente uma linha, veio %q", b.String())
+		t.Fatalf("expected exactly one line, got %q", b.String())
 	}
 }
 
-func TestEscreverLinhaFazFlush(t *testing.T) {
-	// O host pode passar um *bufio.Writer; sem flush a resposta morreria no
-	// buffer e o cliente nunca a veria.
-	var bruta strings.Builder
-	bw := bufio.NewWriter(&bruta)
+func TestWriteLineFlushes(t *testing.T) {
+	// The host may pass a *bufio.Writer; without a flush the response would die
+	// in the buffer and the client would never see it.
+	var raw strings.Builder
+	bw := bufio.NewWriter(&raw)
 	if err := EscreverLinha(bw, map[string]any{"ok": true}); err != nil {
 		t.Fatal(err)
 	}
-	if bruta.String() == "" {
-		t.Fatal("mensagem não chegou ao writer (flush ausente)")
+	if raw.String() == "" {
+		t.Fatal("message did not reach the writer (missing flush)")
 	}
 }
 
-func TestDecodificarLinhaLinhaVaziaNaoEhMensagem(t *testing.T) {
+func TestDecodeLineEmptyLineIsNotAMessage(t *testing.T) {
 	if _, ok, err := DecodificarLinha([]byte("   \n")); ok || err != nil {
-		t.Fatalf("linha vazia deveria ser silenciosa: ok=%v err=%v", ok, err)
+		t.Fatalf("empty line should be silent: ok=%v err=%v", ok, err)
 	}
 }
 
-func TestTemIDDistingueRequestDeNotificacao(t *testing.T) {
+func TestHasIDDistinguishesRequestFromNotification(t *testing.T) {
 	req := Request{ID: json.RawMessage("1")}
 	if !req.TemID() {
-		t.Fatal("id numérico deveria contar como request")
+		t.Fatal("numeric id should count as a request")
 	}
 	notif := Request{ID: json.RawMessage("null")}
 	if notif.TemID() {
-		t.Fatal("id null deveria contar como notificação")
+		t.Fatal("null id should count as a notification")
 	}
-	vazio := Request{}
-	if vazio.TemID() {
-		t.Fatal("id ausente deveria contar como notificação")
+	empty := Request{}
+	if empty.TemID() {
+		t.Fatal("missing id should count as a notification")
 	}
 }
 
-func TestDecodificarLinhaJSONInvalidoDevolveErro(t *testing.T) {
-	if _, _, err := DecodificarLinha([]byte("{nao json")); err == nil {
-		t.Fatal("JSON inválido deveria devolver erro")
+func TestDecodeLineInvalidJSONReturnsError(t *testing.T) {
+	if _, _, err := DecodificarLinha([]byte("{not json")); err == nil {
+		t.Fatal("invalid JSON should return an error")
 	}
 }
 
 // ── initialize ─────────────────────────────────────────────────────────────
 
-func TestInitializeEcoAVersaoDoCliente(t *testing.T) {
-	f := newFakeTurno()
-	ar := arranjar(t, f)
-	ar.envia(t, MetInitialize, 1, map[string]any{"protocolVersion": 5})
-	ls := espereLinhas(t, ar.out, 1)
+func TestInitializeEchoesClientVersion(t *testing.T) {
+	f := newFakeTurn()
+	h := setup(t, f)
+	h.send(t, MetInitialize, 1, map[string]any{"protocolVersion": 5})
+	ls := waitLines(t, h.out, 1)
 	r := ls[0]
 	if r.Error != nil {
-		t.Fatalf("initialize falhou: %+v", r.Error)
+		t.Fatalf("initialize failed: %+v", r.Error)
 	}
 	if v, ok := r.Result["protocolVersion"].(float64); !ok || int(v) != 5 {
-		t.Fatalf("protocolVersion deveria ecoar 5, veio %v", r.Result["protocolVersion"])
+		t.Fatalf("protocolVersion should echo 5, got %v", r.Result["protocolVersion"])
 	}
 }
 
-func TestInitializeSemParamsUsaVersaoUm(t *testing.T) {
-	// Cliente que manda initialize sem params (ou sem protocolVersion) precisa
-	// de resposta utilizável, não de erro: a versão 1 é o default do protocolo.
-	ar := arranjar(t, newFakeTurno())
-	ar.envia(t, MetInitialize, 7, map[string]any{})
-	ls := espereLinhas(t, ar.out, 1)
+func TestInitializeWithoutParamsUsesVersionOne(t *testing.T) {
+	// A client that sends initialize without params (or without
+	// protocolVersion) needs a usable response, not an error: version 1 is the
+	// protocol default.
+	h := setup(t, newFakeTurn())
+	h.send(t, MetInitialize, 7, map[string]any{})
+	ls := waitLines(t, h.out, 1)
 	if v, ok := ls[0].Result["protocolVersion"].(float64); !ok || int(v) != 1 {
-		t.Fatalf("protocolVersion default deveria ser 1, veio %v", ls[0].Result["protocolVersion"])
+		t.Fatalf("default protocolVersion should be 1, got %v", ls[0].Result["protocolVersion"])
 	}
 }
 
-func TestInitializeVersaoZeroCaiNoDefault(t *testing.T) {
-	ar := arranjar(t, newFakeTurno())
-	ar.envia(t, MetInitialize, 8, map[string]any{"protocolVersion": 0})
-	ls := espereLinhas(t, ar.out, 1)
+func TestInitializeVersionZeroFallsBackToDefault(t *testing.T) {
+	h := setup(t, newFakeTurn())
+	h.send(t, MetInitialize, 8, map[string]any{"protocolVersion": 0})
+	ls := waitLines(t, h.out, 1)
 	if v, _ := ls[0].Result["protocolVersion"].(float64); int(v) != 1 {
-		t.Fatalf("protocolVersion 0 deveria cair no default 1, veio %v", ls[0].Result["protocolVersion"])
+		t.Fatalf("protocolVersion 0 should fall back to default 1, got %v", ls[0].Result["protocolVersion"])
 	}
 }
 
-func TestInitializeInformaCapacidadesEMetodosDeAuth(t *testing.T) {
-	ar := arranjar(t, newFakeTurno())
-	ar.envia(t, MetInitialize, "abc", map[string]any{"protocolVersion": 1})
-	ls := espereLinhas(t, ar.out, 1)
+func TestInitializeReportsCapabilitiesAndAuthMethods(t *testing.T) {
+	h := setup(t, newFakeTurn())
+	h.send(t, MetInitialize, "abc", map[string]any{"protocolVersion": 1})
+	ls := waitLines(t, h.out, 1)
 	res := ls[0].Result
 	if _, ok := res["agentCapabilities"]; !ok {
-		t.Fatalf("resposta sem agentCapabilities: %v", res)
+		t.Fatalf("response without agentCapabilities: %v", res)
 	}
 	if _, ok := res["authMethods"]; !ok {
-		t.Fatalf("resposta sem authMethods: %v", res)
+		t.Fatalf("response without authMethods: %v", res)
 	}
 }
 
-func TestInitializePreservaIdNumericoEString(t *testing.T) {
-	ar := arranjar(t, newFakeTurno())
-	ar.envia(t, MetInitialize, 42, nil)
-	ar.envia(t, MetInitialize, "id-texto", nil)
-	ls := espereLinhas(t, ar.out, 2)
+func TestInitializePreservesNumericAndStringID(t *testing.T) {
+	h := setup(t, newFakeTurn())
+	h.send(t, MetInitialize, 42, nil)
+	h.send(t, MetInitialize, "id-text", nil)
+	ls := waitLines(t, h.out, 2)
 	if string(ls[0].ID) != "42" {
-		t.Fatalf("id numérico deveria voltar como 42, veio %s", ls[0].ID)
+		t.Fatalf("numeric id should come back as 42, got %s", ls[0].ID)
 	}
-	if string(ls[1].ID) != `"id-texto"` {
-		t.Fatalf("id string deveria voltar como \"id-texto\", veio %s", ls[1].ID)
+	if string(ls[1].ID) != `"id-text"` {
+		t.Fatalf("string id should come back as \"id-text\", got %s", ls[1].ID)
 	}
 }
 
 // ── session/new ────────────────────────────────────────────────────────────
 
-func TestSessionNewDevolveSessionId(t *testing.T) {
-	ar := arranjar(t, newFakeTurno())
-	ar.envia(t, MetInitialize, 1, nil)
-	ar.envia(t, MetSessionNovo, 2, map[string]any{"cwd": `C:\tmp\projeto`})
-	ls := espereLinhas(t, ar.out, 2)
+func TestSessionNewReturnsSessionId(t *testing.T) {
+	h := setup(t, newFakeTurn())
+	h.send(t, MetInitialize, 1, nil)
+	h.send(t, MetSessionNovo, 2, map[string]any{"cwd": `C:\tmp\project`})
+	ls := waitLines(t, h.out, 2)
 	id, _ := ls[1].Result["sessionId"].(string)
 	if id != "s-deadbeef" {
-		t.Fatalf("sessionId inesperado: %q", id)
+		t.Fatalf("unexpected sessionId: %q", id)
 	}
 }
 
-func TestSessionNewCriaIdsDistintosPorSessao(t *testing.T) {
-	f := newFakeTurno()
+func TestSessionNewCreatesDistinctIdsPerSession(t *testing.T) {
+	f := newFakeTurn()
 	n := 0
 	var mu sync.Mutex
 	a := Novo(config.Config{})
@@ -433,11 +434,11 @@ func TestSessionNewCriaIdsDistintosPorSessao(t *testing.T) {
 		n++
 		switch n {
 		case 1:
-			return f, "s-primeira"
+			return f, "s-first"
 		case 2:
-			return f, "s-segunda"
+			return f, "s-second"
 		default:
-			return f, "s-outra"
+			return f, "s-other"
 		}
 	}
 	a.RegistrarLog(func(string) {})
@@ -451,560 +452,561 @@ func TestSessionNewCriaIdsDistintosPorSessao(t *testing.T) {
 		_, _ = pw.Write(append(b, '\n'))
 		_ = i
 	}
-	ls := espereLinhas(t, out, 2)
+	ls := waitLines(t, out, 2)
 	if ls[0].Result["sessionId"] == ls[1].Result["sessionId"] {
-		t.Fatalf("duas sessões dividiram o mesmo id: %v", ls[0].Result["sessionId"])
+		t.Fatalf("two sessions shared the same id: %v", ls[0].Result["sessionId"])
 	}
 }
 
-func TestSessionNewCwdVazioUsaDiretorioDoProcesso(t *testing.T) {
-	// cwd vazio não invalida a sessão: o harness precisa de um diretório para
-	// as tools, e o do processo é a melhor suposição disponível.
-	f := &fakeTurno{iniciou: make(chan struct{}), texto: "ok"}
-	ar := arranjar(t, f)
-	ar.envia(t, MetSessionNovo, 3, map[string]any{})
-	ls := espereLinhas(t, ar.out, 1)
+func TestSessionNewEmptyCwdUsesProcessDirectory(t *testing.T) {
+	// An empty cwd does not invalidate the session: the harness needs a
+	// directory for the tools, and the process one is the best guess available.
+	f := &fakeTurn{started: make(chan struct{}), text: "ok"}
+	h := setup(t, f)
+	h.send(t, MetSessionNovo, 3, map[string]any{})
+	ls := waitLines(t, h.out, 1)
 	id, _ := ls[0].Result["sessionId"].(string)
 	if id == "" {
-		t.Fatal("session/new sem cwd deveria criar sessão normalmente")
+		t.Fatal("session/new without cwd should create a session normally")
 	}
-	ar.envia(t, MetPrompt, 4, map[string]any{"sessionId": id, "prompt": []map[string]string{{"type": "text", "text": "oi"}}})
-	espereLinhas(t, ar.out, 2)
-	if f.cwdRecebido() == "" {
-		t.Fatal("cwd ficou vazio no turno")
+	h.send(t, MetPrompt, 4, map[string]any{"sessionId": id, "prompt": []map[string]string{{"type": "text", "text": "hi"}}})
+	waitLines(t, h.out, 2)
+	if f.receivedCwd() == "" {
+		t.Fatal("cwd was empty in the turn")
 	}
 }
 
 // ── session/prompt ─────────────────────────────────────────────────────────
 
-func TestPromptHappyPathEmiteChunkEDepoisRespostaVazia(t *testing.T) {
-	f := &fakeTurno{iniciou: make(chan struct{}), texto: "turno ok"}
-	ar := arranjar(t, f)
+func TestPromptHappyPathEmitsChunkThenEmptyResponse(t *testing.T) {
+	f := &fakeTurn{started: make(chan struct{}), text: "turn ok"}
+	h := setup(t, f)
 
-	ar.envia(t, MetInitialize, 1, map[string]any{"protocolVersion": 1})
-	ar.envia(t, MetSessionNovo, 2, map[string]any{"cwd": `C:\tmp`})
-	ls := espereLinhas(t, ar.out, 2)
+	h.send(t, MetInitialize, 1, map[string]any{"protocolVersion": 1})
+	h.send(t, MetSessionNovo, 2, map[string]any{"cwd": `C:\tmp`})
+	ls := waitLines(t, h.out, 2)
 	id := ls[1].Result["sessionId"].(string)
 
-	ar.envia(t, MetPrompt, 3, map[string]any{
+	h.send(t, MetPrompt, 3, map[string]any{
 		"sessionId": id,
 		"prompt": []map[string]string{
-			{"type": "text", "text": "bom dia"},
-			{"type": "text", "text": " como vai"},
+			{"type": "text", "text": "good morning"},
+			{"type": "text", "text": " how are you"},
 		},
 	})
-	ls = espereLinhas(t, ar.out, 4)
+	ls = waitLines(t, h.out, 4)
 
-	// 1 notificação agent_message_chunk, depois a resposta {} — nessa ordem.
+	// 1 agent_message_chunk notification, then the {} response — in that order.
 	not := ls[2]
 	if not.Method != "session/update" {
-		t.Fatalf("esperava notificação session/update, veio %q", not.Method)
+		t.Fatalf("expected a session/update notification, got %q", not.Method)
 	}
 	if not.Params.Update.SessionUpdate != "agent_message_chunk" {
-		t.Fatalf("sessionUpdate inesperado: %q", not.Params.Update.SessionUpdate)
+		t.Fatalf("unexpected sessionUpdate: %q", not.Params.Update.SessionUpdate)
 	}
-	if n := len(not.Params.Update.Content.Blocos); n != 1 || not.Params.Update.Content.Blocos[0].Text != "turno ok" {
-		t.Fatalf("conteúdo do chunk inesperado: %+v", not.Params.Update.Content)
+	if n := len(not.Params.Update.Content.Blocks); n != 1 || not.Params.Update.Content.Blocks[0].Text != "turn ok" {
+		t.Fatalf("unexpected chunk content: %+v", not.Params.Update.Content)
 	}
-	if not.Params.Update.Content.Blocos[0].Type != "text" {
-		t.Fatalf("bloco do chunk deveria ser type=text: %q", not.Params.Update.Content.Blocos[0].Type)
+	if not.Params.Update.Content.Blocks[0].Type != "text" {
+		t.Fatalf("chunk block should be type=text: %q", not.Params.Update.Content.Blocks[0].Type)
 	}
 	if not.Params.SessionID != id {
-		t.Fatalf("notificação deveria citar a sessão %q, veio %q", id, not.Params.SessionID)
+		t.Fatalf("notification should reference session %q, got %q", id, not.Params.SessionID)
 	}
 
 	resp := ls[3]
 	if resp.Error != nil {
-		t.Fatalf("prompt deveria ter sucesso: %+v", resp.Error)
+		t.Fatalf("prompt should succeed: %+v", resp.Error)
 	}
 	if len(resp.Result) != 0 {
-		t.Fatalf("resultado de prompt deveria ser {} vazio, veio %v", resp.Result)
+		t.Fatalf("prompt result should be an empty {}, got %v", resp.Result)
 	}
 	if string(resp.ID) != "3" {
-		t.Fatalf("resposta deveria citar o id 3, veio %s", resp.ID)
+		t.Fatalf("response should reference id 3, got %s", resp.ID)
 	}
 
-	// O pedido enviado ao runtime é a concatenação dos blocos de texto.
+	// The request sent to the runtime is the concatenation of the text blocks.
 	select {
-	case <-f.iniciou:
+	case <-f.started:
 	case <-time.After(time.Second):
-		t.Fatal("turno nunca rodou")
+		t.Fatal("turn never ran")
 	}
 }
 
-func TestPromptConcatenaBlocosDeTexto(t *testing.T) {
-	f := &fakeTurno{iniciou: make(chan struct{}), texto: "ok"}
-	ar := arranjar(t, f)
-	ar.envia(t, MetSessionNovo, 2, map[string]any{"cwd": "."})
-	ls := espereLinhas(t, ar.out, 1)
-	ar.envia(t, MetPrompt, 3, map[string]any{
+func TestPromptConcatenatesTextBlocks(t *testing.T) {
+	f := &fakeTurn{started: make(chan struct{}), text: "ok"}
+	h := setup(t, f)
+	h.send(t, MetSessionNovo, 2, map[string]any{"cwd": "."})
+	ls := waitLines(t, h.out, 1)
+	h.send(t, MetPrompt, 3, map[string]any{
 		"sessionId": ls[0].Result["sessionId"],
 		"prompt": []map[string]string{
-			{"type": "text", "text": "um"},
-			{"type": "text", "text": " dois"},
+			{"type": "text", "text": "one"},
+			{"type": "text", "text": " two"},
 		},
 	})
-	espereLinhas(t, ar.out, 3)
-	if got := f.textoPedido(); got != "um dois" {
-		t.Fatalf("pedido concatenado deveria ser \"um dois\", veio %q", got)
+	waitLines(t, h.out, 3)
+	if got := f.promptText(); got != "one two" {
+		t.Fatalf("concatenated prompt should be \"one two\", got %q", got)
 	}
 }
 
-func TestPromptIgnoraBlocosQueNaoSaoTexto(t *testing.T) {
-	// Imagem/áudio/recurso não entram no pedido: o harness é textual neste
-	// recorte. Ignorar é melhor que inventar transcrição.
-	f := &fakeTurno{iniciou: make(chan struct{}), texto: "ok"}
-	ar := arranjar(t, f)
-	ar.envia(t, MetSessionNovo, 2, map[string]any{"cwd": "."})
-	ls := espereLinhas(t, ar.out, 1)
-	ar.envia(t, MetPrompt, 3, map[string]any{
+func TestPromptIgnoresNonTextBlocks(t *testing.T) {
+	// Image/audio/resource do not go into the request: the harness is
+	// text-only in this scope. Ignoring is better than inventing a transcript.
+	f := &fakeTurn{started: make(chan struct{}), text: "ok"}
+	h := setup(t, f)
+	h.send(t, MetSessionNovo, 2, map[string]any{"cwd": "."})
+	ls := waitLines(t, h.out, 1)
+	h.send(t, MetPrompt, 3, map[string]any{
 		"sessionId": ls[0].Result["sessionId"],
 		"prompt": []map[string]string{
-			{"type": "image", "text": "ignorado"},
-			{"type": "text", "text": "vale"},
+			{"type": "image", "text": "ignored"},
+			{"type": "text", "text": "kept"},
 		},
 	})
-	espereLinhas(t, ar.out, 3)
-	if got := f.textoPedido(); got != "vale" {
-		t.Fatalf("só o bloco de texto deveria entrar, veio %q", got)
+	waitLines(t, h.out, 3)
+	if got := f.promptText(); got != "kept" {
+		t.Fatalf("only the text block should go in, got %q", got)
 	}
 }
 
-func TestPromptSessaoDesconhecidaDevolveErroDoAgente(t *testing.T) {
-	ar := arranjar(t, newFakeTurno())
-	ar.envia(t, MetPrompt, 9, map[string]any{
-		"sessionId": "s-naoexiste",
-		"prompt":    []map[string]string{{"type": "text", "text": "oi"}},
+func TestPromptUnknownSessionReturnsAgentError(t *testing.T) {
+	h := setup(t, newFakeTurn())
+	h.send(t, MetPrompt, 9, map[string]any{
+		"sessionId": "s-missing",
+		"prompt":    []map[string]string{{"type": "text", "text": "hi"}},
 	})
-	ls := espereLinhas(t, ar.out, 1)
+	ls := waitLines(t, h.out, 1)
 	if ls[0].Error == nil || ls[0].Error.Code != CodErroAgente {
-		t.Fatalf("sessão desconhecida deveria dar -32000, veio %+v", ls[0])
+		t.Fatalf("unknown session should give -32000, got %+v", ls[0])
 	}
-	if !strings.Contains(ls[0].Error.Message, "s-naoexiste") {
-		t.Fatalf("mensagem deveria citar a sessão: %q", ls[0].Error.Message)
+	if !strings.Contains(ls[0].Error.Message, "s-missing") {
+		t.Fatalf("message should reference the session: %q", ls[0].Error.Message)
 	}
 }
 
-func TestPromptArrayVazioEhParamsInvalidos(t *testing.T) {
-	f := newFakeTurno()
-	ar := arranjar(t, f)
-	ar.envia(t, MetSessionNovo, 2, map[string]any{"cwd": "."})
-	ls := espereLinhas(t, ar.out, 1)
+func TestPromptEmptyArrayIsInvalidParams(t *testing.T) {
+	f := newFakeTurn()
+	h := setup(t, f)
+	h.send(t, MetSessionNovo, 2, map[string]any{"cwd": "."})
+	ls := waitLines(t, h.out, 1)
 	id := ls[0].Result["sessionId"].(string)
 
-	ar.envia(t, MetPrompt, 3, map[string]any{"sessionId": id, "prompt": []map[string]string{}})
-	ls = espereLinhas(t, ar.out, 2)
+	h.send(t, MetPrompt, 3, map[string]any{"sessionId": id, "prompt": []map[string]string{}})
+	ls = waitLines(t, h.out, 2)
 	if ls[1].Error == nil || ls[1].Error.Code != CodParams {
-		t.Fatalf("prompt vazio deveria dar -32602, veio %+v", ls[1])
+		t.Fatalf("empty prompt should give -32602, got %+v", ls[1])
 	}
 	select {
-	case <-f.iniciou:
-		t.Fatal("turno não deveria nem começar com prompt vazio")
+	case <-f.started:
+		t.Fatal("turn should not even start with an empty prompt")
 	default:
 	}
 }
 
-func TestPromptSemNenhumBlocoDeTextoEhParamsInvalidos(t *testing.T) {
-	ar := arranjar(t, newFakeTurno())
-	ar.envia(t, MetSessionNovo, 2, map[string]any{"cwd": "."})
-	ls := espereLinhas(t, ar.out, 1)
+func TestPromptWithoutAnyTextBlockIsInvalidParams(t *testing.T) {
+	h := setup(t, newFakeTurn())
+	h.send(t, MetSessionNovo, 2, map[string]any{"cwd": "."})
+	ls := waitLines(t, h.out, 1)
 	id := ls[0].Result["sessionId"].(string)
 
-	ar.envia(t, MetPrompt, 3, map[string]any{
+	h.send(t, MetPrompt, 3, map[string]any{
 		"sessionId": id,
 		"prompt":    []map[string]string{{"type": "image", "text": "x"}},
 	})
-	ls = espereLinhas(t, ar.out, 2)
+	ls = waitLines(t, h.out, 2)
 	if ls[1].Error == nil || ls[1].Error.Code != CodParams {
-		t.Fatalf("prompt sem bloco de texto deveria dar -32602, veio %+v", ls[1])
+		t.Fatalf("prompt without a text block should give -32602, got %+v", ls[1])
 	}
 }
 
-func TestPromptSemSessionIdEhParamsInvalidos(t *testing.T) {
-	ar := arranjar(t, newFakeTurno())
-	ar.envia(t, MetPrompt, 3, map[string]any{
-		"prompt": []map[string]string{{"type": "text", "text": "oi"}},
+func TestPromptWithoutSessionIdIsInvalidParams(t *testing.T) {
+	h := setup(t, newFakeTurn())
+	h.send(t, MetPrompt, 3, map[string]any{
+		"prompt": []map[string]string{{"type": "text", "text": "hi"}},
 	})
-	ls := espereLinhas(t, ar.out, 1)
+	ls := waitLines(t, h.out, 1)
 	if ls[0].Error == nil || ls[0].Error.Code != CodParams {
-		t.Fatalf("falta de sessionId deveria dar -32602, veio %+v", ls[0])
+		t.Fatalf("missing sessionId should give -32602, got %+v", ls[0])
 	}
 }
 
-func TestPromptParamsMalformadosEhParamsInvalidos(t *testing.T) {
-	ar := arranjar(t, newFakeTurno())
-	// params que não é objeto: o unmarshal para o struct tipado falha.
+func TestPromptMalformedParamsIsInvalidParams(t *testing.T) {
+	h := setup(t, newFakeTurn())
+	// params that is not an object: unmarshalling into the typed struct fails.
 	b := []byte(`{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":[1,2,3]}` + "\n")
-	if _, err := ar.entrada.Write(b); err != nil {
+	if _, err := h.input.Write(b); err != nil {
 		t.Fatal(err)
 	}
-	ls := espereLinhas(t, ar.out, 1)
+	ls := waitLines(t, h.out, 1)
 	if ls[0].Error == nil || ls[0].Error.Code != CodParams {
-		t.Fatalf("params malformado deveria dar -32602, veio %+v", ls[0])
+		t.Fatalf("malformed params should give -32602, got %+v", ls[0])
 	}
 }
 
-func TestPromptComTurnoJaEmAndamentoDevolve32001(t *testing.T) {
-	// Um turno em voo por sessão: o protocolo ACP não enfileira. O segundo
-	// prompt leva erro explícito em vez de esperar indefinidamente.
-	f := newTurnoQueEspera()
-	ar := arranjar(t, f)
-	ar.envia(t, MetSessionNovo, 2, map[string]any{"cwd": "."})
-	ls := espereLinhas(t, ar.out, 1)
+func TestPromptWithTurnAlreadyRunningReturns32001(t *testing.T) {
+	// One in-flight turn per session: the ACP protocol does not queue. The
+	// second prompt gets an explicit error instead of waiting indefinitely.
+	f := newBlockingTurn()
+	h := setup(t, f)
+	h.send(t, MetSessionNovo, 2, map[string]any{"cwd": "."})
+	ls := waitLines(t, h.out, 1)
 	id := ls[0].Result["sessionId"].(string)
 
-	ar.envia(t, MetPrompt, 3, map[string]any{
+	h.send(t, MetPrompt, 3, map[string]any{
 		"sessionId": id,
-		"prompt":    []map[string]string{{"type": "text", "text": "primeiro"}},
+		"prompt":    []map[string]string{{"type": "text", "text": "first"}},
 	})
 	select {
-	case <-f.iniciou:
+	case <-f.started:
 	case <-time.After(2 * time.Second):
-		t.Fatal("primeiro turno não começou")
+		t.Fatal("first turn did not start")
 	}
 
-	ar.envia(t, MetPrompt, 4, map[string]any{
+	h.send(t, MetPrompt, 4, map[string]any{
 		"sessionId": id,
-		"prompt":    []map[string]string{{"type": "text", "text": "segundo"}},
+		"prompt":    []map[string]string{{"type": "text", "text": "second"}},
 	})
-	ls = espereLinhas(t, ar.out, 2)
+	ls = waitLines(t, h.out, 2)
 	if ls[1].Error == nil || ls[1].Error.Code != CodTurnoRodando {
-		t.Fatalf("prompt concorrente deveria dar -32001, veio %+v", ls[1])
+		t.Fatalf("concurrent prompt should give -32001, got %+v", ls[1])
 	}
 	if string(ls[1].ID) != "4" {
-		t.Fatalf("o erro deveria citar o id do prompt rejeitado, veio %s", ls[1].ID)
+		t.Fatalf("the error should reference the rejected prompt's id, got %s", ls[1].ID)
 	}
 }
 
-func TestPromptComErroDoTurnoDevolve32000(t *testing.T) {
-	f := &fakeTurno{iniciou: make(chan struct{}), erro: errors.New("provider 502")}
-	ar := arranjar(t, f)
-	ar.envia(t, MetSessionNovo, 2, map[string]any{"cwd": "."})
-	ls := espereLinhas(t, ar.out, 1)
-	ar.envia(t, MetPrompt, 3, map[string]any{
+func TestPromptWithTurnErrorReturns32000(t *testing.T) {
+	f := &fakeTurn{started: make(chan struct{}), err: errors.New("provider 502")}
+	h := setup(t, f)
+	h.send(t, MetSessionNovo, 2, map[string]any{"cwd": "."})
+	ls := waitLines(t, h.out, 1)
+	h.send(t, MetPrompt, 3, map[string]any{
 		"sessionId": ls[0].Result["sessionId"],
-		"prompt":    []map[string]string{{"type": "text", "text": "oi"}},
+		"prompt":    []map[string]string{{"type": "text", "text": "hi"}},
 	})
-	ls = espereLinhas(t, ar.out, 2)
+	ls = waitLines(t, h.out, 2)
 	if ls[1].Error == nil || ls[1].Error.Code != CodErroAgente {
-		t.Fatalf("erro do turno deveria dar -32000, veio %+v", ls[1])
+		t.Fatalf("turn error should give -32000, got %+v", ls[1])
 	}
 	if !strings.Contains(ls[1].Error.Message, "502") {
-		t.Fatalf("mensagem de erro deveria carregar a falha do turno: %q", ls[1].Error.Message)
+		t.Fatalf("error message should carry the turn failure: %q", ls[1].Error.Message)
 	}
 }
 
 // ── session/cancel ─────────────────────────────────────────────────────────
 
-func TestCancelInterrompeTurnoEmVoo(t *testing.T) {
-	f := newTurnoQueEspera()
-	ar := arranjar(t, f)
-	ar.envia(t, MetSessionNovo, 2, map[string]any{"cwd": "."})
-	ls := espereLinhas(t, ar.out, 1)
+func TestCancelInterruptsInFlightTurn(t *testing.T) {
+	f := newBlockingTurn()
+	h := setup(t, f)
+	h.send(t, MetSessionNovo, 2, map[string]any{"cwd": "."})
+	ls := waitLines(t, h.out, 1)
 	id := ls[0].Result["sessionId"].(string)
 
-	ar.envia(t, MetPrompt, 3, map[string]any{
+	h.send(t, MetPrompt, 3, map[string]any{
 		"sessionId": id,
-		"prompt":    []map[string]string{{"type": "text", "text": "demora"}},
+		"prompt":    []map[string]string{{"type": "text", "text": "slow"}},
 	})
 	select {
-	case <-f.iniciou:
+	case <-f.started:
 	case <-time.After(2 * time.Second):
-		t.Fatal("turno não começou")
+		t.Fatal("turn did not start")
 	}
 
-	ar.envia(t, MetCancel, 4, map[string]any{"sessionId": id})
+	h.send(t, MetCancel, 4, map[string]any{"sessionId": id})
 
-	// O prompt em voo devolve erro de cancelamento, e a resposta ao cancel
-	// também chega — as duas linhas podem vir em qualquer ordem entre si.
-	ls = espereLinhas(t, ar.out, 3)
+	// The in-flight prompt returns a cancellation error, and the cancel
+	// response also arrives — the two lines may come in either order.
+	ls = waitLines(t, h.out, 3)
 
-	var respPrompt, respCancel *linha
+	var promptResp, cancelResp *line
 	for i := range ls {
 		if string(ls[i].ID) == "3" {
-			respPrompt = &ls[i]
+			promptResp = &ls[i]
 		}
 		if string(ls[i].ID) == "4" {
-			respCancel = &ls[i]
+			cancelResp = &ls[i]
 		}
 	}
-	if respPrompt == nil || respPrompt.Error == nil || respPrompt.Error.Code != CodErroAgente {
-		t.Fatalf("prompt cancelado deveria dar erro -32000, veio %+v", respPrompt)
+	if promptResp == nil || promptResp.Error == nil || promptResp.Error.Code != CodErroAgente {
+		t.Fatalf("cancelled prompt should give error -32000, got %+v", promptResp)
 	}
-	if !strings.Contains(strings.ToLower(respPrompt.Error.Message), "cancel") {
-		t.Fatalf("mensagem deveria mencionar cancelamento: %q", respPrompt.Error.Message)
+	if !strings.Contains(strings.ToLower(promptResp.Error.Message), "cancel") {
+		t.Fatalf("message should mention cancellation: %q", promptResp.Error.Message)
 	}
-	if respCancel == nil || respCancel.Error != nil {
-		t.Fatalf("session/cancel deveria responder {} com sucesso, veio %+v", respCancel)
+	if cancelResp == nil || cancelResp.Error != nil {
+		t.Fatalf("session/cancel should respond {} successfully, got %+v", cancelResp)
 	}
 
 	select {
-	case <-f.livrei:
+	case <-f.released:
 	case <-time.After(2 * time.Second):
-		t.Fatal("o turno deveria ter observado o cancelamento")
+		t.Fatal("the turn should have observed the cancellation")
 	}
 }
 
-func TestCancelSemTurnoEmVooRespondeSucesso(t *testing.T) {
-	ar := arranjar(t, newFakeTurno())
-	ar.envia(t, MetSessionNovo, 2, map[string]any{"cwd": "."})
-	ls := espereLinhas(t, ar.out, 1)
-	ar.envia(t, MetCancel, 3, map[string]any{"sessionId": ls[0].Result["sessionId"]})
-	ls = espereLinhas(t, ar.out, 2)
+func TestCancelWithoutInFlightTurnSucceeds(t *testing.T) {
+	h := setup(t, newFakeTurn())
+	h.send(t, MetSessionNovo, 2, map[string]any{"cwd": "."})
+	ls := waitLines(t, h.out, 1)
+	h.send(t, MetCancel, 3, map[string]any{"sessionId": ls[0].Result["sessionId"]})
+	ls = waitLines(t, h.out, 2)
 	if ls[1].Error != nil {
-		t.Fatalf("cancel sem turno deveria ser um no-op com sucesso, veio %+v", ls[1].Error)
+		t.Fatalf("cancel without a turn should be a successful no-op, got %+v", ls[1].Error)
 	}
 }
 
-func TestCancelSessaoDesconhecidaDevolveErro(t *testing.T) {
-	ar := arranjar(t, newFakeTurno())
-	ar.envia(t, MetCancel, 3, map[string]any{"sessionId": "s-fantasma"})
-	ls := espereLinhas(t, ar.out, 1)
+func TestCancelUnknownSessionReturnsError(t *testing.T) {
+	h := setup(t, newFakeTurn())
+	h.send(t, MetCancel, 3, map[string]any{"sessionId": "s-ghost"})
+	ls := waitLines(t, h.out, 1)
 	if ls[0].Error == nil || ls[0].Error.Code != CodErroAgente {
-		t.Fatalf("cancel em sessão inexistente deveria dar -32000, veio %+v", ls[0])
+		t.Fatalf("cancel on a nonexistent session should give -32000, got %+v", ls[0])
 	}
 }
 
-func TestCancelSemSessionIdEhParamsInvalidos(t *testing.T) {
-	ar := arranjar(t, newFakeTurno())
-	ar.envia(t, MetCancel, 3, map[string]any{})
-	ls := espereLinhas(t, ar.out, 1)
+func TestCancelWithoutSessionIdIsInvalidParams(t *testing.T) {
+	h := setup(t, newFakeTurn())
+	h.send(t, MetCancel, 3, map[string]any{})
+	ls := waitLines(t, h.out, 1)
 	if ls[0].Error == nil || ls[0].Error.Code != CodParams {
-		t.Fatalf("cancel sem sessionId deveria dar -32602, veio %+v", ls[0])
+		t.Fatalf("cancel without sessionId should give -32602, got %+v", ls[0])
 	}
 }
 
-func TestCancelDepoisDoTurnoPermiteNovoPrompt(t *testing.T) {
-	// O cancelamento limpa o estado da sessão: sem isso, todo prompt seguinte
-	// na mesma sessão levaria -32001 para sempre.
-	f := newTurnoQueEspera()
-	ar := arranjar(t, f)
-	ar.envia(t, MetSessionNovo, 2, map[string]any{"cwd": "."})
-	ls := espereLinhas(t, ar.out, 1)
+func TestCancelAfterTurnAllowsNewPrompt(t *testing.T) {
+	// Cancellation clears the session state: without that, every following
+	// prompt in the same session would get -32001 forever.
+	f := newBlockingTurn()
+	h := setup(t, f)
+	h.send(t, MetSessionNovo, 2, map[string]any{"cwd": "."})
+	ls := waitLines(t, h.out, 1)
 	id := ls[0].Result["sessionId"].(string)
 
-	ar.envia(t, MetPrompt, 3, map[string]any{
+	h.send(t, MetPrompt, 3, map[string]any{
 		"sessionId": id,
-		"prompt":    []map[string]string{{"type": "text", "text": "trava"}},
+		"prompt":    []map[string]string{{"type": "text", "text": "hang"}},
 	})
-	<-f.iniciou
-	ar.envia(t, MetCancel, 4, map[string]any{"sessionId": id})
-	<-f.livrei
+	<-f.started
+	h.send(t, MetCancel, 4, map[string]any{"sessionId": id})
+	<-f.released
 
-	// troca o turno por um que responde normalmente
-	ar.a.mu.Lock()
-	ar.a.sessoes[id].turno = &fakeTurno{iniciou: make(chan struct{}), texto: "depois"}
-	ar.a.mu.Unlock()
+	// swap the turn for one that responds normally
+	h.a.mu.Lock()
+	h.a.sessions[id].turn = &fakeTurn{started: make(chan struct{}), text: "after"}
+	h.a.mu.Unlock()
 
-	ar.envia(t, MetPrompt, 5, map[string]any{
+	h.send(t, MetPrompt, 5, map[string]any{
 		"sessionId": id,
-		"prompt":    []map[string]string{{"type": "text", "text": "de novo"}},
+		"prompt":    []map[string]string{{"type": "text", "text": "again"}},
 	})
-	ls = espereLinhas(t, ar.out, 5)
-	var resposta *linha
+	ls = waitLines(t, h.out, 5)
+	var resp *line
 	for i := range ls {
 		if string(ls[i].ID) == "5" {
-			resposta = &ls[i]
+			resp = &ls[i]
 		}
 	}
-	if resposta == nil || resposta.Error != nil {
-		t.Fatalf("prompt após cancelamento deveria funcionar, veio %+v", resposta)
+	if resp == nil || resp.Error != nil {
+		t.Fatalf("prompt after cancellation should work, got %+v", resp)
 	}
 }
 
-// ── erros de protocolo ─────────────────────────────────────────────────────
+// ── protocol errors ────────────────────────────────────────────────────────
 
-func TestMetodoDesconhecidoDevolve32601(t *testing.T) {
-	ar := arranjar(t, newFakeTurno())
-	ar.envia(t, "session/list", 5, nil)
-	ls := espereLinhas(t, ar.out, 1)
+func TestUnknownMethodReturns32601(t *testing.T) {
+	h := setup(t, newFakeTurn())
+	h.send(t, "session/list", 5, nil)
+	ls := waitLines(t, h.out, 1)
 	if ls[0].Error == nil || ls[0].Error.Code != CodMetodo {
-		t.Fatalf("método desconhecido deveria dar -32601, veio %+v", ls[0])
+		t.Fatalf("unknown method should give -32601, got %+v", ls[0])
 	}
 	if !strings.Contains(ls[0].Error.Message, "session/list") {
-		t.Fatalf("mensagem deveria citar o método: %q", ls[0].Error.Message)
+		t.Fatalf("message should reference the method: %q", ls[0].Error.Message)
 	}
 }
 
-func TestLinhaMalformadaNaoMataOLaco(t *testing.T) {
-	// Um cliente que mandou lixo numa linha não pode derrubar o agente: a
-	// linha é ignorada e o request seguinte é atendido normalmente.
-	ar := arranjar(t, newFakeTurno())
-	if _, err := ar.entrada.Write([]byte("{isso nao eh json\n")); err != nil {
+func TestMalformedLineDoesNotKillLoop(t *testing.T) {
+	// A client that sent garbage on one line cannot bring the agent down: the
+	// line is ignored and the next request is served normally.
+	h := setup(t, newFakeTurn())
+	if _, err := h.input.Write([]byte("{this is not json\n")); err != nil {
 		t.Fatal(err)
 	}
-	ar.envia(t, MetInitialize, 6, nil)
-	ls := espereLinhas(t, ar.out, 1)
+	h.send(t, MetInitialize, 6, nil)
+	ls := waitLines(t, h.out, 1)
 	if ls[0].Error != nil {
-		t.Fatalf("initialize após linha malformada deveria funcionar: %+v", ls[0].Error)
+		t.Fatalf("initialize after a malformed line should work: %+v", ls[0].Error)
 	}
 	if v, _ := ls[0].Result["protocolVersion"].(float64); int(v) != 1 {
-		t.Fatalf("protocolVersion inesperado: %v", ls[0].Result["protocolVersion"])
+		t.Fatalf("unexpected protocolVersion: %v", ls[0].Result["protocolVersion"])
 	}
 }
 
-func TestNotificacaoDoClienteNaoGeraResposta(t *testing.T) {
-	// Notificação (sem id) é mão única: responder seria violar o JSON-RPC 2.0.
-	ar := arranjar(t, newFakeTurno())
+func TestClientNotificationGetsNoResponse(t *testing.T) {
+	// A notification (no id) is one-way: responding would violate JSON-RPC 2.0.
+	h := setup(t, newFakeTurn())
 	b := []byte(`{"jsonrpc":"2.0","method":"initialized","params":{}}` + "\n")
-	if _, err := ar.entrada.Write(b); err != nil {
+	if _, err := h.input.Write(b); err != nil {
 		t.Fatal(err)
 	}
-	ar.envia(t, MetInitialize, 12, nil)
-	ls := espereLinhas(t, ar.out, 1)
+	h.send(t, MetInitialize, 12, nil)
+	ls := waitLines(t, h.out, 1)
 	if len(ls) != 1 {
-		t.Fatalf("notificação do cliente não deveria gerar linha, vieram %d:\n%s", len(ls), ar.out.String())
+		t.Fatalf("client notification should not produce a line, got %d:\n%s", len(ls), h.out.String())
 	}
 	if string(ls[0].ID) != "12" {
-		t.Fatalf("a única linha deveria ser a resposta do initialize, veio %s", ls[0].ID)
+		t.Fatalf("the only line should be the initialize response, got %s", ls[0].ID)
 	}
 }
 
-func TestHandleEOFDevolveNil(t *testing.T) {
+func TestHandleEOFReturnsNil(t *testing.T) {
 	a := Novo(config.Config{})
-	a.Fabrica = fabrica(newFakeTurno())
+	a.Fabrica = factory(newFakeTurn())
 	a.RegistrarLog(func(string) {})
 	out := &pipe{}
 	if err := a.Handle(context.Background(), strings.NewReader(""), out); err != nil {
-		t.Fatalf("EOF deveria ser encerramento limpo, veio %v", err)
+		t.Fatalf("EOF should be a clean shutdown, got %v", err)
 	}
 }
 
-func TestHandleLinhaAcimaDoTetoDevolveErro(t *testing.T) {
-	// Linha maior que o teto do scanner encerra o transporte: fingir que leu
-	// corromperia o protocolo. O erro precisa sair, não ser engolido.
+func TestHandleLineAboveCapReturnsError(t *testing.T) {
+	// A line larger than the scanner cap ends the transport: pretending to
+	// have read it would corrupt the protocol. The error must surface, not be
+	// swallowed.
 	a := Novo(config.Config{})
-	a.Fabrica = fabrica(newFakeTurno())
+	a.Fabrica = factory(newFakeTurn())
 	a.RegistrarLog(func(string) {})
 	out := &pipe{}
-	gigante := strings.Repeat("x", MaxLinha+1024)
-	if err := a.Handle(context.Background(), strings.NewReader(gigante+"\n"), out); err == nil {
-		t.Fatal("linha acima do teto deveria devolver erro")
+	huge := strings.Repeat("x", MaxLinha+1024)
+	if err := a.Handle(context.Background(), strings.NewReader(huge+"\n"), out); err == nil {
+		t.Fatal("line above the cap should return an error")
 	}
 }
 
-func TestCadaRespostaEUmaLinhaComNewline(t *testing.T) {
-	ar := arranjar(t, newFakeTurno())
-	ar.envia(t, MetInitialize, 1, nil)
-	ar.envia(t, MetInitialize, 2, nil)
-	espereLinhas(t, ar.out, 2)
-	s := ar.out.String()
+func TestEachResponseIsOneLineWithNewline(t *testing.T) {
+	h := setup(t, newFakeTurn())
+	h.send(t, MetInitialize, 1, nil)
+	h.send(t, MetInitialize, 2, nil)
+	waitLines(t, h.out, 2)
+	s := h.out.String()
 	if !strings.HasSuffix(s, "\n") {
-		t.Fatalf("saída deveria terminar em newline: %q", s)
+		t.Fatalf("output should end in a newline: %q", s)
 	}
-	// Cada linha tem de ser um JSON completo: nenhum newline no meio dos
-	// objetos. Se um dia a escrita for dividida em duas chamadas de Write, duas
-	// respostas se misturariam na mesma linha e isso apareceria aqui.
+	// Each line must be complete JSON: no newline in the middle of objects. If
+	// the write is ever split into two Write calls, two responses would mix on
+	// the same line and it would show up here.
 	for _, l := range strings.Split(strings.TrimSuffix(s, "\n"), "\n") {
 		var probe map[string]any
 		if err := json.Unmarshal([]byte(l), &probe); err != nil {
-			t.Fatalf("linha não é JSON completo (newline no meio?): %q: %v", l, err)
+			t.Fatalf("line is not complete JSON (newline in the middle?): %q: %v", l, err)
 		}
 	}
 	if n := strings.Count(s, "\n"); n != 2 {
-		t.Fatalf("dois requests deveriam gerar exatamente 2 linhas, veio %d: %q", n, s)
+		t.Fatalf("two requests should produce exactly 2 lines, got %d: %q", n, s)
 	}
 }
 
-// ── tradução do renderer ───────────────────────────────────────────────────
+// ── renderer translation ───────────────────────────────────────────────────
 
-func TestPromptTraduzToolEEcoParaNotificacoes(t *testing.T) {
-	f := &fakeTurno{
-		iniciou: make(chan struct{}),
+func TestPromptTranslatesToolAndEchoToNotifications(t *testing.T) {
+	f := &fakeTurn{
+		started: make(chan struct{}),
 		tools:   []string{"bash"},
-		eco:     "saida da tool",
-		texto:   "pronto",
+		echo:    "tool output",
+		text:    "done",
 	}
-	ar := arranjar(t, f)
-	ar.envia(t, MetSessionNovo, 2, map[string]any{"cwd": "."})
-	ls := espereLinhas(t, ar.out, 1)
-	ar.envia(t, MetPrompt, 3, map[string]any{
+	h := setup(t, f)
+	h.send(t, MetSessionNovo, 2, map[string]any{"cwd": "."})
+	ls := waitLines(t, h.out, 1)
+	h.send(t, MetPrompt, 3, map[string]any{
 		"sessionId": ls[0].Result["sessionId"],
-		"prompt":    []map[string]string{{"type": "text", "text": "roda"}},
+		"prompt":    []map[string]string{{"type": "text", "text": "run"}},
 	})
-	// tool_call + tool_call_update + agent_message_chunk + resposta = 4 linhas
-	ls = espereLinhas(t, ar.out, 4)
+	// tool_call + tool_call_update + agent_message_chunk + response = 4 lines
+	ls = waitLines(t, h.out, 4)
 
 	tool := ls[1]
 	if tool.Method != "session/update" || tool.Params.Update.SessionUpdate != "tool_call" {
-		t.Fatalf("esperava tool_call, veio %+v", tool)
+		t.Fatalf("expected tool_call, got %+v", tool)
 	}
 	if tool.Params.Update.Title != "bash" {
-		t.Fatalf("título deveria ser o nome da tool: %q", tool.Params.Update.Title)
+		t.Fatalf("title should be the tool name: %q", tool.Params.Update.Title)
 	}
 	if tool.Params.Update.Kind != "other" {
-		t.Fatalf("kind deveria ser \"other\": %q", tool.Params.Update.Kind)
+		t.Fatalf("kind should be \"other\": %q", tool.Params.Update.Kind)
 	}
 	if tool.Params.Update.Status != "completed" {
-		t.Fatalf("status deveria ser completed: %q", tool.Params.Update.Status)
+		t.Fatalf("status should be completed: %q", tool.Params.Update.Status)
 	}
 	if tool.Params.Update.ToolCallID == "" {
-		t.Fatal("tool_call sem toolCallId")
+		t.Fatal("tool_call without toolCallId")
 	}
 
-	eco := ls[2]
-	if eco.Params.Update.SessionUpdate != "tool_call_update" {
-		t.Fatalf("esperava tool_call_update, veio %+v", eco)
+	echo := ls[2]
+	if echo.Params.Update.SessionUpdate != "tool_call_update" {
+		t.Fatalf("expected tool_call_update, got %+v", echo)
 	}
-	if eco.Params.Update.ToolCallID != tool.Params.Update.ToolCallID {
-		t.Fatalf("eco deveria se anexar ao tool_call anterior: %q vs %q",
-			eco.Params.Update.ToolCallID, tool.Params.Update.ToolCallID)
+	if echo.Params.Update.ToolCallID != tool.Params.Update.ToolCallID {
+		t.Fatalf("echo should attach to the previous tool_call: %q vs %q",
+			echo.Params.Update.ToolCallID, tool.Params.Update.ToolCallID)
 	}
-	if n := len(eco.Params.Update.Content.Blocos); n != 1 || eco.Params.Update.Content.Blocos[0].Text != "saida da tool" {
-		t.Fatalf("conteúdo do eco inesperado: %+v", eco.Params.Update.Content)
+	if n := len(echo.Params.Update.Content.Blocks); n != 1 || echo.Params.Update.Content.Blocks[0].Text != "tool output" {
+		t.Fatalf("unexpected echo content: %+v", echo.Params.Update.Content)
 	}
 }
 
-func TestRenderToolComErroViraStatusFailed(t *testing.T) {
-	f := &fakeTurno{iniciou: make(chan struct{}), falhas: []string{"bash"}, texto: "ok"}
-	ar := arranjar(t, f)
-	ar.envia(t, MetSessionNovo, 2, map[string]any{"cwd": "."})
-	ls := espereLinhas(t, ar.out, 1)
-	ar.envia(t, MetPrompt, 3, map[string]any{
+func TestRenderFailedToolBecomesStatusFailed(t *testing.T) {
+	f := &fakeTurn{started: make(chan struct{}), fails: []string{"bash"}, text: "ok"}
+	h := setup(t, f)
+	h.send(t, MetSessionNovo, 2, map[string]any{"cwd": "."})
+	ls := waitLines(t, h.out, 1)
+	h.send(t, MetPrompt, 3, map[string]any{
 		"sessionId": ls[0].Result["sessionId"],
-		"prompt":    []map[string]string{{"type": "text", "text": "roda"}},
+		"prompt":    []map[string]string{{"type": "text", "text": "run"}},
 	})
-	ls = espereLinhas(t, ar.out, 3)
+	ls = waitLines(t, h.out, 3)
 	if ls[1].Params.Update.Status != "failed" {
-		t.Fatalf("tool que falhou deveria virar status failed, veio %q", ls[1].Params.Update.Status)
+		t.Fatalf("a failed tool should become status failed, got %q", ls[1].Params.Update.Status)
 	}
 }
 
-func TestRenderGuardrailViraChunkDeTexto(t *testing.T) {
-	f := &fakeTurno{iniciou: make(chan struct{}), compactar: true, texto: "ok"}
-	ar := arranjar(t, f)
-	ar.envia(t, MetSessionNovo, 2, map[string]any{"cwd": "."})
-	ls := espereLinhas(t, ar.out, 1)
-	ar.envia(t, MetPrompt, 3, map[string]any{
+func TestRenderGuardrailBecomesTextChunk(t *testing.T) {
+	f := &fakeTurn{started: make(chan struct{}), compact: true, text: "ok"}
+	h := setup(t, f)
+	h.send(t, MetSessionNovo, 2, map[string]any{"cwd": "."})
+	ls := waitLines(t, h.out, 1)
+	h.send(t, MetPrompt, 3, map[string]any{
 		"sessionId": ls[0].Result["sessionId"],
-		"prompt":    []map[string]string{{"type": "text", "text": "roda"}},
+		"prompt":    []map[string]string{{"type": "text", "text": "run"}},
 	})
-	ls = espereLinhas(t, ar.out, 4)
+	ls = waitLines(t, h.out, 4)
 	if ls[1].Params.Update.SessionUpdate != "agent_message_chunk" {
-		t.Fatalf("guardrail deveria virar chunk de texto, veio %+v", ls[1])
+		t.Fatalf("guardrail should become a text chunk, got %+v", ls[1])
 	}
-	if n := len(ls[1].Params.Update.Content.Blocos); n != 1 {
-		t.Fatalf("chunk do guardrail deveria ter 1 bloco, veio %+v", ls[1].Params.Update.Content)
+	if n := len(ls[1].Params.Update.Content.Blocks); n != 1 {
+		t.Fatalf("guardrail chunk should have 1 block, got %+v", ls[1].Params.Update.Content)
 	}
-	if !strings.Contains(ls[1].Params.Update.Content.Blocos[0].Text, "guardrail") {
-		t.Fatalf("texto do chunk deveria mencionar o guardrail: %q", ls[1].Params.Update.Content.Blocos[0].Text)
+	if !strings.Contains(ls[1].Params.Update.Content.Blocks[0].Text, "guardrail") {
+		t.Fatalf("chunk text should mention the guardrail: %q", ls[1].Params.Update.Content.Blocks[0].Text)
 	}
 }
 
-func TestRenderTokensNaoEmiteNada(t *testing.T) {
-	// Consumo de tokens é rodapé de UI local: não existe evento ACP para isso,
-	// e inventar um poluiria o protocolo.
-	f := &fakeTurno{iniciou: make(chan struct{}), tokens: true, texto: "ok"}
-	ar := arranjar(t, f)
-	ar.envia(t, MetSessionNovo, 2, map[string]any{"cwd": "."})
-	ls := espereLinhas(t, ar.out, 1)
-	ar.envia(t, MetPrompt, 3, map[string]any{
+func TestRenderTokensEmitsNothing(t *testing.T) {
+	// Token usage is a local UI footer: there is no ACP event for it, and
+	// inventing one would pollute the protocol.
+	f := &fakeTurn{started: make(chan struct{}), tokens: true, text: "ok"}
+	h := setup(t, f)
+	h.send(t, MetSessionNovo, 2, map[string]any{"cwd": "."})
+	ls := waitLines(t, h.out, 1)
+	h.send(t, MetPrompt, 3, map[string]any{
 		"sessionId": ls[0].Result["sessionId"],
-		"prompt":    []map[string]string{{"type": "text", "text": "roda"}},
+		"prompt":    []map[string]string{{"type": "text", "text": "run"}},
 	})
-	// chunk da resposta + resposta {} = 2 linhas. Nada de tokens no meio.
-	ls = espereLinhas(t, ar.out, 3)
+	// response chunk + {} response = 2 lines. No tokens in between.
+	ls = waitLines(t, h.out, 3)
 	if len(ls) != 3 {
-		t.Fatalf("Tokens não deveria emitir nada; vieram %d linhas:\n%s", len(ls), ar.out.String())
+		t.Fatalf("Tokens should emit nothing; got %d lines:\n%s", len(ls), h.out.String())
 	}
 }

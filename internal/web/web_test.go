@@ -14,16 +14,16 @@ import (
 
 // ── helpers ───────────────────────────────────────────────────────────────
 
-func especificas(t *testing.T, busca *Busca) map[string]tools.Spec {
+func specsByName(t *testing.T, search *Busca) map[string]tools.Spec {
 	t.Helper()
 	out := map[string]tools.Spec{}
-	for _, s := range Especificacoes(busca) {
+	for _, s := range Especificacoes(search) {
 		out[s.Name] = s
 	}
 	return out
 }
 
-func rodar(t *testing.T, spec tools.Spec, args map[string]any) (string, error) {
+func run(t *testing.T, spec tools.Spec, args map[string]any) (string, error) {
 	t.Helper()
 	raw, err := json.Marshal(args)
 	if err != nil {
@@ -32,80 +32,80 @@ func rodar(t *testing.T, spec tools.Spec, args map[string]any) (string, error) {
 	return spec.Exec(context.Background(), t.TempDir(), raw)
 }
 
-// fixtureHTML é a página de teste: título, script e style que NÃO podem
-// aparecer, entidade que DEVE ser decodificada, e blocos que precisam de
-// fronteira de espaço entre si.
+// fixtureHTML is the test page: title, script and style that must NOT
+// appear, entities that MUST be decoded, and blocks that need a space
+// boundary between them.
 const fixtureHTML = `<!DOCTYPE html>
 <html>
 <head>
-<title>Página de Teste &amp; Cia</title>
+<title>Café Page &amp; Co</title>
 <style>body { color: red; } .x { display: none; }</style>
-<script>var lixo = "NAO_DEVE_APARECER"; console.log("script_noise_1");</script>
+<script>var junk = "MUST_NOT_APPEAR"; console.log("script_noise_1");</script>
 </head>
 <body>
-<h1>Título Visível</h1>
-<p>Primeiro parágrafo com acentuação: ação, coração.</p>
-<p>Segundo &lt;parágrafo&gt; &amp; entidades.</p>
+<h1>Visible Naïve Title</h1>
+<p>First paragraph with accents: café, naïve, façade.</p>
+<p>Second &lt;paragraph&gt; &amp; entities.</p>
 <script type="application/ld+json">{"@type":"script_noise_2"}</script>
-<div>   espaços        demais
-e quebra de linha   </div>
-<!-- comentário oculto: comment_noise_3 -->
+<div>   too        many spaces
+and a line break   </div>
+<!-- hidden comment: comment_noise_3 -->
 </body>
 </html>`
 
 // ── web_fetch: HTML ───────────────────────────────────────────────────────
 
-func TestWebFetchHTMLExtraiTextoVisivel(t *testing.T) {
+func TestWebFetchHTMLExtractsVisibleText(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write([]byte(fixtureHTML))
 	}))
 	defer srv.Close()
 
-	specs := especificas(t, nil)
-	out, err := rodar(t, specs["web_fetch"], map[string]any{"url": srv.URL})
+	specs := specsByName(t, nil)
+	out, err := run(t, specs["web_fetch"], map[string]any{"url": srv.URL})
 	if err != nil {
 		t.Fatalf("web_fetch: %v", err)
 	}
 
-	// aviso de conteúdo não confiável, dentro da SAÍDA (não do schema).
-	if !strings.HasPrefix(out, avisoNaoConfiavel+"\n") {
-		t.Errorf("saída sem aviso de conteúdo externo:\n%s", out)
+	// untrusted-content warning, inside the OUTPUT (not the schema).
+	if !strings.HasPrefix(out, untrustedWarning+"\n") {
+		t.Errorf("output without external-content warning:\n%s", out)
 	}
-	for _, quer := range []string{"Página de Teste & Cia", "Título Visível",
-		"Primeiro parágrafo com acentuação", "Segundo <parágrafo> & entidades",
-		"espaços demais e quebra de linha", avisoNaoConfiavel} {
-		if !strings.Contains(out, quer) {
-			t.Errorf("texto visível não encontrado: %q\nsaída:\n%s", quer, out)
+	for _, want := range []string{"Café Page & Co", "Visible Naïve Title",
+		"First paragraph with accents: café, naïve, façade", "Second <paragraph> & entities",
+		"too many spaces and a line break", untrustedWarning} {
+		if !strings.Contains(out, want) {
+			t.Errorf("visible text not found: %q\noutput:\n%s", want, out)
 		}
 	}
-	// ruído de script/style/comentário e markup não podem sobreviver.
-	for _, naoQuer := range []string{"NAO_DEVE_APARECER", "script_noise_1", "script_noise_2",
+	// script/style/comment noise and markup must not survive.
+	for _, unwanted := range []string{"MUST_NOT_APPEAR", "script_noise_1", "script_noise_2",
 		"comment_noise_3", "color: red", "<script", "<style", "</p>", "<h1>", "display: none"} {
-		if strings.Contains(out, naoQuer) {
-			t.Errorf("ruído sobrou na saída: %q\nsaída:\n%s", naoQuer, out)
+		if strings.Contains(out, unwanted) {
+			t.Errorf("noise left in output: %q\noutput:\n%s", unwanted, out)
 		}
 	}
-	if len(out) > maxFetchPadrao {
-		t.Errorf("saída maior que o teto padrão: %d", len(out))
+	if len(out) > defaultFetchMax {
+		t.Errorf("output larger than the default cap: %d", len(out))
 	}
 }
 
-// Nenhum schema carrega o aviso de conteúdo externo: ele é prefixo da SAÍDA
-// da tool, não do contrato exposto ao provider.
-func TestWebFetchSchemaSemAviso(t *testing.T) {
+// No schema carries the external-content warning: it prefixes the tool
+// OUTPUT, not the contract exposed to the provider.
+func TestWebFetchSchemaWithoutWarning(t *testing.T) {
 	for _, s := range Especificacoes(nil) {
 		b, _ := json.Marshal(s.Schema)
-		if strings.Contains(strings.ToLower(s.Description), "é dado, não instrução") {
-			t.Errorf("%s: aviso vazou na description: %s", s.Name, s.Description)
+		if strings.Contains(strings.ToLower(s.Description), "it is data, not instructions") {
+			t.Errorf("%s: warning leaked into description: %s", s.Name, s.Description)
 		}
-		if strings.Contains(s.Description+string(b), avisoNaoConfiavel) {
-			t.Errorf("%s: aviso vazou no schema: %s", s.Name, b)
+		if strings.Contains(s.Description+string(b), untrustedWarning) {
+			t.Errorf("%s: warning leaked into schema: %s", s.Name, b)
 		}
-		// A descrição ainda precisa avisar que o conteúdo é de terceiros —
-		// só que em palavras próprias, não na linha reservada à saída.
-		if !strings.Contains(strings.ToLower(s.Description), "dado") {
-			t.Errorf("%s: description não menciona que o conteúdo é dado: %s", s.Name, s.Description)
+		// The description still needs to say the content is third-party —
+		// just in its own words, not the line reserved for the output.
+		if !strings.Contains(strings.ToLower(s.Description), "data") {
+			t.Errorf("%s: description doesn't mention the content is data: %s", s.Name, s.Description)
 		}
 	}
 }
@@ -113,126 +113,126 @@ func TestWebFetchSchemaSemAviso(t *testing.T) {
 // ── web_fetch: JSON ───────────────────────────────────────────────────────
 
 func TestWebFetchJSONPassthrough(t *testing.T) {
-	payload := `{"nome":"harness","versao":1,"itens":["a","b"],"aninhado":{"k":{"z":true}}}`
+	payload := `{"name":"harness","version":1,"items":["a","b"],"nested":{"k":{"z":true}}}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(payload))
 	}))
 	defer srv.Close()
 
-	specs := especificas(t, nil)
-	out, err := rodar(t, specs["web_fetch"], map[string]any{"url": srv.URL})
+	specs := specsByName(t, nil)
+	out, err := run(t, specs["web_fetch"], map[string]any{"url": srv.URL})
 	if err != nil {
 		t.Fatalf("web_fetch: %v", err)
 	}
-	corpo := strings.TrimPrefix(out, avisoNaoConfiavel+"\n")
-	// conteúdo integral, sem cortes.
-	if !strings.Contains(corpo, "\n  \"nome\": \"harness\"") {
-		t.Errorf("JSON não foi reindentado:\n%s", corpo)
+	body := strings.TrimPrefix(out, untrustedWarning+"\n")
+	// full content, no truncation.
+	if !strings.Contains(body, "\n  \"name\": \"harness\"") {
+		t.Errorf("JSON was not re-indented:\n%s", body)
 	}
-	var volta any
-	if err := json.Unmarshal([]byte(corpo), &volta); err != nil {
-		t.Errorf("saída não é JSON válido: %v\n%s", err, corpo)
+	var back any
+	if err := json.Unmarshal([]byte(body), &back); err != nil {
+		t.Errorf("output is not valid JSON: %v\n%s", err, body)
 	}
-	if strings.Contains(out, "cortado em") {
-		t.Errorf("JSON pequeno não devia ser cortado:\n%s", out)
+	if strings.Contains(out, "truncated at") {
+		t.Errorf("small JSON should not be truncated:\n%s", out)
 	}
 }
 
-// ── web_fetch: content-type recusado ──────────────────────────────────────
+// ── web_fetch: refused content-type ───────────────────────────────────────
 
-func TestWebFetchRecusaOutroContentType(t *testing.T) {
+func TestWebFetchRefusesOtherContentType(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/pdf")
-		w.Write([]byte("%PDF-1.7 lixo"))
+		w.Write([]byte("%PDF-1.7 junk"))
 	}))
 	defer srv.Close()
 
-	specs := especificas(t, nil)
-	out, err := rodar(t, specs["web_fetch"], map[string]any{"url": srv.URL})
+	specs := specsByName(t, nil)
+	out, err := run(t, specs["web_fetch"], map[string]any{"url": srv.URL})
 	if err == nil {
-		t.Fatalf("esperava recusa, voltou:\n%s", out)
+		t.Fatalf("expected refusal, got:\n%s", out)
 	}
-	linhas := strings.Split(strings.TrimSpace(err.Error()), "\n")
-	if len(linhas) != 1 {
-		t.Errorf("erro não é de uma linha: %q", err.Error())
+	lines := strings.Split(strings.TrimSpace(err.Error()), "\n")
+	if len(lines) != 1 {
+		t.Errorf("error is not a single line: %q", err.Error())
 	}
 	if !strings.Contains(err.Error(), "application/pdf") {
-		t.Errorf("erro não cita o content-type: %q", err.Error())
+		t.Errorf("error doesn't mention the content-type: %q", err.Error())
 	}
 }
 
-func TestWebFetchRecusaEsquemaNaoHTTP(t *testing.T) {
-	specs := especificas(t, nil)
-	for _, alvo := range []string{"file:///c:/windows/win.ini", "/caminho/relativo", "exemplo.com"} {
-		if _, err := rodar(t, specs["web_fetch"], map[string]any{"url": alvo}); err == nil {
-			t.Errorf("esquema inválido aceito: %q", alvo)
+func TestWebFetchRefusesNonHTTPScheme(t *testing.T) {
+	specs := specsByName(t, nil)
+	for _, target := range []string{"file:///c:/windows/win.ini", "/relative/path", "example.com"} {
+		if _, err := run(t, specs["web_fetch"], map[string]any{"url": target}); err == nil {
+			t.Errorf("invalid scheme accepted: %q", target)
 		}
 	}
-	if _, err := rodar(t, specs["web_fetch"], map[string]any{"url": ""}); err == nil {
-		t.Error("url vazia aceita")
+	if _, err := run(t, specs["web_fetch"], map[string]any{"url": ""}); err == nil {
+		t.Error("empty url accepted")
 	}
 }
 
-// ── web_fetch: status não-2XX ─────────────────────────────────────────────
+// ── web_fetch: non-2XX status ─────────────────────────────────────────────
 
-func TestWebFetchNao2XXDevolveErroDeUmaLinha(t *testing.T) {
+func TestWebFetchNon2XXReturnsOneLineError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		w.Write([]byte(`<html><body><h1>404 Not Found</h1></body></html>`))
 	}))
 	defer srv.Close()
 
-	specs := especificas(t, nil)
-	out, err := rodar(t, specs["web_fetch"], map[string]any{"url": srv.URL})
+	specs := specsByName(t, nil)
+	out, err := run(t, specs["web_fetch"], map[string]any{"url": srv.URL})
 	if err == nil {
-		t.Fatalf("esperava erro, voltou:\n%s", out)
+		t.Fatalf("expected error, got:\n%s", out)
 	}
 	msg := err.Error()
 	if !strings.Contains(msg, "404") {
-		t.Errorf("mensagem sem o status: %q", msg)
+		t.Errorf("message without the status: %q", msg)
 	}
 	if strings.Contains(msg, "\n") {
-		t.Errorf("erro não é de uma linha: %q", msg)
+		t.Errorf("error is not a single line: %q", msg)
 	}
 }
 
-// ── web_fetch: redirecionamentos ──────────────────────────────────────────
+// ── web_fetch: redirects ──────────────────────────────────────────────────
 
-func TestWebFetchSegueRedirecionamentos(t *testing.T) {
-	var saltos int
+func TestWebFetchFollowsRedirects(t *testing.T) {
+	var hops int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// 3 saltos: dentro do limite de 5.
-		saltos++
+		// 3 hops: within the limit of 5.
+		hops++
 		switch r.URL.Path {
-		case "/inicio":
-			http.Redirect(w, r, "/meio", http.StatusFound)
-		case "/meio":
-			http.Redirect(w, r, "/fim", http.StatusFound)
-		case "/fim":
+		case "/start":
+			http.Redirect(w, r, "/middle", http.StatusFound)
+		case "/middle":
+			http.Redirect(w, r, "/end", http.StatusFound)
+		case "/end":
 			w.Header().Set("Content-Type", "text/plain")
-			w.Write([]byte("destino final alcançado"))
+			w.Write([]byte("final destination reached"))
 		default:
-			t.Errorf("caminho inesperado: %s", r.URL.Path)
+			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
 	}))
 	defer srv.Close()
 
-	specs := especificas(t, nil)
-	out, err := rodar(t, specs["web_fetch"], map[string]any{"url": srv.URL + "/inicio"})
+	specs := specsByName(t, nil)
+	out, err := run(t, specs["web_fetch"], map[string]any{"url": srv.URL + "/start"})
 	if err != nil {
 		t.Fatalf("web_fetch: %v", err)
 	}
-	if !strings.Contains(out, "destino final alcançado") {
-		t.Errorf("redirecionamento não seguido:\n%s", out)
+	if !strings.Contains(out, "final destination reached") {
+		t.Errorf("redirect not followed:\n%s", out)
 	}
-	if saltos != 3 {
-		t.Errorf("esperava 3 requisições, veio %d", saltos)
+	if hops != 3 {
+		t.Errorf("expected 3 requests, got %d", hops)
 	}
 }
 
-func TestNovoHTTPLimitaRedirecionamentos(t *testing.T) {
-	// Laço infinito de redirect: o CheckRedirect tem de estourar em 5.
+func TestNewHTTPClientLimitsRedirects(t *testing.T) {
+	// Infinite redirect loop: CheckRedirect must give up at 5.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, r.URL.Path, http.StatusFound)
 	}))
@@ -242,367 +242,367 @@ func TestNovoHTTPLimitaRedirecionamentos(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = novoHTTP(5e9).Do(req)
+	_, err = newHTTPClient(5e9).Do(req)
 	if err == nil {
-		t.Fatal("esperava erro de excesso de redirecionamentos")
+		t.Fatal("expected too-many-redirects error")
 	}
 	if !strings.Contains(err.Error(), "5") {
-		t.Errorf("erro não menciona o limite: %v", err)
+		t.Errorf("error doesn't mention the limit: %v", err)
 	}
 }
 
-// ── web_fetch: teto e marcador de corte ───────────────────────────────────
+// ── web_fetch: cap and truncation marker ──────────────────────────────────
 
-func TestWebFetchTruncaComMarcador(t *testing.T) {
-	// 200 KB de texto: passa do teto de 2 MiB do corpo? Não — passa do teto
-	// de caracteres, que é o que interessa aqui.
-	grande := strings.Repeat("abcdefghij", 20000)
+func TestWebFetchTruncatesWithMarker(t *testing.T) {
+	// 200 KB of text: over the 2 MiB body cap? No — over the character cap,
+	// which is what matters here.
+	big := strings.Repeat("abcdefghij", 20000)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
-		w.Write([]byte(grande))
+		w.Write([]byte(big))
 	}))
 	defer srv.Close()
 
-	specs := especificas(t, nil)
-	out, err := rodar(t, specs["web_fetch"], map[string]any{"url": srv.URL, "max_chars": 500})
+	specs := specsByName(t, nil)
+	out, err := run(t, specs["web_fetch"], map[string]any{"url": srv.URL, "max_chars": 500})
 	if err != nil {
 		t.Fatalf("web_fetch: %v", err)
 	}
 	if len(out) > 500 {
-		t.Errorf("saída passou do max_chars pedido: %d bytes", len(out))
+		t.Errorf("output exceeded the requested max_chars: %d bytes", len(out))
 	}
-	if !strings.Contains(out, "(cortado em") || !strings.Contains(out, "bytes)") {
-		t.Errorf("marcador de corte ausente:\n%s", out)
+	if !strings.Contains(out, "(truncated at") || !strings.Contains(out, "bytes)") {
+		t.Errorf("truncation marker missing:\n%s", out)
 	}
-	if !strings.Contains(out, "de 200000 bytes)") {
-		t.Errorf("marcador não cita o total original:\n%s", out)
+	if !strings.Contains(out, "of 200000 bytes)") {
+		t.Errorf("marker doesn't mention the original total:\n%s", out)
 	}
 }
 
-// Teto padrão e hard cap: 20000 por omissão, 60000 no máximo.
-func TestWebFetchTetoPadraoEHardCap(t *testing.T) {
-	grande := strings.Repeat("x", 200000)
+// Default cap and hard cap: 20000 by default, 60000 at most.
+func TestWebFetchDefaultCapAndHardCap(t *testing.T) {
+	big := strings.Repeat("x", 200000)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
-		w.Write([]byte(grande))
+		w.Write([]byte(big))
 	}))
 	defer srv.Close()
 
-	specs := especificas(t, nil)
-	semTeto, err := rodar(t, specs["web_fetch"], map[string]any{"url": srv.URL})
+	specs := specsByName(t, nil)
+	noCap, err := run(t, specs["web_fetch"], map[string]any{"url": srv.URL})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(semTeto) > maxFetchPadrao {
-		t.Errorf("teto padrão estourado: %d", len(semTeto))
+	if len(noCap) > defaultFetchMax {
+		t.Errorf("default cap exceeded: %d", len(noCap))
 	}
-	if !strings.Contains(semTeto, "(cortado em") {
-		t.Errorf("sem marcador de corte no teto padrão:\n%s", semTeto[:200])
+	if !strings.Contains(noCap, "(truncated at") {
+		t.Errorf("no truncation marker at the default cap:\n%s", noCap[:200])
 	}
 
-	alem, err := rodar(t, specs["web_fetch"], map[string]any{"url": srv.URL, "max_chars": 999999})
+	beyond, err := run(t, specs["web_fetch"], map[string]any{"url": srv.URL, "max_chars": 999999})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(alem) > tetoFetch {
-		t.Errorf("hard cap de %d estourado: %d", tetoFetch, len(alem))
+	if len(beyond) > fetchCap {
+		t.Errorf("hard cap of %d exceeded: %d", fetchCap, len(beyond))
 	}
 }
 
-// ── limparHTML: unidade ───────────────────────────────────────────────────
+// ── cleanHTML: unit ───────────────────────────────────────────────────────
 
-func TestLimparHTMLTitulo(t *testing.T) {
-	titulo, _ := limparHTML([]byte(`<html><head><title>  Título &amp;   Subtítulo  </title></head><body>x</body></html>`))
-	if titulo != "Título & Subtítulo" {
-		t.Errorf("título = %q", titulo)
+func TestCleanHTMLTitle(t *testing.T) {
+	title, _ := cleanHTML([]byte(`<html><head><title>  Résumé &amp;   Sub-résumé  </title></head><body>x</body></html>`))
+	if title != "Résumé & Sub-résumé" {
+		t.Errorf("title = %q", title)
 	}
 
-	if t2, _ := limparHTML([]byte(`<body>sem titulo aqui</body>`)); t2 != "" {
-		t.Errorf("título deveria ser vazio, veio %q", t2)
+	if t2, _ := cleanHTML([]byte(`<body>no title here</body>`)); t2 != "" {
+		t.Errorf("title should be empty, got %q", t2)
 	}
 }
 
-func TestLimparHTMLRemoveScriptStyle(t *testing.T) {
-	body := []byte(`<div>antes</div>
-<script>var x = "<b>negrito falso</b>"; /* ruido */</script>
-<style>.c{content:"nao aparece"} .d{font:bold}</style>
-<div>depois</div>`)
-	_, texto := limparHTML(body)
-	for _, nao := range []string{"var x", "negrito falso", "content:", ".c{", ".d{", "nao aparece"} {
-		if strings.Contains(texto, nao) {
-			t.Errorf("script/style vazou (%q): %q", nao, texto)
+func TestCleanHTMLRemovesScriptStyle(t *testing.T) {
+	body := []byte(`<div>before</div>
+<script>var x = "<b>fake bold</b>"; /* noise */</script>
+<style>.c{content:"does not appear"} .d{font:bold}</style>
+<div>after</div>`)
+	_, text := cleanHTML(body)
+	for _, unwanted := range []string{"var x", "fake bold", "content:", ".c{", ".d{", "does not appear"} {
+		if strings.Contains(text, unwanted) {
+			t.Errorf("script/style leaked (%q): %q", unwanted, text)
 		}
 	}
-	if !strings.Contains(texto, "antes") || !strings.Contains(texto, "depois") {
-		t.Errorf("texto visível perdido: %q", texto)
+	if !strings.Contains(text, "before") || !strings.Contains(text, "after") {
+		t.Errorf("visible text lost: %q", text)
 	}
 }
 
-func TestLimparHTMLDecodificaEntidades(t *testing.T) {
-	_, texto := limparHTML([]byte(`<p>a &amp; b &lt;c&gt; &quot;d&quot; &#39;e&#39; &nbsp; f &copy;</p>`))
-	for _, quer := range []string{"a & b", "<c>", `"d"`, "'e'", "f ©"} {
-		if !strings.Contains(texto, quer) {
-			t.Errorf("entidade não decodificada: %q em %q", quer, texto)
+func TestCleanHTMLDecodesEntities(t *testing.T) {
+	_, text := cleanHTML([]byte(`<p>a &amp; b &lt;c&gt; &quot;d&quot; &#39;e&#39; &nbsp; f &copy;</p>`))
+	for _, want := range []string{"a & b", "<c>", `"d"`, "'e'", "f ©"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("entity not decoded: %q in %q", want, text)
 		}
 	}
-	if strings.Contains(texto, "&amp;") || strings.Contains(texto, "&#39;") {
-		t.Errorf("entidade crua sobrou: %q", texto)
+	if strings.Contains(text, "&amp;") || strings.Contains(text, "&#39;") {
+		t.Errorf("raw entity left over: %q", text)
 	}
 }
 
-func TestLimparHTMLColapsaWhitespace(t *testing.T) {
-	_, texto := limparHTML([]byte("<p>um\n\ttrês    quatro</p>\n\n\n<p>cinco</p>"))
-	if texto != "um três quatro cinco" {
-		t.Errorf("whitespace não colapsado: %q", texto)
+func TestCleanHTMLCollapsesWhitespace(t *testing.T) {
+	_, text := cleanHTML([]byte("<p>one\n\tthree    four</p>\n\n\n<p>five</p>"))
+	if text != "one three four five" {
+		t.Errorf("whitespace not collapsed: %q", text)
 	}
 }
 
-// Blocos vizinhos não podem colar palavras: </p><p> precisa virar espaço.
-func TestLimparHTMLFronteiraDeTag(t *testing.T) {
-	_, texto := limparHTML([]byte(`<p>foo</p><p>bar</p><ul><li>a</li><li>b</li></ul>`))
-	if strings.Contains(texto, "foobar") {
-		t.Errorf("palavras colaram: %q", texto)
+// Adjacent blocks must not glue words together: </p><p> must become a space.
+func TestCleanHTMLTagBoundary(t *testing.T) {
+	_, text := cleanHTML([]byte(`<p>foo</p><p>bar</p><ul><li>a</li><li>b</li></ul>`))
+	if strings.Contains(text, "foobar") {
+		t.Errorf("words glued together: %q", text)
 	}
-	for _, quer := range []string{"foo", "bar", "a", "b"} {
-		if !strings.Contains(texto, quer) {
-			t.Errorf("texto perdido (%q): %q", quer, texto)
+	for _, want := range []string{"foo", "bar", "a", "b"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("text lost (%q): %q", want, text)
 		}
 	}
 }
 
-func TestLimparHTMLRemoveComentarios(t *testing.T) {
-	_, texto := limparHTML([]byte(`<p>vísivel</p><!-- invisivel_comentario --><p>também</p>`))
-	if strings.Contains(texto, "invisivel_comentario") {
-		t.Errorf("comentário vazou: %q", texto)
+func TestCleanHTMLRemovesComments(t *testing.T) {
+	_, text := cleanHTML([]byte(`<p>café</p><!-- invisible_comment --><p>also</p>`))
+	if strings.Contains(text, "invisible_comment") {
+		t.Errorf("comment leaked: %q", text)
 	}
-	if !strings.Contains(texto, "vísivel") || !strings.Contains(texto, "também") {
-		t.Errorf("texto ao redor do comentário perdido: %q", texto)
+	if !strings.Contains(text, "café") || !strings.Contains(text, "also") {
+		t.Errorf("text around the comment lost: %q", text)
 	}
 }
 
-// Tag auto-fechada e <script src=...></script> não devem engolir o resto.
-func TestLimparHTMLTagsAutoFechadas(t *testing.T) {
-	_, texto := limparHTML([]byte(`<div>a</div><img src="x.png"/><br/><div>b</div><script src="x.js"/>`))
-	if !strings.Contains(texto, "a") || !strings.Contains(texto, "b") {
-		t.Errorf("texto perdido com tags auto-fechadas: %q", texto)
+// Self-closing tags and <script src=...></script> must not swallow the rest.
+func TestCleanHTMLSelfClosingTags(t *testing.T) {
+	_, text := cleanHTML([]byte(`<div>a</div><img src="x.png"/><br/><div>b</div><script src="x.js"/>`))
+	if !strings.Contains(text, "a") || !strings.Contains(text, "b") {
+		t.Errorf("text lost with self-closing tags: %q", text)
 	}
 }
 
 // ── web_search ────────────────────────────────────────────────────────────
 
-// buscaFixture serve um envelope SearXNG com 3 resultados.
-func buscaFixture(t *testing.T, alvo string) *httptest.Server {
+// searchFixture serves a SearXNG envelope with the given body.
+func searchFixture(t *testing.T, body string) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("format") != "json" {
-			t.Errorf("sem format=json: %s", r.URL.RawQuery)
+			t.Errorf("missing format=json: %s", r.URL.RawQuery)
 		}
 		if r.URL.Query().Get("q") != "harness barroso" {
-			t.Errorf("query errada: %q", r.URL.Query().Get("q"))
+			t.Errorf("wrong query: %q", r.URL.Query().Get("q"))
 		}
 		if r.URL.Query().Get("language") != "pt-BR" {
-			t.Errorf("language errado: %q", r.URL.Query().Get("language"))
+			t.Errorf("wrong language: %q", r.URL.Query().Get("language"))
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(alvo))
+		w.Write([]byte(body))
 	}))
 }
 
-func TestWebSearchContraSearXNGFalso(t *testing.T) {
-	srv := buscaFixture(t, `{"results":[
-		{"title":"Primeiro &amp; Resultado","url":"https://a.example/1","content":"trecho um &lt;b&gt;ok&lt;/b&gt;"},
-		{"title":"Segundo Resultado","url":"https://b.example/2","content":"trecho dois"},
-		{"title":"Sem URL","content":"nao deve sair"}
+func TestWebSearchAgainstFakeSearXNG(t *testing.T) {
+	srv := searchFixture(t, `{"results":[
+		{"title":"First &amp; Result","url":"https://a.example/1","content":"snippet one &lt;b&gt;ok&lt;/b&gt;"},
+		{"title":"Second Result","url":"https://b.example/2","content":"snippet two"},
+		{"title":"No URL","content":"must not appear"}
 	]}`)
 	defer srv.Close()
 
-	out, err := rodar(t, especificas(t, &Busca{Endpoint: srv.URL + "/search"})["web_search"],
+	out, err := run(t, specsByName(t, &Busca{Endpoint: srv.URL + "/search"})["web_search"],
 		map[string]any{"query": "harness barroso"})
 	if err != nil {
 		t.Fatalf("web_search: %v", err)
 	}
 
-	// formato numerado com título — URL e snippet indentado.
-	if !strings.Contains(out, "1. Primeiro & Resultado — https://a.example/1") {
-		t.Errorf("linha 1 fora do formato:\n%s", out)
+	// numbered format with title — URL and an indented snippet.
+	if !strings.Contains(out, "1. First & Result — https://a.example/1") {
+		t.Errorf("line 1 has the wrong format:\n%s", out)
 	}
-	if !strings.Contains(out, "2. Segundo Resultado — https://b.example/2") {
-		t.Errorf("linha 2 fora do formato:\n%s", out)
+	if !strings.Contains(out, "2. Second Result — https://b.example/2") {
+		t.Errorf("line 2 has the wrong format:\n%s", out)
 	}
-	if !strings.Contains(linhaDe(out, 1), "   trecho um <b>ok</b>") {
-		t.Errorf("snippet ausente ou sem indentação:\n%s", out)
+	if !strings.Contains(lineAt(out, 1), "   snippet one <b>ok</b>") {
+		t.Errorf("snippet missing or not indented:\n%s", out)
 	}
-	if !strings.Contains(out, "(2 de 3 resultados)") {
-		t.Errorf("contador de descartados ausente:\n%s", out)
+	if !strings.Contains(out, "(2 of 3 results)") {
+		t.Errorf("dropped-results counter missing:\n%s", out)
 	}
-	if strings.Contains(out, "Sem URL") {
-		t.Errorf("resultado sem URL vazou:\n%s", out)
+	if strings.Contains(out, "No URL") {
+		t.Errorf("result without URL leaked:\n%s", out)
 	}
-	if !strings.HasPrefix(out, avisoNaoConfiavel+"\n") {
-		t.Errorf("saída sem aviso de conteúdo externo:\n%s", out)
+	if !strings.HasPrefix(out, untrustedWarning+"\n") {
+		t.Errorf("output without external-content warning:\n%s", out)
 	}
-	if len(out) > tetoBusca {
-		t.Errorf("saída maior que o teto: %d", len(out))
+	if len(out) > searchCap {
+		t.Errorf("output larger than the cap: %d", len(out))
 	}
 }
 
-// linhaDe devolve a n-ésima linha (0-based) da saída, já sem o aviso.
-func linhaDe(out string, n int) string {
-	linhas := strings.Split(out, "\n")
-	if n+1 >= len(linhas) {
+// lineAt returns the n-th line (0-based) of the output, skipping the warning.
+func lineAt(out string, n int) string {
+	lines := strings.Split(out, "\n")
+	if n+1 >= len(lines) {
 		return ""
 	}
-	return linhas[n+1]
+	return lines[n+1]
 }
 
-func TestWebSearchMaxResultados(t *testing.T) {
-	var itens []string
+func TestWebSearchMaxResults(t *testing.T) {
+	var items []string
 	for i := 'a'; i <= 'j'; i++ {
-		itens = append(itens, `{"title":"Item `+string(i)+`","url":"https://x.example/`+string(i)+`","content":"c"}`)
+		items = append(items, `{"title":"Item `+string(i)+`","url":"https://x.example/`+string(i)+`","content":"c"}`)
 	}
-	srv := buscaFixture(t, `{"results":[`+strings.Join(itens, ",")+`]}`)
+	srv := searchFixture(t, `{"results":[`+strings.Join(items, ",")+`]}`)
 	defer srv.Close()
 
-	specs := especificas(t, &Busca{Endpoint: srv.URL})
-	out, err := rodar(t, specs["web_search"], map[string]any{"query": "harness barroso", "max_resultados": 3})
+	specs := specsByName(t, &Busca{Endpoint: srv.URL})
+	out, err := run(t, specs["web_search"], map[string]any{"query": "harness barroso", "max_results": 3})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out, "3. Item c —") {
-		t.Errorf("terceiro resultado ausente:\n%s", out)
+		t.Errorf("third result missing:\n%s", out)
 	}
 	if strings.Contains(out, "4. Item d") {
-		t.Errorf("max_resultados ignorado:\n%s", out)
+		t.Errorf("max_results ignored:\n%s", out)
 	}
-	if len(linhasDe(out)) > 3 {
-		t.Errorf("mais de 3 linhas de resultado: %d", len(linhasDe(out)))
+	if len(resultLines(out)) > 3 {
+		t.Errorf("more than 3 result lines: %d", len(resultLines(out)))
 	}
 }
 
-func linhasDe(out string) []string {
-	var fora []string
-	for _, l := range strings.Split(out, "\n")[1:] { // pula o aviso
+func resultLines(out string) []string {
+	var lines []string
+	for _, l := range strings.Split(out, "\n")[1:] { // skip the warning
 		if l == "" {
 			continue
 		}
 		if strings.HasPrefix(l, " ") || strings.HasPrefix(l, "(") {
-			continue // snippet ou rodapé
+			continue // snippet or footer
 		}
-		fora = append(fora, l)
+		lines = append(lines, l)
 	}
-	return fora
+	return lines
 }
 
-func TestWebSearchNao2XX(t *testing.T) {
+func TestWebSearchNon2XX(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
 		w.Write([]byte(`{"error":"rate limited"}`))
 	}))
 	defer srv.Close()
 
-	specs := especificas(t, &Busca{Endpoint: srv.URL})
-	out, err := rodar(t, specs["web_search"], map[string]any{"query": "x"})
+	specs := specsByName(t, &Busca{Endpoint: srv.URL})
+	out, err := run(t, specs["web_search"], map[string]any{"query": "x"})
 	if err == nil {
-		t.Fatalf("esperava erro, voltou:\n%s", out)
+		t.Fatalf("expected error, got:\n%s", out)
 	}
 	if !strings.Contains(err.Error(), "429") {
-		t.Errorf("mensagem sem o status: %q", err.Error())
+		t.Errorf("message without the status: %q", err.Error())
 	}
 	if strings.Contains(err.Error(), "\n") {
-		t.Errorf("erro não é de uma linha: %q", err.Error())
+		t.Errorf("error is not a single line: %q", err.Error())
 	}
 }
 
-// fixtureDDG reproduz a marcação da página lite medida em 2026-10-18: link pelo
-// redirecionador (uddg), um anúncio (y.js) que tem de sumir, e um resultado
-// sem snippet para provar que o pareamento por ordem não desalinha.
+// fixtureDDG reproduces the lite page markup measured on 2026-10-18: a link
+// through the redirector (uddg), an ad (y.js) that must disappear, and a
+// result without a snippet to prove that pairing by order doesn't misalign.
 const fixtureDDG = `<table>
 <tr><td>1.&nbsp;</td><td><a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fgo.dev%2Fdoc%2Fdevel%2Frelease&amp;rut=abc" class='result-link'>Release History - The <b>Go</b> Programming Language</a></td></tr>
 <tr><td>&nbsp;</td><td class='result-snippet'>Go 1.3 is a major <b>release</b> &amp; more.</td></tr>
-<tr><td>2.&nbsp;</td><td><a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fduckduckgo.com%2Fy.js%3Fad%3D1&amp;rut=x" class='result-link'>Anúncio</a></td></tr>
-<tr><td>&nbsp;</td><td class='result-snippet'>compre já</td></tr>
-<tr><td>3.&nbsp;</td><td><a rel="nofollow" href="https://example.org/direto" class='result-link'>Direto</a></td></tr>
+<tr><td>2.&nbsp;</td><td><a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fduckduckgo.com%2Fy.js%3Fad%3D1&amp;rut=x" class='result-link'>Sponsored Ad</a></td></tr>
+<tr><td>&nbsp;</td><td class='result-snippet'>buy now</td></tr>
+<tr><td>3.&nbsp;</td><td><a rel="nofollow" href="https://example.org/direct" class='result-link'>Direct</a></td></tr>
 </table>`
 
-// Sem search_url a busca NÃO falha: cai no DuckDuckGo lite. Antes deste
-// fallback a tool devolvia erro de configuração e a busca ficava desligada na
-// prática para qualquer instalação nova.
-func TestWebSearchSemEndpointUsaDuckDuckGo(t *testing.T) {
-	var consulta string
+// Without search_url, search does NOT fail: it falls back to DuckDuckGo lite.
+// Before this fallback the tool returned a configuration error and search was
+// effectively disabled for every fresh install.
+func TestWebSearchWithoutEndpointUsesDuckDuckGo(t *testing.T) {
+	var query string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		consulta = r.URL.Query().Get("q")
+		query = r.URL.Query().Get("q")
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write([]byte(fixtureDDG))
 	}))
 	defer srv.Close()
-	antes := endpointDDG
+	prev := endpointDDG
 	endpointDDG = srv.URL + "/lite/"
-	t.Cleanup(func() { endpointDDG = antes })
+	t.Cleanup(func() { endpointDDG = prev })
 
-	for nome, busca := range map[string]*Busca{
+	for name, search := range map[string]*Busca{
 		"nil":    nil,
-		"vazio":  {},
-		"espaco": {Endpoint: "   "},
+		"empty":  {},
+		"spaces": {Endpoint: "   "},
 	} {
-		t.Run(nome, func(t *testing.T) {
-			out, err := rodar(t, especificas(t, busca)["web_search"], map[string]any{"query": "go release"})
+		t.Run(name, func(t *testing.T) {
+			out, err := run(t, specsByName(t, search)["web_search"], map[string]any{"query": "go release"})
 			if err != nil {
-				t.Fatalf("sem search_url deveria cair no DuckDuckGo, veio erro: %v", err)
+				t.Fatalf("without search_url it should fall back to DuckDuckGo, got error: %v", err)
 			}
-			if consulta != "go release" {
-				t.Errorf("consulta enviada = %q", consulta)
+			if query != "go release" {
+				t.Errorf("query sent = %q", query)
 			}
 			if !strings.Contains(out, "https://go.dev/doc/devel/release") {
-				t.Errorf("URL real (decodificada do uddg) ausente:\n%s", out)
+				t.Errorf("real URL (decoded from uddg) missing:\n%s", out)
 			}
 			if !strings.Contains(out, "Release History - The Go Programming Language") {
-				t.Errorf("título sem tags ausente:\n%s", out)
+				t.Errorf("tag-free title missing:\n%s", out)
 			}
 			if !strings.Contains(out, "Go 1.3 is a major release & more.") {
-				t.Errorf("snippet sem tags/entidades ausente:\n%s", out)
+				t.Errorf("tag/entity-free snippet missing:\n%s", out)
 			}
-			if strings.Contains(out, "y.js") || strings.Contains(out, "Anúncio") {
-				t.Errorf("anúncio deveria ser descartado:\n%s", out)
+			if strings.Contains(out, "y.js") || strings.Contains(out, "Sponsored Ad") {
+				t.Errorf("ad should be dropped:\n%s", out)
 			}
-			if !strings.Contains(out, "https://example.org/direto") {
-				t.Errorf("link direto deveria passar:\n%s", out)
+			if !strings.Contains(out, "https://example.org/direct") {
+				t.Errorf("direct link should pass through:\n%s", out)
 			}
 		})
 	}
 }
 
-// Erro HTTP do fallback continua sendo de uma linha e cita a origem.
-func TestWebSearchDuckDuckGoErroHTTP(t *testing.T) {
+// An HTTP error from the fallback is still one line and names the source.
+func TestWebSearchDuckDuckGoHTTPError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
 	}))
 	defer srv.Close()
-	antes := endpointDDG
+	prev := endpointDDG
 	endpointDDG = srv.URL
-	t.Cleanup(func() { endpointDDG = antes })
+	t.Cleanup(func() { endpointDDG = prev })
 
-	_, err := rodar(t, especificas(t, nil)["web_search"], map[string]any{"query": "x"})
+	_, err := run(t, specsByName(t, nil)["web_search"], map[string]any{"query": "x"})
 	if err == nil {
-		t.Fatal("esperava erro do HTTP 429")
+		t.Fatal("expected HTTP 429 error")
 	}
 	if !strings.Contains(err.Error(), "DuckDuckGo") || !strings.Contains(err.Error(), "429") {
-		t.Errorf("erro deveria citar DuckDuckGo e o status: %q", err)
+		t.Errorf("error should mention DuckDuckGo and the status: %q", err)
 	}
 	if strings.Contains(err.Error(), "\n") {
-		t.Errorf("erro não é de uma linha: %q", err)
+		t.Errorf("error is not a single line: %q", err)
 	}
 }
 
-// Com search_url configurado, o SearXNG continua sendo o caminho — o fallback
-// não pode roubar a busca de quem configurou.
-func TestWebSearchComEndpointNaoUsaDuckDuckGo(t *testing.T) {
+// With search_url configured, SearXNG remains the path — the fallback must
+// not steal searches from whoever configured it.
+func TestWebSearchWithEndpointDoesNotUseDuckDuckGo(t *testing.T) {
 	ddg := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		t.Error("DuckDuckGo não deveria ser chamado com search_url configurado")
+		t.Error("DuckDuckGo should not be called with search_url configured")
 	}))
 	defer ddg.Close()
-	antes := endpointDDG
+	prev := endpointDDG
 	endpointDDG = ddg.URL
-	t.Cleanup(func() { endpointDDG = antes })
+	t.Cleanup(func() { endpointDDG = prev })
 
 	sx := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -610,40 +610,40 @@ func TestWebSearchComEndpointNaoUsaDuckDuckGo(t *testing.T) {
 	}))
 	defer sx.Close()
 
-	out, err := rodar(t, especificas(t, &Busca{Endpoint: sx.URL})["web_search"], map[string]any{"query": "x"})
+	out, err := run(t, specsByName(t, &Busca{Endpoint: sx.URL})["web_search"], map[string]any{"query": "x"})
 	if err != nil {
 		t.Fatalf("SearXNG: %v", err)
 	}
 	if !strings.Contains(out, "https://sx.example/a") {
-		t.Errorf("resultado do SearXNG ausente:\n%s", out)
+		t.Errorf("SearXNG result missing:\n%s", out)
 	}
 }
 
-// A tool tem de existir no catálogo mesmo sem Busca — o modelo precisa ver
-// o schema para então receber o erro de configuração.
-func TestEspecificacoesIncluiBuscaSemConfigurar(t *testing.T) {
-	specs := especificas(t, nil)
+// The tool must be in the catalog even without Busca — the model needs to
+// see the schema in order to then get the configuration error.
+func TestEspecificacoesIncludesSearchWithoutConfig(t *testing.T) {
+	specs := specsByName(t, nil)
 	s, ok := specs["web_search"]
 	if !ok {
-		t.Fatal("web_search ausente do catálogo com Busca nil")
+		t.Fatal("web_search missing from the catalog with nil Busca")
 	}
 	if len(s.Schema) == 0 {
-		t.Error("web_search sem schema")
+		t.Error("web_search without schema")
 	}
 	if _, ok := s.Schema["properties"].(map[string]any)["query"]; !ok {
-		t.Errorf("schema sem a propriedade query: %v", s.Schema)
+		t.Errorf("schema without the query property: %v", s.Schema)
 	}
 	if _, ok := specs["web_fetch"]; !ok {
-		t.Error("web_fetch ausente do catálogo")
+		t.Error("web_fetch missing from the catalog")
 	}
 }
 
-// ── contrato dos specs ────────────────────────────────────────────────────
+// ── spec contract ─────────────────────────────────────────────────────────
 
-func TestEspecificacoesPrefixoETeto(t *testing.T) {
+func TestEspecificacoesSchemaContract(t *testing.T) {
 	for _, s := range Especificacoes(nil) {
 		if s.Name == "" || s.Description == "" {
-			t.Errorf("spec %q sem nome ou descrição", s.Name)
+			t.Errorf("spec %q without name or description", s.Name)
 		}
 		sch, ok := s.Schema["type"].(string)
 		if !ok || sch != "object" {
@@ -651,16 +651,16 @@ func TestEspecificacoesPrefixoETeto(t *testing.T) {
 		}
 		props, ok := s.Schema["properties"].(map[string]any)
 		if !ok {
-			t.Errorf("%s: schema sem properties", s.Name)
+			t.Errorf("%s: schema without properties", s.Name)
 			continue
 		}
 		req, ok := s.Schema["required"].([]string)
 		if !ok || len(req) == 0 {
-			t.Errorf("%s: schema sem required", s.Name)
+			t.Errorf("%s: schema without required", s.Name)
 		}
 		for _, r := range req {
-			if _, existe := props[r]; !existe {
-				t.Errorf("%s: required %q sem properties", s.Name, r)
+			if _, exists := props[r]; !exists {
+				t.Errorf("%s: required %q not in properties", s.Name, r)
 			}
 		}
 		if s.Exec == nil {
@@ -669,43 +669,43 @@ func TestEspecificacoesPrefixoETeto(t *testing.T) {
 	}
 }
 
-// Nenhuma tool devolve mais que o teto declarado.
-func TestNenhumaSaidaPassaDoTeto(t *testing.T) {
-	// fetch com HTML grande.
-	grandeHTML := "<html><head><title>g</title></head><body>" +
-		strings.Repeat("<p>parágrafo com bastante texto dentro para contar</p>", 3000) +
+// No tool returns more than its declared cap.
+func TestNoOutputExceedsCap(t *testing.T) {
+	// fetch with a large HTML page.
+	bigHTML := "<html><head><title>g</title></head><body>" +
+		strings.Repeat("<p>paragraph with plenty of text inside to count</p>", 3000) +
 		"</body></html>"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte(grandeHTML))
+		w.Write([]byte(bigHTML))
 	}))
 	defer srv.Close()
 
-	specs := especificas(t, &Busca{Endpoint: srv.URL})
-	for _, caso := range []struct {
-		nome string
-		args map[string]any
-		teto int
+	specs := specsByName(t, &Busca{Endpoint: srv.URL})
+	for _, tc := range []struct {
+		name  string
+		args  map[string]any
+		limit int
 	}{
-		{"web_fetch", map[string]any{"url": srv.URL}, tetoFetch},
+		{"web_fetch", map[string]any{"url": srv.URL}, fetchCap},
 		{"web_fetch", map[string]any{"url": srv.URL, "max_chars": 1000}, 1000},
-		{"web_search", map[string]any{"query": "x"}, tetoBusca},
+		{"web_search", map[string]any{"query": "x"}, searchCap},
 	} {
-		out, err := rodar(t, specs[caso.nome], caso.args)
+		out, err := run(t, specs[tc.name], tc.args)
 		if err != nil {
-			continue // erro não é saída
+			continue // an error is not output
 		}
-		if len(out) > caso.teto {
-			t.Errorf("%s: %d bytes > teto %d", caso.nome, len(out), caso.teto)
+		if len(out) > tc.limit {
+			t.Errorf("%s: %d bytes > cap %d", tc.name, len(out), tc.limit)
 		}
 	}
 }
 
-// UA do harness em ambas as ferramentas.
-func TestUserAgentDoHarness(t *testing.T) {
-	var vistos []string
+// Harness UA in both tools.
+func TestHarnessUserAgent(t *testing.T) {
+	var seen []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		vistos = append(vistos, r.Header.Get("User-Agent"))
+		seen = append(seen, r.Header.Get("User-Agent"))
 		if r.URL.Query().Get("format") == "json" {
 			w.Header().Set("Content-Type", "application/json")
 			w.Write([]byte(`{"results":[]}`))
@@ -717,21 +717,21 @@ func TestUserAgentDoHarness(t *testing.T) {
 	defer srv.Close()
 
 	if dealer.UserAgent != "barroso-harness" {
-		t.Fatalf("UserAgent do dealer mudou: %q", dealer.UserAgent)
+		t.Fatalf("dealer UserAgent changed: %q", dealer.UserAgent)
 	}
-	specs := especificas(t, &Busca{Endpoint: srv.URL})
-	if _, err := rodar(t, specs["web_fetch"], map[string]any{"url": srv.URL}); err != nil {
+	specs := specsByName(t, &Busca{Endpoint: srv.URL})
+	if _, err := run(t, specs["web_fetch"], map[string]any{"url": srv.URL}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := rodar(t, specs["web_search"], map[string]any{"query": "x"}); err != nil {
+	if _, err := run(t, specs["web_search"], map[string]any{"query": "x"}); err != nil {
 		t.Fatal(err)
 	}
-	if len(vistos) != 2 {
-		t.Fatalf("esperava 2 requisições, veio %d", len(vistos))
+	if len(seen) != 2 {
+		t.Fatalf("expected 2 requests, got %d", len(seen))
 	}
-	for i, ua := range vistos {
+	for i, ua := range seen {
 		if ua != dealer.UserAgent {
-			t.Errorf("requisição %d: User-Agent = %q, queria %q", i, ua, dealer.UserAgent)
+			t.Errorf("request %d: User-Agent = %q, want %q", i, ua, dealer.UserAgent)
 		}
 	}
 }

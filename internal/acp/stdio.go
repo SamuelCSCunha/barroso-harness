@@ -1,13 +1,13 @@
-// Servidor ACP sobre stdio: o modo como um cliente ACP de verdade fala com a
-// harness. main.go mais tarde chama Sirve (a integração é de outro agente);
-// este arquivo NÃO é ligado a lugar nenhum ainda.
+// ACP server over stdio: how a real ACP client talks to the harness. main.go
+// later calls Sirve (the integration belongs to another agent); this file is
+// NOT wired anywhere yet.
 //
-// Contrato de stdio, e a razão de cada cuidado:
-//   - stdout transporta SÓ JSON-RPC newline-delimited. Qualquer outra escrita
-//     (banner, log, warning de runtime) corrompe o protocolo — por isso o log
-//     do agente vai para stderr, nunca para o fio.
-//   - o fio é fechado ao sair. Clientes ACP detectam fim de conexão pelo EOF;
-//     um descritor aberto depois do return deixa o cliente pendurado.
+// The stdio contract, and the reason for each precaution:
+//   - stdout carries ONLY newline-delimited JSON-RPC. Any other write (banner,
+//     log, runtime warning) corrupts the protocol — that is why the agent log
+//     goes to stderr, never to the wire.
+//   - the wire is closed on exit. ACP clients detect end of connection by EOF;
+//     a descriptor left open after return leaves the client hanging.
 package acp
 
 import (
@@ -18,33 +18,33 @@ import (
 	"github.com/ruanbarroso/barroso-harness/internal/config"
 )
 
-// logParaStderr é o logger padrão do agente em stdio: diagnóstico em stderr,
-// nunca no fio do protocolo.
-func logParaStderr(linha string) {
+// logToStderr is the agent's default logger on stdio: diagnostics go to
+// stderr, never to the protocol wire.
+func logToStderr(line string) {
 	w := bufio.NewWriter(os.Stderr)
-	_, _ = w.WriteString(linha + "\n")
+	_, _ = w.WriteString(line + "\n")
 	_ = w.Flush()
 }
 
-// Sirve roda o agente ACP sobre os stdin/stdout do processo até o cliente
-// fechar, o ctx ser cancelado ou a escrita falhar.
+// Sirve runs the ACP agent over the process stdin/stdout until the client
+// closes, the ctx is cancelled or a write fails.
 //
-// A config é lida UMA vez aqui, não a cada session/new: um cliente que troca o
-// modelo no arquivo no meio de uma conversa não veria efeito neste processo, e
-// falhar isso depois é pior que deixar claro agora.
+// The config is read ONCE here, not on every session/new: a client that
+// changes the model in the file mid-conversation would see no effect in this
+// process, and failing at that later is worse than making it clear now.
 //
-// No retorno, os turnos em voo são esperados antes de fechar o stdout: uma
-// resposta cortada no meio seria pior que alguns milissegundos de atraso. O
-// cancelamento do ctx (Ctrl+C do host, encerramento do cliente) já desarmou os
-// Send pendurados, então essa espera não trava — a não ser por um provider que
-// ignore o ctx, caso em que o host fecha o stdin e o processo morre com o pai.
+// On return, in-flight turns are awaited before closing stdout: a response cut
+// in half would be worse than a few milliseconds of delay. Cancelling the ctx
+// (host Ctrl+C, client shutdown) has already disarmed pending Sends, so this
+// wait does not hang — unless a provider ignores the ctx, in which case the
+// host closes stdin and the process dies with its parent.
 func Sirve(ctx context.Context, cfg config.Config) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	a := Novo(cfg).ComLog(logParaStderr)
-	erro := a.Handle(ctx, os.Stdin, os.Stdout)
-	a.Esperar() // respostas completas antes do fechamento
+	a := Novo(cfg).ComLog(logToStderr)
+	err := a.Handle(ctx, os.Stdin, os.Stdout)
+	a.Esperar() // complete responses before closing
 	_ = os.Stdout.Close()
-	return erro
+	return err
 }
