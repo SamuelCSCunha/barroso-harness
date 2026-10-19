@@ -27,10 +27,10 @@ func executablePath() (string, error) {
 	return filepath.Abs(resolved)
 }
 
-// installBinary é o caminho de produção: descobre o executável EM EXECUÇÃO e o
-// troca. Fica fina de propósito — a lógica que importa está em installPair,
-// que recebe o alvo como parâmetro e por isso é testável sem tocar no binário
-// que está rodando os testes.
+// installBinary is the production path: it finds the RUNNING executable and
+// replaces it. It is thin on purpose — the logic that matters is in
+// installPair, which takes the target as a parameter and is therefore
+// testable without touching the binary running the tests.
 func installBinary(staged string) (installResult, error) {
 	target, err := executablePath()
 	if err != nil {
@@ -39,11 +39,12 @@ func installBinary(staged string) (installResult, error) {
 	return installPair(target, staged)
 }
 
-// installPair troca o alvo e, quando ela existe, a segunda cópia do atalho.
+// installPair replaces the target and, when it exists, the second copy (the
+// shortcut).
 //
-// O segundo arquivo precisa do SEU PRÓPRIO staged: depois do primeiro rename o
-// staged original já não existe mais, e reusá-lo faria o alias falhar — foi o
-// que o teste TestInstallBinaryTrocaOsDois pegou.
+// The second file needs ITS OWN staged copy: after the first rename the
+// original staged file no longer exists, and reusing it would make the alias
+// fail — which is what TestInstallWindowsInstallBinaryReplacesBoth caught.
 func installPair(target, staged string) (installResult, error) {
 	result, err := installAt(target, staged)
 	if err != nil {
@@ -62,16 +63,17 @@ func installPair(target, staged string) (installResult, error) {
 	if _, statErr := os.Lstat(alias); statErr != nil {
 		return result, nil
 	}
-	// A segunda cópia sai do ALVO já trocado, não do staged: depois do rename
-	// inicial o staged não existe mais, e abri-lo de novo falharia. O alvo
-	// recém-instalado é exatamente o conteúdo que o manifest conferiu.
-	segundo, err := copyToStaging(alias, target)
+	// The second copy comes from the already-replaced TARGET, not from the
+	// staged file: after the initial rename the staged file no longer exists,
+	// and opening it again would fail. The freshly installed target is
+	// exactly the content the manifest verified.
+	second, err := copyToStaging(alias, target)
 	if err != nil {
 		result.commands = append(result.commands, powershellReplace(alias, target))
 		return result, nil
 	}
-	if _, aliasErr := installAt(alias, segundo); aliasErr != nil {
-		result.commands = append(result.commands, powershellReplace(alias, segundo))
+	if _, aliasErr := installAt(alias, second); aliasErr != nil {
+		result.commands = append(result.commands, powershellReplace(alias, second))
 	}
 	return result, nil
 }
@@ -107,22 +109,22 @@ func installAt(target, staged string) (installResult, error) {
 }
 
 func powershellReplace(target, staged string) string {
-	// Aspas simples, não %q: no PowerShell o caminho vai entre aspas simples e
-	// barras invertidas duplicadas seriam um caminho quebrado.
+	// Single quotes, not %q: in PowerShell the path goes in single quotes and
+	// doubled backslashes would be a broken path.
 	return fmt.Sprintf("Move-Item -LiteralPath '%s' -Destination '%s' -Force", staged, target)
 }
 
-// copyToStaging prepara um segundo staged ao lado do alias, tirado do alvo que
-// já foi trocado. O conteúdo é o mesmo que o manifest conferiu — o que evita um
-// segundo download e mantém um único ponto de verificação.
-func copyToStaging(target, origem string) (string, error) {
+// copyToStaging prepares a second staged file next to the alias, taken from
+// the already-replaced target. The content is what the manifest verified —
+// which avoids a second download and keeps a single verification point.
+func copyToStaging(target, source string) (string, error) {
 	dir := filepath.Dir(target)
 	tmp, err := os.CreateTemp(dir, ".barroso-harness-alias-*")
 	if err != nil {
 		return "", err
 	}
 	defer tmp.Close()
-	in, err := os.Open(origem)
+	in, err := os.Open(source)
 	if err != nil {
 		return "", err
 	}

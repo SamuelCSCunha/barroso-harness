@@ -10,64 +10,65 @@ import (
 	"strings"
 )
 
-// Confirmar decide se a atualização segue. Existe para o REPL perguntar e para
-// os testes fixarem a resposta. Nil = segue sem perguntar (modo -p, teste).
+// Confirmar decides whether the update proceeds. It exists so the REPL can
+// ask and tests can pin the answer. Nil = proceed without asking (-p mode,
+// tests).
 type Confirmar func() bool
 
-// Rodar confere o canal, baixa a release mais nova, verifica e instala. É o
-// único ponto de entrada que a CLI chama.
+// Rodar checks the channel, downloads the newest release, verifies and
+// installs it. It is the only entry point the CLI calls.
 //
-// A confirmação vem ANTES do download: não há razão para baixar 11 MB e só
-// depois descobrir que a pessoa não queria trocar o binário.
+// Confirmation comes BEFORE the download: there is no reason to download
+// 11 MB only to find out the person did not want to replace the binary.
 //
-// Erros possíveis, e o que cada um significa:
-//   - token ausente          → canal privado sem credencial; nada foi feito
-//   - canal recusou o token  → permissão; nada foi feito
-//   - sem release estável    → canal vazio nesta plataforma; nada foi feito
-//   - soma divergente        → download corrompido; staged apagado, binário intacto
-//   - binário em uso         → Windows não renomeia executável em execução; sai
-//     com o comando PowerShell para a pessoa rodar
+// Possible errors, and what each means:
+//   - missing token           → private channel without credentials; nothing done
+//   - channel rejected token  → permissions; nothing done
+//   - no stable release       → empty channel for this platform; nothing done
+//   - checksum mismatch       → corrupted download; staged file removed, binary intact
+//   - binary in use           → Windows cannot rename a running executable; exits
+//     with the PowerShell command for the person to run
 //
-// Em todos os casos de falha ANTES da instalação, o executável em uso fica
-// intocado. Um update que erra nunca deixa a máquina sem harness.
-func Rodar(ctx context.Context, out io.Writer, versionAtual string, confirm Confirmar) error {
-	lanc, err := BuscarUltima(ctx)
+// In every failure BEFORE installation, the running executable is left
+// untouched. A failed update never leaves the machine without a harness.
+func Rodar(ctx context.Context, out io.Writer, currentVersion string, confirm Confirmar) error {
+	rel, err := BuscarUltima(ctx)
 	if err != nil {
 		return fmt.Errorf("update channel unavailable: %w", err)
 	}
 
-	cmp, err := compararVersoes(versionAtual, lanc.Version)
+	cmp, err := compareVersions(currentVersion, rel.Version)
 	if err != nil {
 		return fmt.Errorf("compare versions: %w", err)
 	}
 	switch cmp {
 	case 0:
-		fmt.Fprintf(out, "already on the latest version (%s).\n", versionAtual)
+		fmt.Fprintf(out, "already on the latest version (%s).\n", currentVersion)
 		return nil
 	case 1:
 		fmt.Fprintf(out, "installed version (%s) is newer than the published one (%s); nothing to do.\n",
-			versionAtual, lanc.Version)
+			currentVersion, rel.Version)
 		return nil
 	}
 
-	asset, err := lanc.AssetDaPlataforma()
+	asset, err := rel.AssetDaPlataforma()
 	if err != nil {
 		return err
 	}
 
-	// A soma vem do SHA256SUMS publicado junto com a release. Sem ele, a
-	// verificação de integridade fica sem referência — e baixar binário sem
-	// conferir seria justamente o buraco que este pacote fecha.
-	soma := ""
-	if assetSomas, ok := lanc.AssetSomas(); ok {
-		somas, errSomas := ListarSomas(ctx, assetSomas)
-		if errSomas != nil {
-			return fmt.Errorf("could not read the release SHA256SUMS (%v); aborting for safety", errSomas)
+	// The checksum comes from the SHA256SUMS published with the release.
+	// Without it, the integrity check has no reference — and downloading a
+	// binary without checking is exactly the hole this package closes.
+	sum := ""
+	if sumsAsset, ok := rel.AssetSomas(); ok {
+		sums, errSums := ListarSomas(ctx, sumsAsset)
+		if errSums != nil {
+			return fmt.Errorf("could not read the release SHA256SUMS (%v); aborting for safety", errSums)
 		}
-		soma = somas[asset.Name]
-		if soma == "" {
+		sum = sums[asset.Name]
+		if sum == "" {
 			return fmt.Errorf("SHA256SUMS of release %s does not list %s; aborting for safety",
-				lanc.Version, asset.Name)
+				rel.Version, asset.Name)
 		}
 	} else {
 		return errors.New("release did not publish SHA256SUMS; aborting for safety")
@@ -81,35 +82,35 @@ func Rodar(ctx context.Context, out io.Writer, versionAtual string, confirm Conf
 	staging := filepath.Join(stagingRoot(), asset.Name)
 	defer removeIfExists(staging)
 
-	fmt.Fprintf(out, "downloading %s (%s, ~%d MiB)...\n", asset.Name, lanc.Version, asset.Bytes/(1<<20))
-	if _, err := Baixar(ctx, asset, soma, staging); err != nil {
+	fmt.Fprintf(out, "downloading %s (%s, ~%d MiB)...\n", asset.Name, rel.Version, asset.Bytes/(1<<20))
+	if _, err := Baixar(ctx, asset, sum, staging); err != nil {
 		return err
 	}
-	if err := verifyStaged(staging, lanc.Version); err != nil {
+	if err := verifyStaged(staging, rel.Version); err != nil {
 		return fmt.Errorf("new binary failed the exec check: %w", err)
 	}
 
-	resultado, err := installBinary(staging)
+	result, err := installBinary(staging)
 	if err != nil {
-		if len(resultado.commands) > 0 {
+		if len(result.commands) > 0 {
 			fmt.Fprintln(out, "not enough permission to replace the binary; run the following, then retry /update:")
-			fmt.Fprintln(out, installCommands(resultado))
+			fmt.Fprintln(out, installCommands(result))
 			return err
 		}
 		return err
 	}
-	fmt.Fprintf(out, "installed %s; exit and reopen bh to use the new version.\n", lanc.Version)
+	fmt.Fprintf(out, "installed %s; exit and reopen bh to use the new version.\n", rel.Version)
 	return nil
 }
 
-// stagingRoot é onde o binário baixado espera a instalação. Fica no cache do
-// usuário — nunca ao lado do executável, onde um arquivo temporário com bit de
-// execução seria confundido com instalação pela metade.
+// stagingRoot is where the downloaded binary waits for installation. It lives
+// in the user cache — never next to the executable, where a temp file with
+// the exec bit could be mistaken for a half-done installation.
 func stagingRoot() string {
 	dir, err := os.UserCacheDir()
 	if err != nil {
-		// Sem cache conhecido, o próprio dir do executável aceita um arquivo de
-		// nome inconfundível; a instalação o remove no defer.
+		// With no known cache, the executable's own dir accepts a file with
+		// an unmistakable name; the installation removes it in the defer.
 		if exe, errExe := os.Executable(); errExe == nil {
 			return filepath.Dir(exe)
 		}
@@ -118,9 +119,9 @@ func stagingRoot() string {
 	return filepath.Join(dir, "barroso-harness", "updates")
 }
 
-// normalizarVersao limpa o "dev" — build local sem versão de release. Nesse
-// caso qualquer versão publicada é novidade.
-func normalizarVersao(v string) string {
+// normalizeVersion cleans up "dev" — a local build without a release
+// version. In that case any published version is new.
+func normalizeVersion(v string) string {
 	v = strings.TrimSpace(v)
 	if v == "" {
 		return "dev"

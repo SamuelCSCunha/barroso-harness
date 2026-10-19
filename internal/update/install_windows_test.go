@@ -9,150 +9,150 @@ import (
 	"testing"
 )
 
-// arvoreWindowsFalsa monta o que a instalação no Windows cria: dois arquivos
-// COPIADOS (não symlink), barroso-harness.exe e bh.exe, na mesma pasta.
-func arvoreWindowsFassa(t *testing.T) (alvo, alias, staged string) {
+// fakeWindowsTree builds what the Windows installation creates: two COPIED
+// files (not symlinks), barroso-harness.exe and bh.exe, in the same folder.
+func fakeWindowsTree(t *testing.T) (target, alias, staged string) {
 	t.Helper()
 	dir := t.TempDir()
-	alvo = filepath.Join(dir, "barroso-harness.exe")
+	target = filepath.Join(dir, "barroso-harness.exe")
 	alias = filepath.Join(dir, "bh.exe")
 	staged = filepath.Join(dir, "staged.exe")
-	for _, caminho := range []string{alvo, alias} {
-		if err := os.WriteFile(caminho, []byte("versao-antiga"), 0o755); err != nil {
+	for _, path := range []string{target, alias} {
+		if err := os.WriteFile(path, []byte("old-version"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if err := os.WriteFile(staged, []byte("v0.1.0-bh.9"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	return alvo, alias, staged
+	return target, alias, staged
 }
 
-func lerW(t *testing.T, caminho string) string {
+func readFileW(t *testing.T, path string) string {
 	t.Helper()
-	raw, err := os.ReadFile(caminho)
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		return ""
 	}
 	return string(raw)
 }
 
-// O rename-dance: o alvo vai para .old-N e o staged toma o lugar. Um .exe em
-// execução não pode ser sobrescrito, mas PODE ser renomeado — é o que torna
-// essa troca possível.
-func TestInstallWindowsTrocaComRenameDance(t *testing.T) {
-	alvo, _, staged := arvoreWindowsFassa(t)
+// The rename dance: the target goes to .old-N and the staged file takes its
+// place. A running .exe cannot be overwritten, but it CAN be renamed — which
+// is what makes this swap possible.
+func TestInstallWindowsSwapsWithRenameDance(t *testing.T) {
+	target, _, staged := fakeWindowsTree(t)
 
-	resultado, err := installAt(alvo, staged)
+	result, err := installAt(target, staged)
 	if err != nil {
 		t.Fatalf("installAt: %v", err)
 	}
-	if resultado.path != alvo {
-		t.Fatalf("caminho %q, esperado %q", resultado.path, alvo)
+	if result.path != target {
+		t.Fatalf("path %q, want %q", result.path, target)
 	}
-	if querido := "v0.1.0-bh.9"; lerW(t, alvo) != querido {
-		t.Fatalf("alvo tem %q, esperado %q", lerW(t, alvo), querido)
+	if want := "v0.1.0-bh.9"; readFileW(t, target) != want {
+		t.Fatalf("target has %q, want %q", readFileW(t, target), want)
 	}
-	backup := alvo + ".old-1"
-	if querido := "versao-antiga"; lerW(t, backup) != querido {
-		t.Fatalf("backup %q tem %q, esperado %q", backup, lerW(t, backup), querido)
+	backup := target + ".old-1"
+	if want := "old-version"; readFileW(t, backup) != want {
+		t.Fatalf("backup %q has %q, want %q", backup, readFileW(t, backup), want)
 	}
 	if _, err := os.Lstat(staged); !os.IsNotExist(err) {
-		t.Fatalf("staged devia ter sido renomeado: %v", err)
+		t.Fatalf("staged should have been renamed: %v", err)
 	}
 }
 
-// Um segundo update não sobrescreve o backup do primeiro.
-func TestInstallWindowsNaoSobrescreveBackup(t *testing.T) {
-	alvo, _, staged := arvoreWindowsFassa(t)
-	if err := os.WriteFile(alvo+".old-1", []byte("backup-original"), 0o755); err != nil {
+// A second update does not overwrite the first one's backup.
+func TestInstallWindowsDoesNotOverwriteBackup(t *testing.T) {
+	target, _, staged := fakeWindowsTree(t)
+	if err := os.WriteFile(target+".old-1", []byte("original-backup"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := installAt(alvo, staged); err != nil {
+	if _, err := installAt(target, staged); err != nil {
 		t.Fatalf("installAt: %v", err)
 	}
-	if lerW(t, alvo+".old-1") != "backup-original" {
-		t.Fatalf("backup original sobrescrito: %q", lerW(t, alvo+".old-1"))
+	if readFileW(t, target+".old-1") != "original-backup" {
+		t.Fatalf("original backup overwritten: %q", readFileW(t, target+".old-1"))
 	}
-	if lerW(t, alvo+".old-2") != "versao-antiga" {
-		t.Fatalf("anterior devia cair em .old-2, veio %q", lerW(t, alvo+".old-2"))
+	if readFileW(t, target+".old-2") != "old-version" {
+		t.Fatalf("previous one should land in .old-2, got %q", readFileW(t, target+".old-2"))
 	}
 }
 
-// O segundo alias (bh.exe quando o alvo é barroso-harness.exe) é uma CÓPIA na
-// instalação Windows, então ele também precisa ser trocado. Este teste fixa o
-// defeito de passar o mesmo staged duas vezes: depois do primeiro rename o
-// staged não existe mais, e o segundo installAt falharia.
-func TestInstallWindowsTrocaOsDoisAliases(t *testing.T) {
-	alvo, alias, staged := arvoreWindowsFassa(t)
+// The second alias (bh.exe when the target is barroso-harness.exe) is a COPY
+// in the Windows installation, so it must be replaced too. This test pins
+// the defect of passing the same staged file twice: after the first rename
+// the staged file no longer exists, and the second installAt would fail.
+func TestInstallWindowsReplacesBothAliases(t *testing.T) {
+	target, alias, staged := fakeWindowsTree(t)
 
-	// Um staged por alias, que é o que a correção precisa produzir.
+	// One staged file per alias, which is what the fix must produce.
 	stagedAlias := filepath.Join(filepath.Dir(staged), "staged-alias.exe")
 	if err := os.WriteFile(stagedAlias, []byte("v0.1.0-bh.9"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := installAt(alvo, staged); err != nil {
-		t.Fatalf("installAt alvo: %v", err)
+	if _, err := installAt(target, staged); err != nil {
+		t.Fatalf("installAt target: %v", err)
 	}
 	if _, err := installAt(alias, stagedAlias); err != nil {
 		t.Fatalf("installAt alias: %v", err)
 	}
-	if lerW(t, alvo) != "v0.1.0-bh.9" {
-		t.Fatalf("alvo não foi trocado: %q", lerW(t, alvo))
+	if readFileW(t, target) != "v0.1.0-bh.9" {
+		t.Fatalf("target was not replaced: %q", readFileW(t, target))
 	}
-	if lerW(t, alias) != "v0.1.0-bh.9" {
-		t.Fatalf("alias não foi trocado: %q", lerW(t, alias))
+	if readFileW(t, alias) != "v0.1.0-bh.9" {
+		t.Fatalf("alias was not replaced: %q", readFileW(t, alias))
 	}
 }
 
-// Um installBinary completo troca os dois arquivos com UM staged só. É aqui que
-// o comportamento real aparece — inclusive o defeito, se ele existir.
-func TestInstallWindowsInstallBinaryTrocaOsDois(t *testing.T) {
-	alvo, alias, staged := arvoreWindowsFassa(t)
+// A full installBinary replaces both files with a SINGLE staged file. This is
+// where the real behavior shows up — including the defect, if it exists.
+func TestInstallWindowsInstallBinaryReplacesBoth(t *testing.T) {
+	target, alias, staged := fakeWindowsTree(t)
 
-	resultado, err := installPair(alvo, staged)
+	result, err := installPair(target, staged)
 	if err != nil {
 		t.Fatalf("installBinary: %v", err)
 	}
-	if resultado.path != alvo {
-		t.Fatalf("caminho %q, esperado %q", resultado.path, alvo)
+	if result.path != target {
+		t.Fatalf("path %q, want %q", result.path, target)
 	}
-	if lerW(t, alvo) != "v0.1.0-bh.9" {
-		t.Fatalf("alvo tem %q", lerW(t, alvo))
+	if readFileW(t, target) != "v0.1.0-bh.9" {
+		t.Fatalf("target has %q", readFileW(t, target))
 	}
-	if lerW(t, alias) != "v0.1.0-bh.9" {
-		t.Fatalf("segundo alias ficou com %q — um staged só não pode trocar dois arquivos", lerW(t, alias))
+	if readFileW(t, alias) != "v0.1.0-bh.9" {
+		t.Fatalf("second alias still has %q — a single staged file cannot replace two files", readFileW(t, alias))
 	}
 }
 
-// Sem o segundo arquivo, o installBinary segue trocando o alvo: a ausência do
-// alias não pode impedir a atualização principal.
-func TestInstallWindowsSemSegundoAliasAtualizaSozinho(t *testing.T) {
+// Without the second file, installBinary still replaces the target: a missing
+// alias must not block the main update.
+func TestInstallWindowsWithoutSecondAliasUpdatesAlone(t *testing.T) {
 	dir := t.TempDir()
-	alvo := filepath.Join(dir, "barroso-harness.exe")
+	target := filepath.Join(dir, "barroso-harness.exe")
 	staged := filepath.Join(dir, "staged.exe")
-	if err := os.WriteFile(alvo, []byte("velho"), 0o755); err != nil {
+	if err := os.WriteFile(target, []byte("old"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(staged, []byte("v0.1.0-bh.9"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := installPair(alvo, staged); err != nil {
+	if _, err := installPair(target, staged); err != nil {
 		t.Fatalf("installBinary: %v", err)
 	}
-	if lerW(t, alvo) != "v0.1.0-bh.9" {
-		t.Fatalf("alvo tem %q", lerW(t, alvo))
+	if readFileW(t, target) != "v0.1.0-bh.9" {
+		t.Fatalf("target has %q", readFileW(t, target))
 	}
 }
 
-// O snippet de PowerShell tem de citar os dois caminhos com -Force, para quem
-// tiver de fazer a troca à mão poder colar.
-func TestInstallWindowsSnippetPowerShell(t *testing.T) {
-	comando := powershellReplace(`C:\bin\bh.exe`, `C:\tmp\staged.exe`)
-	for _, querido := range []string{"Move-Item", "-Force", `C:\tmp\staged.exe`, `C:\bin\bh.exe`} {
-		if !strings.Contains(comando, querido) {
-			t.Fatalf("comando %q não tem %q", comando, querido)
+// The PowerShell snippet must mention both paths with -Force, so whoever has
+// to do the swap by hand can paste it.
+func TestInstallWindowsPowerShellSnippet(t *testing.T) {
+	command := powershellReplace(`C:\bin\bh.exe`, `C:\tmp\staged.exe`)
+	for _, want := range []string{"Move-Item", "-Force", `C:\tmp\staged.exe`, `C:\bin\bh.exe`} {
+		if !strings.Contains(command, want) {
+			t.Fatalf("command %q lacks %q", command, want)
 		}
 	}
 }

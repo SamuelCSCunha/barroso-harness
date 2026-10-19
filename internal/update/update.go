@@ -1,21 +1,24 @@
-// Package update consulta o canal de distribuição e troca o binário instalado
-// pela release mais nova.
+// Package update queries the distribution channel and replaces the installed
+// binary with the newest release.
 //
-// CANAL. A distribuição é Release de repositório PRIVADO no GitHub, publicada
-// pelo deployer (ver .deploy/release.json no repo). Não existe — e não existia
-// quando este pacote foi escrito — um dl.barroso.tec.br: o host não resolve DNS,
-// e a primeira versão deste pacote apontava para lá. Consultar host morto daria
-// "canal indisponível" em todos os /update, então a fonte é a API do GitHub.
+// CHANNEL. Distribution is a Release in a PRIVATE GitHub repository, published
+// by the deployer (see .deploy/release.json in the repo). There is no — and
+// there was no, when this package was written — dl.barroso.tec.br: the host
+// does not resolve in DNS, and the first version of this package pointed
+// there. Querying a dead host would yield "channel unavailable" on every
+// /update, so the source is the GitHub API.
 //
-// AUTENTICAÇÃO. Repositório privado exige token, e o token NUNCA mora na
-// config.json nem no pacote: ele vem do ambiente (GITHUB_TOKEN ou TOKEN_GITHUB,
-// neste ordem). Sem token, /update explica o que falta em vez de falhar com 404
-// genérico — 404 de repo privado sem token é indistinguível de repo inexistente.
+// AUTHENTICATION. A private repository requires a token, and the token NEVER
+// lives in config.json or in the package: it comes from the environment
+// (GITHUB_TOKEN or TOKEN_GITHUB, in that order). Without a token, /update
+// explains what is missing instead of failing with a generic 404 — a 404 from
+// a private repo without a token is indistinguishable from a missing repo.
 //
-// VERIFICAÇÃO. O SHA256 de cada binário vem do SHA256SUMS publicado junto com
-// a release, e o asset baixado é conferido antes de tocar no executável em uso.
-// Só depois da verificação o binário staged é executado (:cmd -version) para
-// provar que roda na plataforma atual. Nada é instalado sem essas três provas.
+// VERIFICATION. Each binary's SHA256 comes from the SHA256SUMS published
+// alongside the release, and the downloaded asset is checked before touching
+// the running executable. Only after verification is the staged binary run
+// (:cmd -version) to prove it runs on the current platform. Nothing is
+// installed without these three proofs.
 package update
 
 import (
@@ -32,76 +35,78 @@ import (
 	"time"
 )
 
-// RepoSlug é o repositório privado das releases. Fixo de propósito: /update do
-// barroso-harness só pode se atualizar a partir do canal dele.
+// RepoSlug is the private releases repository. Fixed on purpose: the
+// barroso-harness /update may only update itself from its own channel.
 const RepoSlug = "ruanbarroso/barroso-harness"
 
 const (
 	originGitHub = "https://api.github.com"
-	// tetoManifest é o limite da resposta JSON da API. Uma release tem poucos
-	// KB de metadados; 1 MiB é folga generosa que ainda evita leitura sem fim
-	// se o endpoint um dia devolver algo inesperado.
-	tetoManifest = 1 << 20
-	// tetoAsset é o teto de um binário baixado. As releases atuais têm ~11 MB;
-	// 64 MiB acomoda crescimento sem abrir brecha para descarregar o servidor.
-	tetoAsset = 64 << 20
-	// timeoutHTTP cobre o handshake e o download. Download de 11 MB em conexão
-	// ruim precisa de folga; 5 min é o teto que não parece "travado".
-	timeoutHTTP = 5 * time.Minute
+	// manifestCap limits the API's JSON response. A release has a few KB of
+	// metadata; 1 MiB is generous slack that still prevents an endless read
+	// if the endpoint ever returns something unexpected.
+	manifestCap = 1 << 20
+	// assetCap is the cap for a downloaded binary. Current releases are
+	// ~11 MB; 64 MiB allows growth without opening a hole to drain the server.
+	assetCap = 64 << 20
+	// httpTimeout covers the handshake and the download. An 11 MB download on
+	// a poor connection needs slack; 5 min is the cap that does not look
+	// "stuck".
+	httpTimeout = 5 * time.Minute
 )
 
-// prefixoAsset é o começo do nome de todo binário de release. Usado para
-// separar binário de metadado (SHA256SUMS) e para derivar a plataforma.
-const prefixoAsset = "barroso-harness-"
+// assetPrefix is the start of every release binary name. Used to tell a
+// binary from metadata (SHA256SUMS) and to derive the platform.
+const assetPrefix = "barroso-harness-"
 
-// sha256SumsNome é o asset da lista de somas, publicada pelo deployer.
-const sha256SumsNome = "SHA256SUMS"
+// sha256SumsName is the checksum-list asset, published by the deployer.
+const sha256SumsName = "SHA256SUMS"
 
-// Lancamento é a release resolvida no canal: a tag e os assets que ela traz.
+// Lancamento is the release resolved in the channel: the tag and its assets.
 type Lancamento struct {
 	Version string
 	TagName string
 	Assets  []Asset
 }
 
-// Asset é um arquivo da release. URL é a URL da API do GitHub, que exige o
-// header Accept: application/octet-stream para devolver bytes em vez de JSON.
+// Asset is a release file. URL is the GitHub API URL, which needs the
+// Accept: application/octet-stream header to return bytes instead of JSON.
 type Asset struct {
 	Name  string
 	URL   string
 	Bytes int64
 }
 
-// Som traz a soma declarada de um asset, lida do SHA256SUMS. Vazia significa
-// "o canal não publicou soma para este arquivo".
+// Som carries an asset's declared checksum, read from SHA256SUMS. Empty means
+// "the channel published no checksum for this file".
 type Som struct {
 	SHA256 string
 }
 
-// tokenDe retorna o token do ambiente, na ordem documentada no cabeçalho do
-// pacote. String vazia quando não há nenhum.
-func tokenDe() string {
-	for _, nome := range []string{"GITHUB_TOKEN", "TOKEN_GITHUB"} {
-		if v := strings.TrimSpace(os.Getenv(nome)); v != "" {
+// envToken returns the token from the environment, in the order documented
+// in the package header. Empty string when there is none.
+func envToken() string {
+	for _, name := range []string{"GITHUB_TOKEN", "TOKEN_GITHUB"} {
+		if v := strings.TrimSpace(os.Getenv(name)); v != "" {
 			return v
 		}
 	}
 	return ""
 }
 
-// BuscarUltima busca a release publicada mais recente do canal.
+// BuscarUltima fetches the most recent published release from the channel.
 //
-// Pré-release e rascunho ficam de fora: /update entrega versão estável, e um
-// rascunho nem sempre está completo. Se um dia o canal publicar só
-// pré-release, a mensagem de erro explica — em vez de instalar algo instável.
+// Pre-releases and drafts are excluded: /update delivers a stable version,
+// and a draft is not always complete. If the channel ever publishes only
+// pre-releases, the error message explains it — instead of installing
+// something unstable.
 func BuscarUltima(ctx context.Context) (Lancamento, error) {
-	token := tokenDe()
+	token := envToken()
 	if token == "" {
 		return Lancamento{}, errors.New(
 			"update channel needs a token: set GITHUB_TOKEN (or TOKEN_GITHUB) " +
 				"in the environment — barroso-harness releases are private")
 	}
-	cliente := &http.Client{Timeout: timeoutHTTP}
+	client := &http.Client{Timeout: httpTimeout}
 	u := originGitHub + "/repos/" + RepoSlug + "/releases?per_page=20"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
@@ -111,7 +116,7 @@ func BuscarUltima(ctx context.Context) (Lancamento, error) {
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 
-	resp, err := cliente.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return Lancamento{}, fmt.Errorf("query channel: %w", err)
 	}
@@ -127,12 +132,12 @@ func BuscarUltima(ctx context.Context) (Lancamento, error) {
 		return Lancamento{}, fmt.Errorf("channel responded HTTP %s", resp.Status)
 	}
 
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, tetoManifest+1))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, manifestCap+1))
 	if err != nil {
 		return Lancamento{}, fmt.Errorf("read channel response: %w", err)
 	}
-	if len(raw) > tetoManifest {
-		return Lancamento{}, fmt.Errorf("channel response exceeds %d bytes", tetoManifest)
+	if len(raw) > manifestCap {
+		return Lancamento{}, fmt.Errorf("channel response exceeds %d bytes", manifestCap)
 	}
 
 	var releases []releaseAPI
@@ -140,13 +145,13 @@ func BuscarUltima(ctx context.Context) (Lancamento, error) {
 		return Lancamento{}, fmt.Errorf("invalid channel response: %w", err)
 	}
 
-	return escolherMaisNova(releases)
+	return pickNewest(releases)
 }
 
-// releaseAPI é a parte da árvore JSON de uma release que o pacote usa, e
-// assetAPI um arquivo dentro dela. Ficam nomeados — e não structs anônimas
-// dentro de BuscarUltima — para que o teste alimente escolherMaisNova sem
-// subir servidor HTTP.
+// releaseAPI is the part of a release's JSON tree the package uses, and
+// assetAPI a file inside it. They are named types — not anonymous structs
+// inside BuscarUltima — so tests can feed pickNewest without starting an
+// HTTP server.
 type releaseAPI struct {
 	TagName    string     `json:"tag_name"`
 	Draft      bool       `json:"draft"`
@@ -161,9 +166,9 @@ type assetAPI struct {
 	BrowserDownloadURL string `json:"browser_download_url"`
 }
 
-// releaseDe monta uma release mínima e válida para esta plataforma, para os
-// testes não repetirem o asset obrigatório em cada caso.
-func releaseDe(tag string) releaseAPI {
+// releaseFor builds a minimal, valid release for this platform, so tests do
+// not repeat the mandatory asset in every case.
+func releaseFor(tag string) releaseAPI {
 	return releaseAPI{
 		TagName: tag,
 		Assets: []assetAPI{
@@ -172,134 +177,135 @@ func releaseDe(tag string) releaseAPI {
 	}
 }
 
-// escolherMaisNova devolve a release de VERSÃO máxima entre as estáveis que
-// têm binário desta plataforma. NÃO a primeira da lista: a ordem da API não é
-// garantia de nada — ela vem em ordem decrescente de CRIAÇÃO, e uma
-// republicação ou retag pode colocar uma versão mais antiga à frente da mais
-// nova (observado no canal real: bh.9 listada antes de bh.10). Confiar na
-// posição faria o /update oferecer DOWNGRADE a quem já está na mais nova.
+// pickNewest returns the release with the highest VERSION among the stable
+// ones that have a binary for this platform. NOT the first in the list: the
+// API order guarantees nothing — it comes in descending CREATION order, and a
+// republish or retag can put an older version ahead of the newest (seen on
+// the real channel: bh.9 listed before bh.10). Trusting the position would
+// make /update offer a DOWNGRADE to someone already on the newest.
 //
-// Rascunho e pré-release ficam de fora: /update entrega versão estável. Tag
-// fora da forma vX.Y.Z[-sufixo] é ignorada, não aborta — um tag solto no canal
-// não deve impedir a atualização de todos.
-func escolherMaisNova(releases []releaseAPI) (Lancamento, error) {
-	var melhor Lancamento
-	temMelhor := false
+// Drafts and pre-releases are excluded: /update delivers a stable version. A
+// tag outside the vX.Y.Z[-suffix] form is skipped, not fatal — a stray tag in
+// the channel must not block everyone's update.
+func pickNewest(releases []releaseAPI) (Lancamento, error) {
+	var best Lancamento
+	hasBest := false
 	for _, r := range releases {
 		if r.Draft || r.Prerelease {
 			continue
 		}
-		// A tag é validada AQUI, antes de virar candidata — não só na
-		// comparação. Sem isso, uma tag fora da forma que seja a PRIMEIRA
-		// elegível vence por padrão (nenhuma comparação a derruba) e o canal
-		// devolveria "nightly-build" como última versão.
-		if _, err := partirVersao(r.TagName); err != nil {
+		// The tag is validated HERE, before becoming a candidate — not only
+		// in the comparison. Otherwise a malformed tag that is the FIRST
+		// eligible one would win by default (no comparison knocks it out)
+		// and the channel would return "nightly-build" as the latest version.
+		if _, err := parseVersion(r.TagName); err != nil {
 			continue
 		}
 		if len(r.Assets) == 0 {
 			continue
 		}
-		lanc := Lancamento{Version: r.TagName, TagName: r.TagName}
+		rel := Lancamento{Version: r.TagName, TagName: r.TagName}
 		for _, a := range r.Assets {
-			// A URL de ASSET DA API vem primeiro, e a ordem não é detalhe: num
-			// repositório PRIVADO o browser_download_url devolve 404 "Not Found"
-			// no download de asset, enquanto a URL da API devolve os bytes com
-			// Accept: application/octet-stream. Medido em A/B no canal real em
-			// 2026-10-18, mesmo Accept e mesmo Bearer nas duas URLs, variando
-			// só o tipo: browser 404, API 200. User-Agent não muda o resultado.
+			// The API ASSET URL comes first, and the order is not a detail: in
+			// a PRIVATE repository browser_download_url returns 404 "Not Found"
+			// on asset download, while the API URL returns the bytes with
+			// Accept: application/octet-stream. Measured A/B on the real
+			// channel on 2026-10-18, same Accept and same Bearer on both URLs,
+			// varying only the kind: browser 404, API 200. User-Agent does not
+			// change the result.
 			//
-			// NÃO registre aqui uma explicação de redirect: ela foi testada e é
-			// FALSA. A URL da API também redireciona (302 para
-			// release-assets.githubusercontent.com) e o cliente padrão do Go a
-			// segue e recebe 200 — se o header morresse no salto, a URL da API
-			// falharia igual. O 404 do browser fica sem mecanismo explicado, e
-			// a escolha não depende dele.
+			// Do NOT record a redirect explanation here: it was tested and is
+			// FALSE. The API URL also redirects (302 to
+			// release-assets.githubusercontent.com) and Go's default client
+			// follows it and gets 200 — if the header died on the hop, the API
+			// URL would fail the same way. The browser 404 has no explained
+			// mechanism, and the choice does not depend on it.
 			u := a.URL
 			if u == "" {
 				u = a.BrowserDownloadURL
 			}
-			lanc.Assets = append(lanc.Assets, Asset{Name: a.Name, URL: u, Bytes: a.Size})
+			rel.Assets = append(rel.Assets, Asset{Name: a.Name, URL: u, Bytes: a.Size})
 		}
-		if _, err := lanc.AssetDaPlataforma(); err != nil {
+		if _, err := rel.AssetDaPlataforma(); err != nil {
 			continue
 		}
-		if !temMelhor {
-			melhor, temMelhor = lanc, true
+		if !hasBest {
+			best, hasBest = rel, true
 			continue
 		}
-		// A tag já foi validada acima, então compararVersoes não pode falhar
-		// aqui; se falhasse, seria bug deste pacote, e ignorar silenciosamente
-		// esconderia o problema. Continua valendo elegível anterior.
-		cmp, err := compararVersoes(lanc.Version, melhor.Version)
+		// The tag was already validated above, so compareVersions cannot fail
+		// here; if it did, it would be a bug in this package. The previous
+		// eligible release stays the winner.
+		cmp, err := compareVersions(rel.Version, best.Version)
 		if err != nil {
 			continue
 		}
 		if cmp > 0 {
-			melhor = lanc
+			best = rel
 		}
 	}
-	if !temMelhor {
+	if !hasBest {
 		return Lancamento{}, errors.New("channel has no published release with a binary for this platform")
 	}
-	return melhor, nil
+	return best, nil
 }
 
-// MaisNovaQue informa se a release do canal é mais nova que a versão instalada.
-// Exposta porque a CLI quer a resposta antes de propor qualquer download: se
-// não é mais nova, /update não deve nem perguntar.
-func (l Lancamento) MaisNovaQue(instalada string) (bool, error) {
-	cmp, err := compararVersoes(l.Version, instalada)
+// MaisNovaQue reports whether the channel release is newer than the installed
+// version. Exported because the CLI wants the answer before offering any
+// download: if it is not newer, /update should not even ask.
+func (l Lancamento) MaisNovaQue(installed string) (bool, error) {
+	cmp, err := compareVersions(l.Version, installed)
 	if err != nil {
 		return false, err
 	}
 	return cmp > 0, nil
 }
 
-// AssetDaPlataforma escolhe o asset desta plataforma pelo NOME — a API do
-// GitHub não declara os/arch por asset, então a plataforma está no nome:
+// AssetDaPlataforma picks this platform's asset by NAME — the GitHub API does
+// not declare os/arch per asset, so the platform is in the name:
 // barroso-harness-<goos>-<goarch>[.exe].
 func (l Lancamento) AssetDaPlataforma() (Asset, error) {
-	alvo := AssetPlataformaNome()
-	// Coincidência exata primeiro; se algum dia o nome ganhar sufixo extra,
-	// o prefixo ainda casa sem aceitar binário de outra plataforma.
+	target := AssetPlataformaNome()
+	// Exact match first; if the name ever gains an extra suffix, the prefix
+	// still matches without accepting another platform's binary.
 	for _, a := range l.Assets {
-		if a.Name == alvo {
+		if a.Name == target {
 			return a, nil
 		}
 	}
 	for _, a := range l.Assets {
-		if strings.HasPrefix(a.Name, alvo+".") {
+		if strings.HasPrefix(a.Name, target+".") {
 			return a, nil
 		}
 	}
-	return Asset{}, fmt.Errorf("release %s has no binary for this platform (%s)", l.Version, alvo)
+	return Asset{}, fmt.Errorf("release %s has no binary for this platform (%s)", l.Version, target)
 }
 
-// AssetSomas devolve o asset SHA256SUMS, se a release o publicou.
+// AssetSomas returns the SHA256SUMS asset, if the release published it.
 func (l Lancamento) AssetSomas() (Asset, bool) {
 	for _, a := range l.Assets {
-		if a.Name == sha256SumsNome {
+		if a.Name == sha256SumsName {
 			return a, true
 		}
 	}
 	return Asset{}, false
 }
 
-// ListarSomas baixa e interpreta o SHA256SUMS. Formato: "<hex>  <nome>" por
-// linha, o mesmo que sha256sum emite. Linha mal formada é ignorada — um
-// metadata futuro a mais não deve derrubar a atualização.
+// ListarSomas downloads and parses SHA256SUMS. Format: "<hex>  <name>" per
+// line, the same that sha256sum emits. Malformed lines are ignored — one
+// extra future metadata line must not break the update.
 func ListarSomas(ctx context.Context, asset Asset) (map[string]string, error) {
 	if asset.URL == "" {
 		return nil, errors.New("checksums asset has no URL")
 	}
-	cliente := &http.Client{Timeout: timeoutHTTP}
+	client := &http.Client{Timeout: httpTimeout}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, asset.URL, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+tokenDe())
+	req.Header.Set("Authorization", "Bearer "+envToken())
 	req.Header.Set("Accept", "application/octet-stream")
-	resp, err := cliente.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("download SHA256SUMS: %w", err)
 	}
@@ -311,65 +317,66 @@ func ListarSomas(ctx context.Context, asset Asset) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	somas := map[string]string{}
-	for _, linha := range strings.Split(string(raw), "\n") {
-		campos := strings.Fields(linha)
-		if len(campos) < 2 {
+	sums := map[string]string{}
+	for _, line := range strings.Split(string(raw), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
 			continue
 		}
-		somas[strings.TrimPrefix(campos[len(campos)-1], "*")] = strings.ToLower(campos[0])
+		sums[strings.TrimPrefix(fields[len(fields)-1], "*")] = strings.ToLower(fields[0])
 	}
-	return somas, nil
+	return sums, nil
 }
 
-// comparável é a versão quebrada em partes para comparação: três números e o
-// sufixo após o hífen, quebrando em identificadores (o deployer publica
-// v0.1.0-bh.10; "bh" e "10" são identificadores separados).
-type comparavel struct {
+// versionParts is a version split into parts for comparison: three numbers
+// and the suffix after the hyphen, split into identifiers (the deployer
+// publishes v0.1.0-bh.10; "bh" and "10" are separate identifiers).
+type versionParts struct {
 	nums      [3]int
-	sufixo    []string
-	temSufixo bool
+	suffix    []string
+	hasSuffix bool
 }
 
-var versaoForma = regexp.MustCompile(`^v?\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$`)
+var versionPattern = regexp.MustCompile(`^v?\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$`)
 
-// partirVersao valida e quebra uma tag. Tag fora da forma é recusada: comparar
-// o incomparável daria update para baixo ou recusa de update legítimo.
-func partirVersao(v string) (comparavel, error) {
+// parseVersion validates and splits a tag. A malformed tag is rejected:
+// comparing the incomparable would yield a downgrade or refuse a legitimate
+// update.
+func parseVersion(v string) (versionParts, error) {
 	v = strings.TrimSpace(v)
-	if !versaoForma.MatchString(v) {
-		return comparavel{}, fmt.Errorf("version %q is not in the form vX.Y.Z[-suffix]", v)
+	if !versionPattern.MatchString(v) {
+		return versionParts{}, fmt.Errorf("version %q is not in the form vX.Y.Z[-suffix]", v)
 	}
-	var c comparavel
-	corpo := strings.TrimPrefix(v, "v")
-	if i := strings.IndexByte(corpo, '-'); i >= 0 {
-		c.temSufixo = true
-		c.sufixo = strings.Split(corpo[i+1:], ".")
-		corpo = corpo[:i]
+	var c versionParts
+	body := strings.TrimPrefix(v, "v")
+	if i := strings.IndexByte(body, '-'); i >= 0 {
+		c.hasSuffix = true
+		c.suffix = strings.Split(body[i+1:], ".")
+		body = body[:i]
 	}
-	for i, p := range strings.SplitN(corpo, ".", 3) {
+	for i, p := range strings.SplitN(body, ".", 3) {
 		n, err := strconv.Atoi(p)
 		if err != nil {
-			return comparavel{}, fmt.Errorf("version %q has invalid number %q", v, p)
+			return versionParts{}, fmt.Errorf("version %q has invalid number %q", v, p)
 		}
 		c.nums[i] = n
 	}
 	return c, nil
 }
 
-// compararVersoes devolve -1, 0 ou 1.
+// compareVersions returns -1, 0 or 1.
 //
-// A correção que esta função existe para: comparar o sufixo como TEXTO diz que
-// "bh.10" < "bh.9", porque '1' < '9' no primeiro caractere. O resultado é o
-// programa recusando a atualização mais nova (ou pior, oferecendo downgrade).
-// Sufixo é comparado identificador a identificador, numericamente quando os
-// dois lados são números.
-func compararVersoes(a, b string) (int, error) {
-	ca, err := partirVersao(a)
+// The fix this function exists for: comparing the suffix as TEXT says that
+// "bh.10" < "bh.9", because '1' < '9' at the first character. The result is
+// the program refusing the newest update (or worse, offering a downgrade).
+// The suffix is compared identifier by identifier, numerically when both
+// sides are numbers.
+func compareVersions(a, b string) (int, error) {
+	ca, err := parseVersion(a)
 	if err != nil {
 		return 0, err
 	}
-	cb, err := partirVersao(b)
+	cb, err := parseVersion(b)
 	if err != nil {
 		return 0, err
 	}
@@ -381,21 +388,21 @@ func compararVersoes(a, b string) (int, error) {
 			return 1, nil
 		}
 	}
-	// Sem sufixo beats com sufixo: v0.1.0 > v0.1.0-bh.10 (a estável é mais nova
-	// que a sua própria prévia). É a convenção do semver.
-	if ca.temSufixo != cb.temSufixo {
-		if ca.temSufixo {
+	// No suffix beats a suffix: v0.1.0 > v0.1.0-bh.10 (the stable release is
+	// newer than its own preview). That is the semver convention.
+	if ca.hasSuffix != cb.hasSuffix {
+		if ca.hasSuffix {
 			return -1, nil
 		}
 		return 1, nil
 	}
-	for i := 0; i < len(ca.sufixo) || i < len(cb.sufixo); i++ {
+	for i := 0; i < len(ca.suffix) || i < len(cb.suffix); i++ {
 		var sa, sb string
-		if i < len(ca.sufixo) {
-			sa = ca.sufixo[i]
+		if i < len(ca.suffix) {
+			sa = ca.suffix[i]
 		}
-		if i < len(cb.sufixo) {
-			sb = cb.sufixo[i]
+		if i < len(cb.suffix) {
+			sb = cb.suffix[i]
 		}
 		if sa == sb {
 			continue
@@ -416,7 +423,7 @@ func compararVersoes(a, b string) (int, error) {
 	return 0, nil
 }
 
-// ── helpers compartilhados pelos dois install_*.go ─────────────────────────
+// ── helpers shared by both install_*.go ───────────────────────────────────
 
 func isPermissionError(err error) bool {
 	return errors.Is(err, os.ErrPermission)
@@ -428,9 +435,9 @@ func removeIfExists(name string) {
 	}
 }
 
-// validateVersionOutput confere que o binário staged respondeu a versão
-// esperada. Sem essa prova, um download que devolveu HTML (página de erro)
-// seria instalado como se fosse executável.
+// validateVersionOutput checks that the staged binary reported the expected
+// version. Without this proof, a download that returned HTML (an error page)
+// would be installed as if it were an executable.
 func validateVersionOutput(output, expected string) error {
 	if !strings.Contains(output, expected) {
 		return fmt.Errorf("staged binary reported %q, expected %s",

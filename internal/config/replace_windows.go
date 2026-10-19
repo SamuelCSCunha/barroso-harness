@@ -8,9 +8,9 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// atomicReplace sobrescreve o destino no Windows. MoveFileEx com
-// MOVEFILE_REPLACE_EXISTING falha se o alvo tem somente leitura; tentamos
-// ReplaceFile para preservar ACLs e depois o rename simples.
+// atomicReplace overwrites the target on Windows. MoveFileEx with
+// MOVEFILE_REPLACE_EXISTING fails if the target is read-only; in that case we
+// remove the target and fall back to a plain rename.
 func atomicReplace(from, to string) error {
 	fromPtr, err := windows.UTF16PtrFromString(from)
 	if err != nil {
