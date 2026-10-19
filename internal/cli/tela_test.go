@@ -89,3 +89,19 @@ func TestCancelarTurnoIgnoraPedidoVelho(t *testing.T) {
 		t.Fatal("pedido durante o turno não cancelou")
 	}
 }
+
+// Texto longo na caixa de entrada quebra por palavra; palavra maior que a
+// linha quebra no meio.
+func TestQuebrarEntrada(t *testing.T) {
+	got := quebrarEntrada("um dois tres quatro cinco", 12)
+	if strings.Join(got, "|") != "um dois tres|quatro cinco" {
+		t.Fatalf("quebra = %q", got)
+	}
+	got = quebrarEntrada(strings.Repeat("x", 25), 10)
+	if strings.Join(got, "|") != "xxxxxxxxxx|xxxxxxxxxx|xxxxx" {
+		t.Fatalf("palavra longa = %q", got)
+	}
+	if got := quebrarEntrada("", 10); len(got) != 1 || got[0] != "" {
+		t.Fatalf("vazio = %q", got)
+	}
+}

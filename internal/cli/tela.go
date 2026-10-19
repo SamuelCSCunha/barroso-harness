@@ -280,8 +280,20 @@ func (t *tela) desenharTrancado() {
 	limpar := t.medir()
 	w, h := t.w, t.h
 	larg := t.larguraConversa()
-	// Linha 1 é margem; a conversa vai da linha 2 até h-5.
-	altura := max(3, h-8)
+	// Texto longo na caixa de entrada quebra em várias linhas, e a caixa
+	// cresce para cima (até um terço da tela), como no OpenCode.
+	caixa := larg - 2
+	textoCx := ""
+	if t.parcial == "" {
+		textoCx = t.entradaVisivel()
+	}
+	linhasCx := quebrarEntrada(textoCx, caixa-4)
+	if teto := max(1, h/3); len(linhasCx) > teto {
+		linhasCx = linhasCx[len(linhasCx)-teto:]
+	}
+	ext := len(linhasCx) - 1
+	// Linha 1 é margem; a conversa vai da linha 2 até h-7-ext.
+	altura := max(3, h-8-ext)
 
 	var sb strings.Builder
 	sb.WriteString(escSyncIni + escCurOcult)
@@ -333,23 +345,20 @@ func (t *tela) desenharTrancado() {
 		linha(2+i, s)
 	}
 	if t.rolagem > 0 {
-		linha(h-6, "   "+cinzaf(fmt.Sprintf("↓ %d linhas abaixo · PgDn volta", t.rolagem)))
+		linha(h-6-ext, "   "+cinzaf(fmt.Sprintf("↓ %d linhas abaixo · PgDn volta", t.rolagem)))
 	} else {
-		linha(h-6, "")
+		linha(h-6-ext, "")
 	}
 
 	// caixa de entrada; enquanto um prompt de comando espera resposta, o texto
 	// digitado aparece na própria linha do prompt e a caixa fica vazia
-	caixa := larg - 2
-	texto := ""
-	if t.parcial == "" {
-		texto = t.entradaVisivel()
-	}
 	// Respiro de uma linha em cima e embaixo, e texto a 2 espaços da barra,
 	// como a caixa do OpenCode.
 	vaziaCaixa := "  " + comFundo(azulf("▌"), fundoCaixa, caixa)
-	linha(h-5, vaziaCaixa)
-	linha(h-4, "  "+comFundo(azulf("▌")+"  "+texto, fundoCaixa, caixa))
+	linha(h-5-ext, vaziaCaixa)
+	for i, l := range linhasCx {
+		linha(h-4-ext+i, "  "+comFundo(azulf("▌")+"  "+l, fundoCaixa, caixa))
+	}
 	linha(h-3, vaziaCaixa)
 	info := negritof(cor(corTexto, t.estado.modelo)) + " " + cinzaf(t.estado.provider)
 	if t.estado.effort != "" {
@@ -392,7 +401,7 @@ func (t *tela) desenharTrancado() {
 	// cursor: na caixa (também durante o turno, para já digitar a próxima
 	// mensagem), ou no fim da linha do prompt de comando
 	if t.parcial == "" {
-		fmt.Fprintf(&sb, "\033[%d;%dH", h-4, 6+larguraVis(t.entradaVisivel()))
+		fmt.Fprintf(&sb, "\033[%d;%dH", h-4, 6+larguraVis(linhasCx[len(linhasCx)-1]))
 		sb.WriteString(escCurVisiv)
 	} else if len(vis) > 0 {
 		ult := vis[len(vis)-1]
@@ -852,6 +861,30 @@ func quebrarVis(s string, n int) []string {
 		i += tam
 	}
 	return append(out, sb.String())
+}
+
+// quebrarEntrada quebra o texto digitado em linhas de até n colunas,
+// preferindo o último espaço da linha (palavra longa demais quebra no meio).
+// A caixa tem uma coluna a mais que n: o cursor cabe depois de linha cheia.
+func quebrarEntrada(s string, n int) []string {
+	n = max(10, n)
+	var out []string
+	r := []rune(s)
+	for len(r) > n {
+		corte := n
+		for i := n; i > 0; i-- {
+			if r[i] == ' ' {
+				corte = i
+				break
+			}
+		}
+		out = append(out, string(r[:corte]))
+		if corte < len(r) && r[corte] == ' ' {
+			corte++
+		}
+		r = r[corte:]
+	}
+	return append(out, string(r))
 }
 
 // comFundo pinta s com o fundo bg em exatamente n colunas. Cada reset dentro
