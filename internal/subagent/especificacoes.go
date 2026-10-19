@@ -49,8 +49,9 @@ func especSpawn(g *Gerente, prefixo string) tools.Spec {
 			"Cada sub-agente roda autonomamente com as ferramentas built-in (terminal, arquivos), mas NÃO pode " +
 			"criar outros sub-agentes. Não há limite de quantidade nem de concorrência: todos começam juntos. " +
 			"Não existe tool para consultar ou esperar: quando cada sub-agente terminar ou falhar, o resultado chega " +
-			"sozinho como uma mensagem nova, num turno novo. Depois de disparar, siga com outro trabalho ou ENCERRE " +
-			"O TURNO dizendo ao usuário o que disparou e que está aguardando os retornos.",
+			"sozinho como uma mensagem nova, num turno novo. Uma segunda chamada no mesmo turno é RECUSADA com erro. " +
+			"Nunca dispare tarefas para passar o tempo ou para esperar. Depois de disparar, faça só trabalho que não " +
+			"dependa dos resultados, ou ENCERRE O TURNO dizendo ao usuário o que disparou e que está aguardando.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -59,8 +60,8 @@ func especSpawn(g *Gerente, prefixo string) tools.Spec {
 					"items":       map[string]any{"type": "string"},
 					"description": "uma instrução completa e autossuficiente por sub-agente; N itens = N sub-agentes em paralelo",
 				},
-				"prompt": map[string]any{"type": "string", "description": "atalho para um sub-agente só"},
 			},
+			"required": []string{"prompts"},
 		},
 		Exec: func(ctx context.Context, _ string, raw json.RawMessage) (string, error) {
 			var c struct {
@@ -100,9 +101,10 @@ func especSpawn(g *Gerente, prefixo string) tools.Spec {
 				}
 				ids = append(ids, id)
 			}
-			return fmt.Sprintf("%d sub-agente(s) disparado(s): %s. Eles rodam em segundo plano e cada resultado "+
-				"chega sozinho como mensagem nova quando terminar. Não espere: siga com outro trabalho ou encerre o "+
-				"turno agora avisando o usuário.", len(ids), strings.Join(ids, ", ")), nil
+			return fmt.Sprintf("%d sub-agente(s) disparado(s): %s. Cada resultado chega sozinho como mensagem nova "+
+				"quando terminar. Não chame %s_spawn de novo neste turno: faça só trabalho que não dependa dos "+
+				"resultados, ou encerre o turno agora avisando o usuário do que disparou.",
+				len(ids), strings.Join(ids, ", "), prefixo), nil
 		},
 	}
 }
