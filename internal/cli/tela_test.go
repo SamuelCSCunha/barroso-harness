@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"strings"
 	"testing"
+	"time"
 )
 
 // O nome da sessão vai para a aba do terminal (OSC 0), sem controles que
@@ -66,5 +67,25 @@ func TestRodaDoMouse(t *testing.T) {
 	}
 	if strings.Join(got, ",") != "rodacima,rodabaixo,a" {
 		t.Fatalf("teclas = %v", got)
+	}
+}
+
+// Um pedido de interrupção que sobrou de um turno já encerrado não derruba o
+// turno seguinte; um pedido feito durante o turno, sim.
+func TestCancelarTurnoIgnoraPedidoVelho(t *testing.T) {
+	io := IO{cancelar: make(chan struct{}, 1)}
+	io.cancelar <- struct{}{}
+	ctx, cancel := io.cancelarTurno(make(chan struct{}))
+	defer cancel()
+	select {
+	case <-ctx.Done():
+		t.Fatal("pedido velho cancelou o turno novo")
+	case <-time.After(50 * time.Millisecond):
+	}
+	io.cancelar <- struct{}{}
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("pedido durante o turno não cancelou")
 	}
 }

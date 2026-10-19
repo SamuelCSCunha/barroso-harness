@@ -347,6 +347,12 @@ func (io IO) cancelarTurno(fechar chan<- struct{}) (context.Context, context.Can
 	ctx, cancel := context.WithCancel(context.Background())
 	if io.cancelar != nil {
 		// Tela cheia: o raw mode não gera sinal; Esc/Ctrl+C chegam por aqui.
+		// Um pedido que sobrou de um turno já encerrado não pode derrubar
+		// este (ex.: Enter no instante em que o turno anterior terminava).
+		select {
+		case <-io.cancelar:
+		default:
+		}
 		go func() {
 			select {
 			case <-io.cancelar:

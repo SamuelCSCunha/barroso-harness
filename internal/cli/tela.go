@@ -344,9 +344,6 @@ func (t *tela) desenharTrancado() {
 	texto := ""
 	if t.parcial == "" {
 		texto = t.entradaVisivel()
-		if texto == "" && !t.ocupado {
-			texto = cinzaf("Pergunte qualquer coisa…  /help lista os comandos")
-		}
 	}
 	// Respiro de uma linha em cima e embaixo, e texto a 2 espaços da barra,
 	// como a caixa do OpenCode.
@@ -392,14 +389,14 @@ func (t *tela) desenharTrancado() {
 		}
 	}
 
-	// cursor: na caixa, ou no fim da linha do prompt de comando
-	if !t.ocupado {
-		if t.parcial == "" {
-			fmt.Fprintf(&sb, "\033[%d;%dH", h-4, 6+larguraVis(t.entradaVisivel()))
-		} else if len(vis) > 0 {
-			ult := vis[len(vis)-1]
-			fmt.Fprintf(&sb, "\033[%d;%dH", 2+len(vis)-1, 1+larguraVis(margemConversa(ult)+ult))
-		}
+	// cursor: na caixa (também durante o turno, para já digitar a próxima
+	// mensagem), ou no fim da linha do prompt de comando
+	if t.parcial == "" {
+		fmt.Fprintf(&sb, "\033[%d;%dH", h-4, 6+larguraVis(t.entradaVisivel()))
+		sb.WriteString(escCurVisiv)
+	} else if len(vis) > 0 {
+		ult := vis[len(vis)-1]
+		fmt.Fprintf(&sb, "\033[%d;%dH", 2+len(vis)-1, 1+larguraVis(margemConversa(ult)+ult))
 		sb.WriteString(escCurVisiv)
 	}
 	sb.WriteString(escSyncFim)
@@ -617,6 +614,15 @@ func runTela(io IO) int {
 		posHist   = -1
 		ultimoCC  time.Time
 	)
+	// O pipe é síncrono: escrever direto travaria as teclas enquanto o REPL
+	// ainda encerra um turno interrompido. A fila mantém a ordem dos envios.
+	saida := make(chan string, 16)
+	go func() {
+		for s := range saida {
+			_, _ = pw.Write([]byte(s + "\n"))
+		}
+	}()
+	defer close(saida)
 	enviar := func(s string) {
 		t.mu.Lock()
 		if t.parcial != "" {
@@ -631,7 +637,7 @@ func runTela(io IO) int {
 		t.entrada = ""
 		t.desenharTrancado()
 		t.mu.Unlock()
-		_, _ = pw.Write([]byte(s + "\n"))
+		saida <- s
 	}
 	editar := func(f func()) {
 		t.mu.Lock()
@@ -683,8 +689,17 @@ func runTela(io IO) int {
 					enviar(l) // Enter vazio é resposta válida (ex.: mantém o modelo)
 					continue
 				}
-				if strings.TrimSpace(l) == "" || ocupado {
-					continue // um pedido por vez
+				if strings.TrimSpace(l) == "" {
+					continue
+				}
+				if ocupado {
+					// Mensagem nova no meio do turno: interrompe o pensamento
+					// ou a tool em curso; a mensagem entra assim que o turno
+					// cancelado devolver o controle ao REPL.
+					select {
+					case sub.cancelar <- struct{}{}:
+					default:
+					}
 				}
 				historico = append(historico, l)
 				posHist = -1
