@@ -146,6 +146,22 @@ type Gerente struct {
 	// ou é cancelada: é por ele que o pai fica sabendo sem consultar status.
 	aoTerminar func()
 	avisadas   map[string]bool // tarefas já entregues por Terminadas
+
+	// turnoSpawn é o ctx do turno que já disparou sub-agentes: um turno
+	// dispara uma vez só (ver especSpawn).
+	turnoSpawn context.Context
+}
+
+// primeiroSpawnDoTurno diz se este turno (identificado pelo ctx da tool)
+// ainda não disparou sub-agentes, e o marca como tendo disparado.
+func (g *Gerente) primeiroSpawnDoTurno(ctx context.Context) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if ctx != nil && g.turnoSpawn == ctx {
+		return false
+	}
+	g.turnoSpawn = ctx
+	return true
 }
 
 // Novo cria um gerente de tarefas.
@@ -409,6 +425,14 @@ func (g *Gerente) Spawn(ctx context.Context, pedido string) (string, error) {
 // e devolvido.
 func (g *Gerente) executar(ctx context.Context, t *Tarefa, cfg config.Config, cwd string) {
 	defer func() {
+		// Um panic dentro do sub-agente roda numa goroutine própria e, sem
+		// recover, derrubava o bh inteiro (sessão principal junto). Vira
+		// falha da tarefa.
+		if r := recover(); r != nil {
+			g.mu.Lock()
+			t.finalizar(Failed, fmt.Sprintf("panic: %v", r))
+			g.mu.Unlock()
+		}
 		g.mu.Lock()
 		if g.rodando > 0 {
 			g.rodando--

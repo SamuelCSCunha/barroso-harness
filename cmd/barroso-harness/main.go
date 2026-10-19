@@ -149,7 +149,12 @@ func execComWiring(out io.Writer, cfg config.Config, cwd, pedido string, loja *s
 	})
 	for {
 		if ts := g.Terminadas(); len(ts) > 0 {
-			if err := sess.Send(context.Background(), rend, cwd, subagent.AvisoTerminadas(ts, g.Ativas())); err != nil {
+			// ctx próprio por turno: o limite de um disparo por turno compara
+			// o ctx, e context.Background() seria o mesmo em todos.
+			turno, fim := context.WithCancel(context.Background())
+			err := sess.Send(turno, rend, cwd, subagent.AvisoTerminadas(ts, g.Ativas()))
+			fim()
+			if err != nil {
 				return err
 			}
 			continue

@@ -45,7 +45,7 @@ func Especificacoes(g *Gerente, cfgPai config.Config) []tools.Spec {
 func especSpawn(g *Gerente, prefixo string) tools.Spec {
 	return tools.Spec{
 		Name: prefixo + "_spawn",
-		Description: "Dispara um ou VÁRIOS sub-agentes de uma vez, em SEGUNDO PLANO, e devolve os ids na hora. " +
+		Description: "Chame UMA vez por turno, com todos os pedidos em prompts[]. Dispara um ou VÁRIOS sub-agentes de uma vez, em SEGUNDO PLANO, e devolve os ids na hora. " +
 			"Cada sub-agente roda autonomamente com as ferramentas built-in (terminal, arquivos), mas NÃO pode " +
 			"criar outros sub-agentes. Não há limite de quantidade nem de concorrência: todos começam juntos. " +
 			"Não existe tool para consultar ou esperar: quando cada sub-agente terminar ou falhar, o resultado chega " +
@@ -81,6 +81,14 @@ func especSpawn(g *Gerente, prefixo string) tools.Spec {
 			}
 			if len(pedidos) == 0 {
 				return "", fmt.Errorf("informe prompts (ou prompt)")
+			}
+			// Um disparo por turno. Sem tool para esperar, o modelo chegou a
+			// disparar sub-agentes "dummy" só para passar o tempo; a segunda
+			// chamada no mesmo turno é recusada e manda encerrar.
+			if !g.primeiroSpawnDoTurno(ctx) {
+				return "", fmt.Errorf("%s", "sub-agentes já foram disparados neste turno; ponha todos num único "+
+					prefixo+"_spawn com prompts[]. Não dispare tarefas para esperar: ENCERRE O TURNO agora "+
+					"avisando o usuário — os resultados chegam sozinhos num turno novo")
 			}
 			var ids []string
 			for _, p := range pedidos {

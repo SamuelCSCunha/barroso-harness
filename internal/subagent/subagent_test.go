@@ -453,3 +453,28 @@ func TestModeloSoRecebeSpawn(t *testing.T) {
 		t.Fatalf("tools do modelo = %v", specs)
 	}
 }
+
+// Um disparo por turno: a segunda chamada no mesmo turno é recusada; num
+// turno novo (outro ctx) volta a valer.
+func TestUmSpawnPorTurno(t *testing.T) {
+	_, cfg := novoServidor(t, "ok", 0, false)
+	g := Novo(Config{Nome: "task"})
+	g.Vincular(context.Background())
+	spawn := Especificacoes(g, cfg)[0]
+	turno1, fim1 := context.WithCancel(context.Background())
+	defer fim1()
+	if _, err := spawn.Exec(turno1, t.TempDir(), []byte(`{"prompts":["a","b"]}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := spawn.Exec(turno1, t.TempDir(), []byte(`{"prompt":"dummy"}`)); err == nil || !strings.Contains(err.Error(), "ENCERRE O TURNO") {
+		t.Fatalf("segundo spawn no turno deveria ser recusado: %v", err)
+	}
+	turno2, fim2 := context.WithCancel(context.Background())
+	defer fim2()
+	if _, err := spawn.Exec(turno2, t.TempDir(), []byte(`{"prompt":"c"}`)); err != nil {
+		t.Fatalf("turno novo deveria disparar: %v", err)
+	}
+	if n := len(g.Fotos()); n != 3 {
+		t.Fatalf("tarefas = %d", n)
+	}
+}

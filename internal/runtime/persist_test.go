@@ -473,3 +473,12 @@ func TestUltimoContexto(t *testing.T) {
 		t.Fatalf("UltimoContexto = %d", got)
 	}
 }
+
+// Resultado grande numa sessão sem banco (caso do sub-agente) não pode
+// derrubar o processo.
+func TestResultadoGrandeSemStoreNaoQuebra(t *testing.T) {
+	s := NewSession(config.Config{})
+	if p := s.registrarResultado("c1", "file_read", strings.Repeat("x", limiteBlob+10), false); p != nil {
+		t.Fatalf("sem store não deveria gravar: %v", p)
+	}
+}

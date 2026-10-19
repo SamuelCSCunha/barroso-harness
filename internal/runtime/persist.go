@@ -36,6 +36,12 @@ func (s *Session) registrar(kind string, payload map[string]any) {
 // registrarResultado grava um tool_result, deslocando para blob o que passar
 // de limiteBlob. Devolve o payload gravado (útil para teste e inspeção).
 func (s *Session) registrarResultado(callID, nome, saida string, isErr bool) map[string]any {
+	// Sessão sem banco (sub-agente, -p sem store): nada a gravar. Sem esta
+	// saída, um resultado acima de limiteBlob chamava PutBlob num store nil
+	// e derrubava o processo inteiro.
+	if !s.Persistente() {
+		return nil
+	}
 	payload := map[string]any{
 		"role":      "tool_result",
 		"tool_id":   callID,
