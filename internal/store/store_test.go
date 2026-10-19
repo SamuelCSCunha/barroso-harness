@@ -413,13 +413,21 @@ func TestStoreEventCriaSessaoAutomaticamente(t *testing.T) {
 	}
 }
 
-func TestTouchSessionCriaSeNaoExiste(t *testing.T) {
+// Tocar uma sessão que não existe não a cria: abrir o bh sem conversar não
+// pode deixar sessão vazia no banco. O título, sim, cria.
+func TestTouchSessionNaoCriaSessaoVazia(t *testing.T) {
 	st := lojaAbre(t)
 	if err := st.TouchSession("fantasma"); err != nil {
-		t.Fatalf("TouchSession de inexistente deveria criar: %v", err)
+		t.Fatalf("TouchSession de inexistente: %v", err)
 	}
-	if _, err := st.GetSession("fantasma"); err != nil {
-		t.Fatalf("sessão fantasma não existe: %v", err)
+	if _, err := st.GetSession("fantasma"); err == nil {
+		t.Fatal("TouchSession criou sessão vazia")
+	}
+	if err := st.SetTitle("fantasma", "nome"); err != nil {
+		t.Fatal(err)
+	}
+	if se, err := st.GetSession("fantasma"); err != nil || se.Title != "nome" {
+		t.Fatalf("SetTitle deveria criar com título: %v %v", se, err)
 	}
 }
 

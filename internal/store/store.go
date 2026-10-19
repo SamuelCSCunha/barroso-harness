@@ -213,25 +213,24 @@ func (s *Store) NewSession(id string) error {
 }
 
 // TouchSession renova updated_at — é o que ordena ListSessions e o que faz
-// /resume mostrar as conversas na ordem em que foram usadas.
+// /resume mostrar as conversas na ordem em que foram usadas. Sessão ainda não
+// indexada fica como está: quem cria a linha é o primeiro evento (ou o
+// título), para abrir o bh sem conversar não deixar sessão vazia no banco.
 func (s *Store) TouchSession(id string) error {
 	if strings.TrimSpace(id) == "" {
 		return fmt.Errorf("store: id de sessão vazio")
 	}
-	res, err := s.db.Exec(`UPDATE sessions SET updated_at = ? WHERE id = ?`, tsAgora(), id)
-	if err != nil {
+	if _, err := s.db.Exec(`UPDATE sessions SET updated_at = ? WHERE id = ?`, tsAgora(), id); err != nil {
 		return fmt.Errorf("store: toque %s: %w", id, err)
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		// Sessão ainda não indexada (criada antes deste processo, ou id novo):
-		// cria em vez de falhar — o log não pode perder eventos por isso.
-		return s.NewSession(id)
 	}
 	return nil
 }
 
 // SetTitle grava o título da sessão (o que /save escreve e /resume mostra).
 func (s *Store) SetTitle(id, titulo string) error {
+	if err := s.NewSession(id); err != nil {
+		return err
+	}
 	if err := s.TouchSession(id); err != nil {
 		return err
 	}
