@@ -307,6 +307,11 @@ func Novo(s Servidor) (*Cliente, error) {
 // Fonte returns Servidor.Nome — the server name, for prefixing/namespacing.
 func (c *Cliente) Fonte() string { return c.source }
 
+// Falhou reports whether the connection broke after opening (the stdio
+// reader saw the subprocess end or a read error). The UI shows such a server
+// with the error dot instead of "Connected".
+func (c *Cliente) Falhou() bool { return c.currentReadErr() != nil }
+
 // Transporto returns the canonical transport form: "stdio" or "http".
 func (c *Cliente) Transporto() string { return c.transport }
 

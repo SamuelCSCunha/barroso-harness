@@ -99,12 +99,23 @@ func TestPasteImageIntoInput(t *testing.T) {
 	}
 }
 
-// Placeholders are painted yellow.
+// Attachment tokens are painted the way OpenCode's prompt does: inverted chip
+// (background.base text on feedback.warning background), bold.
 func TestHighlightImages(t *testing.T) {
 	colorsOn = true
 	defer func() { colorsOn = false }()
 	got := highlightImages("a [Image 1] b", "")
-	if !strings.Contains(got, yellowf("[Image 1]")) || !strings.HasPrefix(got, "a ") {
+	want := boldf(bgWarning + colorText + "[Image 1]")
+	if !strings.Contains(got, want) || !strings.HasPrefix(got, "a ") {
 		t.Fatalf("highlight = %q", got)
+	}
+}
+
+// Writing the clipboard goes through OSC 52 and the platform tool; the escape
+// is plain base64 and never a raw control byte.
+func TestOsc52(t *testing.T) {
+	got := osc52("hi there")
+	if got != "\033]52;c;aGkgdGhlcmU=\a" {
+		t.Fatalf("osc52 = %q", got)
 	}
 }

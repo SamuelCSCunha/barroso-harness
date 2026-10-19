@@ -440,14 +440,14 @@ func repl(io IO, cfg *config.Config) {
 			return
 		}
 		if io.screen != nil {
-			var mcps []string
+			var mcps []mcpEntry
 			for _, c := range wired.MCP() {
-				mcps = append(mcps, c.Fonte())
+				mcps = append(mcps, mcpEntry{name: c.Fonte(), falha: c.Falhou()})
 			}
 			io.screen.Estado(panelState{
 				title: currentTitle(db, sess), model: cfg.Model,
 				provider: cfg.CurrentProvider, effort: cfg.Effort, cwd: shortCwd(cwd),
-				ctxTokens: lastContext, window: cfg.Janela, mcps: mcps,
+				ctxTokens: lastContext, window: cfg.Janela, mcps: mcps, branch: gitBranch(cwd),
 			})
 		} else if colorsOn {
 			inputStatus(io.Out, cfg, sess.ID(), len(wired.MCP()), lastContext)

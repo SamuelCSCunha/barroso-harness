@@ -32,12 +32,17 @@ import (
 
 var ioPipe = io.Pipe
 
+// Terminal modes OpenCode enables: alt screen, bracketed paste, and mouse with
+// press + drag + any-motion reporting in SGR encoding (plus focus reporting).
+// Everything is undone on exit, so the shell comes back exactly as it was.
 const (
 	escAlt        = "\033[?1049h"
 	escNormal     = "\033[?1049l"
-	escMouseOn    = "\033[?1000h\033[?1006h" // mouse wheel arrives as SGR (\033[<64;x;yM)
-	escMouseOff   = "\033[?1006l\033[?1000l"
-	escPasteOn    = "\033[?2004h" // bracketed paste: a paste arrives as \033[200~...\033[201~
+	escMouseOn    = "\033[?1000h\033[?1002h\033[?1003h\033[?1006h"
+	escMouseOff   = "\033[?1006l\033[?1003l\033[?1002l\033[?1000l"
+	escFocusOn    = "\033[?1004h"
+	escFocusOff   = "\033[?1004l"
+	escPasteOn    = "\033[?2004h" // bracketed paste: \033[200~...\033[201~
 	escPasteOff   = "\033[?2004l"
 	pasteStart    = "\033[200~"
 	pasteEnd      = "\033[201~"
@@ -47,12 +52,44 @@ const (
 	escClearLine  = "\033[K"
 	escHideCursor = "\033[?25l"
 	escShowCursor = "\033[?25h"
-	bgBox         = "\033[48;5;235m"
-	bgPanel       = "\033[48;5;234m"
-	bgUser        = "\033[48;5;235m"
-	panelWidth    = 40
 	maxLines      = 5000
 )
+
+// Box backgrounds from the theme: the sidebar and the user message use
+// raised.base (#141414); their hover uses the prompt box colour (#1e1e1e).
+const (
+	bgPanel     = bgRaised
+	bgUser      = bgRaised
+	bgUserHover = bgBox
+)
+
+// sidebarWidth is OpenCode's SESSION_SIDEBAR_WIDTH (42 columns, docked flush).
+const sidebarWidth = panelWidth
+
+// panelWidth is the sidebar's width: OpenCode's SESSION_SIDEBAR_WIDTH, 42
+// columns, docked flush against the right edge (bh used 40 at >=110).
+const panelWidth = 42
+
+// panePad is the session pane's left/right padding (OpenCode: 2, halved when
+// the pane is narrower than 44 columns).
+const panePad = 2
+
+// paneFloor and panelThreshold implement the only breakpoint in OpenCode: the
+// sidebar shows when the terminal is WIDER than 120 columns.
+const (
+	panelThreshold = 120
+	paneFloor      = 44
+)
+
+// wheelLines is OpenCode's scroll speed (CustomSpeedScroll(3)).
+const wheelLines = 3
+
+// escInterruptWindow is the double-press window OpenCode uses (5 s).
+const escInterruptWindow = 5 * time.Second
+
+// footerCopyHint is what OpenCode points at once the command palette exists.
+// bh has no palette yet (spec §3), so the same slot offers /help instead.
+const footerCopyHint = "/help"
 
 // panelState is what the side panel, the input box and the footer show.
 type panelState struct {
@@ -63,7 +100,15 @@ type panelState struct {
 	cwd       string
 	ctxTokens int
 	window    int
-	mcps      []string
+	mcps      []mcpEntry
+	branch    string
+}
+
+// mcpEntry is one sidebar MCP row: the server name and whether its connection
+// is alive (the dot is green when live, red when the client broke).
+type mcpEntry struct {
+	name  string
+	falha bool
 }
 
 type screen struct {
@@ -73,13 +118,20 @@ type screen struct {
 	lines   []string
 	partial string // line still without \n (e.g. "select model > ")
 	transit string // transient spinner line
-	scroll  int
-	w, h    int
-	state   panelState
-	input   string
-	masked  bool // the typed answer is a secret (API key)
-	busy    bool // model turn in progress
-	notice  string
+	// scroll is how many lines the view sits ABOVE the bottom. 0 means
+	// pinned (sticky bottom, OpenCode's stickyScroll): new output scrolls
+	// with it; >0 means the user read back, and new output must NOT pull the
+	// view down again.
+	scroll int
+	// sticky records whether the view is pinned to the bottom. It differs
+	// from scroll == 0 only while a jump is in flight (see toBottom).
+	sticky bool
+	w, h   int
+	state  panelState
+	input  string
+	masked bool // the typed answer is a secret (API key)
+	busy   bool // model turn in progress
+	notice string
 	// noticeAt is when notice was set; it clears after 2s.
 	noticeAt time.Time
 	// images pasted into the current input ([Image N]); imageCount numbers
@@ -93,11 +145,109 @@ type screen struct {
 	lastTabTitle string
 	spin         chan struct{}
 	spinDone     chan struct{}
+
+	// ── mouse ──
+	// hits are the rectangles of the last painted frame, with their hover
+	// style and click action; mouse events are dispatched through them.
+	hits *hitList
+	// sel is the in-app text selection (left-drag over the conversation). It
+	// is copied on release/right-click/ctrl+c and suppresses click actions
+	// while it holds text, as in OpenCode.
+	sel   selRange
+	selOn bool
+	// selAnchor remembers the drag start so the first cells of a very short
+	// drag still count as a selection anchor.
+	selAnchor selPoint
+	// promptCol is where the text starts inside the input box (1-based), saved
+	// by the frame so a click moves the caret to the matching input column.
+	promptCol int
+	// thinking is the open/closed state of the "+ Thought" lines, keyed by the
+	// line index in t.lines; thoughtBodies holds the reasoning text each of
+	// them expands to.
+	thinking      map[int]bool
+	thoughtBodies map[int]string
+	// mcpOpen is the sidebar's MCP collapse state (open by default).
+	mcpOpen bool
+	// interruptArmed is set by the first Esc while a turn runs; the second Esc
+	// within escInterruptWindow actually interrupts. escAt is when the first
+	// press happened.
+	interruptArmed bool
+	escAt          time.Time
+	// spinnerSeq counts frames of the footer's busy spinner.
+	spinnerSeqVal int
+}
+
+// interruptLabel is the footer text while a turn runs: "esc interrupt", and
+// "esc again to interrupt" after the first Esc (OpenCode's PromptInterruptStatus).
+const (
+	interruptLabelArmed = "again to interrupt"
+	interruptLabel      = "interrupt"
+)
+
+// currentSpin paints the footer's knight-rider spinner frame: 8 cells of ■/⬝
+// in the agent colour, at 40 ms per frame, as OpenCode's ui/spinner.ts does.
+func currentSpin(seq int, _ bool) string {
+	width := 8
+	total := width + 9 + (width - 1) + 30 // forward + holdEnd + backward + holdStart
+	f := seq % total
+	var pos int
+	switch {
+	case f < width:
+		pos = f
+	case f < width+9:
+		pos = width - 1
+	case f < width+9+width-1:
+		pos = width - 2 - (f - width - 9)
+	default:
+		pos = 0
+	}
+	var sb strings.Builder
+	for i := 0; i < width; i++ {
+		if i == pos {
+			sb.WriteString(bluef("■"))
+			continue
+		}
+		// The trail dims by distance from the head, floored at 30% alpha.
+		d := pos - i
+		if d < 0 {
+			d = -d
+		}
+		if d < 6 {
+			sb.WriteString(color("\033[38;2;"+mixHex(92, 156, 245, float64(d)/6.0)+"m", "⬝"))
+			continue
+		}
+		sb.WriteString(grayf("⬝"))
+	}
+	return sb.String()
+}
+
+// mixHex blends c toward the background at ratio f, keeping the 24-bit escape.
+func mixHex(r, g, b int, f float64) string {
+	const bg = 10
+	clamp := func(v int) int { return clampInt(int(v), 0, 255) }
+	if f > 1 {
+		f = 1
+	}
+	return itoa(clamp(r+int(float64(bg-r)*f))) + ";" +
+		itoa(clamp(g+int(float64(bg-g)*f))) + ";" +
+		itoa(clamp(b+int(float64(bg-b)*f)))
+}
+
+func itoa(v int) string {
+	if v == 0 {
+		return "0"
+	}
+	var d []byte
+	for v > 0 {
+		d = append([]byte{byte('0' + v%10)}, d...)
+		v /= 10
+	}
+	return string(d)
 }
 
 func newScreen(out io.Writer) *screen {
-	fmt.Fprint(out, escAlt+escMouseOn+escPasteOn+escClear)
-	return &screen{out: out}
+	fmt.Fprint(out, escAlt+escMouseOn+escFocusOn+escPasteOn+escClear)
+	return &screen{out: out, hits: newHits(), sticky: true, mcpOpen: true, thinking: map[int]bool{}, thoughtBodies: map[int]string{}}
 }
 
 // takeImages returns (and forgets) the images sent with line: the REPL reads
@@ -122,7 +272,7 @@ func (t *screen) shutdown() {
 	t.stopSpin()
 	// The tab goes back to a neutral title: the shell (cmd/PowerShell) does not
 	// rewrite it, and the session name would stick to the tab after bh exits.
-	fmt.Fprint(t.out, escPasteOff+escMouseOff+escShowCursor+escNormal+tabTitle(""))
+	fmt.Fprint(t.out, escPasteOff+escMouseOff+escFocusOff+escShowCursor+escNormal+tabTitle(""))
 }
 
 // tabTitle is the OSC 0 sequence that sets the terminal tab/window name.
@@ -146,12 +296,17 @@ func tabTitle(session string) string {
 
 // ── API used by the REPL and by the turn renderer ─────────────────────────
 
-// Adicionar appends lines to the conversation and scrolls back to the end.
+// Adicionar appends lines to the conversation. While the view is pinned to the
+// bottom (sticky) the new lines scroll in with it; once the user read back,
+// the view stays exactly where it is — new output must not yank it down.
 func (t *screen) Adicionar(text string) {
 	t.mu.Lock()
 	t.lines = append(t.lines, strings.Split(text, "\n")...)
 	t.trim()
-	t.scroll = 0
+	if t.scroll > 0 {
+		// keep the offset above the bottom while content grows
+		t.scroll += len(strings.Split(text, "\n"))
+	}
 	t.drawLocked()
 	t.mu.Unlock()
 }
@@ -161,19 +316,28 @@ func (t *screen) Adicionar(text string) {
 func (t *screen) Usuario(text string) {
 	t.mu.Lock()
 	// Same width and same text column as the input box: both boxes line up,
-	// like in OpenCode.
-	avail := t.conversationWidth() - 2
-	blank := withBg(bluef("▌"), bgUser, avail)
+	// like in OpenCode. The bar is ┃ in the agent (primary blue) colour and the
+	// box background is raised.base #141414, with one padding line above and
+	// below; text two columns inside the bar.
+	avail := t.conversationWidth()
+	blank := withBg(bluef(bar), bgUser, avail)
+	grown := 0
 	if len(t.lines) > 0 {
 		t.lines = append(t.lines, "")
+		grown++
 	}
 	t.lines = append(t.lines, blank)
+	grown++
 	for _, l := range strings.Split(wrap(text, avail-5), "\n") {
-		t.lines = append(t.lines, withBg(bluef("▌")+"  "+highlightImages(l, colorText), bgUser, avail))
+		t.lines = append(t.lines, withBg(bluef(bar)+"  "+highlightImages(l, colorText), bgUser, avail))
+		grown++
 	}
 	t.lines = append(t.lines, blank, "")
+	grown += 2
 	t.trim()
-	t.scroll = 0
+	if t.scroll > 0 {
+		t.scroll += grown
+	}
 	t.drawLocked()
 	t.mu.Unlock()
 }
@@ -243,11 +407,13 @@ func (t *screen) Pensar(text string) {
 		defer close(end)
 		tick := time.NewTicker(90 * time.Millisecond)
 		defer tick.Stop()
-		since := time.Now()
 		for i := 0; ; i++ {
 			t.mu.Lock()
+			// OpenCode's in-transcript spinner: glyph + space + label in the
+			// warning colour, with NO elapsed seconds (they only appear at the
+			// end, on the "+ Thought · 8.1s" line).
 			t.transit = "  " + bluef(spinFrames[i%len(spinFrames)]) + " " +
-				color(italic+colorText, text) + " " + grayf(fmt.Sprintf("%.0fs", time.Since(since).Seconds()))
+				color(colorText, text)
 			t.drawLocked()
 			t.mu.Unlock()
 			select {
@@ -289,7 +455,11 @@ func (e screenWriter) Write(p []byte) (int, error) {
 	}
 	t.partial = parts[len(parts)-1]
 	t.trim()
-	t.scroll = 0
+	// Stay-put scrolling: while the user reads back, the view keeps its offset
+	// above the bottom as the conversation grows.
+	if t.scroll > 0 {
+		t.scroll += len(parts) - 1
+	}
 	t.drawLocked()
 	t.mu.Unlock()
 	return len(p), nil
@@ -314,39 +484,149 @@ func (t *screen) measure() bool {
 	return changed
 }
 
-func (t *screen) panelVisible() bool { return t.w >= 110 }
+// panelVisible implements OpenCode's only breakpoint: wide = width > 120.
+func (t *screen) panelVisible() bool { return t.w > panelThreshold }
 
-func (t *screen) conversationWidth() int {
-	if t.panelVisible() {
-		return t.w - panelWidth - 2
+// panePadCols is the pane's left/right padding, halved below the floor width.
+func (t *screen) panePadCols() int {
+	if t.w < paneFloor {
+		return 1
 	}
-	return t.w - 2
+	return panePad
 }
 
-// drawLocked paints the whole frame. Called with t.mu held.
+// conversationWidth is the pane's content width (pane width minus padding).
+func (t *screen) conversationWidth() int {
+	pad := t.panePadCols()
+	pane := t.w
+	if t.panelVisible() {
+		pane = t.w - panelWidth
+	}
+	return max(8, pane-2*pad)
+}
+
+// boxTop..boxBottom are the rows of the input box, whose height depends on how
+// many lines the typed text wrapped into. Layout (OpenCode §1.3), for a
+// terminal of H rows, input of n lines (grow = n-1):
 //
-// Rows: 1 margin · 2..h-7 conversation · h-6 blank/scroll ·
-// h-5..h-1 input box (with padding) · h footer. The panel takes the right-hand
-// columns on rows 1..h-1; nothing is written to the last column of the last
-// row (that would scroll the terminal).
-func (t *screen) drawLocked() {
-	fullClear := t.measure()
-	w, h := t.w, t.h
-	avail := t.conversationWidth()
-	// Long text in the input box wraps into several lines, and the box grows
-	// upwards (up to a third of the screen), like in OpenCode.
-	boxWidth := avail - 2
-	boxText := ""
+//	1..H-7-grow      transcript
+//	H-6-grow         status row ("Jump to latest ↓", right-aligned, or blank)
+//	H-5-grow         ┃ + prompt padding row (paddingTop 1)
+//	H-4-grow..H-3     ┃ + text lines
+//	H-2              ┃ + metadata row (paddingTop 1)
+//	H-1              bottom cap (╹ then ▀ × width)
+//	H-1 → footer     footer row (OpenCode puts it on H-1, blade of the box)
+//	H                blank (pane paddingBottom 1)
+//
+// frame describes one such layout so both drawing and hit-testing agree.
+type frame struct {
+	w, h       int
+	convRow    int // first transcript row
+	convHeight int // number of transcript rows
+	statusRow  int
+	boxTop     int // the padding row above the text
+	boxTextRow int // first text row
+	boxTextN   int // number of text lines
+	boxMetaRow int // the model/provider/effort row
+	boxGapRow  int // the blank metadata padding row (paddingTop 1)
+	boxCapRow  int
+	footerRow  int
+	barCol     int // 1-based column of the ┃ of the box
+	textCol    int // 1-based column where the box's text starts
+	boxWidth   int // width of the ┃..end of the painted box
+	paneCols   int // pane content width
+}
+
+// frameFor computes the layout for the current terminal size and input height.
+// The transcript grows downward from row 2 (OpenCode's first message row has
+// its own marginTop, so row 1 is blank but scrolls with the content).
+//
+// The prompt owns four fixed rows below the typing area: a blank metadata
+// padding row (paddingTop 1), the metadata row, the ╹/▀ cap, and then the
+// footer. Below the footer the last row of the screen stays blank (OpenCode's
+// pane paddingBottom 1), so the footer lands on H−1.
+func (t *screen) frameFor() frame {
+	f := frame{w: t.w, h: t.h}
+	boxN := len(t.boxLines(max(6, t.h/3))) // OpenCode: maxHeight = max(6, floor(H/3))
+	// Rows are counted from the bottom so the block always ends on H−1 (footer)
+	// with row H blank, no matter how tall the typing area is.
+	f.footerRow = t.h - 1
+	f.boxCapRow = f.footerRow - 1
+	f.boxMetaRow = f.boxCapRow - 1
+	f.boxGapRow = f.boxMetaRow - 1
+	f.boxTextRow = f.boxGapRow - boxN
+	f.boxTop = f.boxTextRow - 1
+	f.statusRow = f.boxTop - 1
+	f.convRow = 2
+	f.convHeight = max(3, f.statusRow-f.convRow)
+	f.boxTextN = boxN
+	f.paneCols = t.conversationWidth()
+	// The ┃ sits at the pane's left padding + 1 (1-based column), the text two
+	// columns after it; the painted box spans the rest of the pane.
+	f.barCol = t.panePadCols() + 1
+	f.textCol = f.barCol + 1 + 2
+	f.boxWidth = t.boxWidthCols()
+	return f
+}
+
+// boxWidthCols is the last column (1-based) the prompt box paints: the pane's
+// right edge minus its right padding.
+func (t *screen) boxWidthCols() int {
+	if t.panelVisible() {
+		return t.w - panelWidth - t.panePadCols()
+	}
+	return t.w - t.panePadCols()
+}
+
+// wrapInputLimit wraps the typed text at width n and keeps the last maxLines
+// lines (the box scrolls internally past its maximum height, caret visible).
+func wrapInputLimit(s string, n, maxLines int) []string {
+	out := wrapInput(s, n)
+	if len(out) > maxLines {
+		out = out[len(out)-maxLines:]
+	}
+	return out
+}
+
+// fmtTokens formats a count like JavaScript's toLocaleString in en-US:
+// 12345 -> "12,345" (OpenCode's sidebar and footer).
+func fmtTokens(n int) string {
+	return strings.ReplaceAll(thousands(n), ".", ",")
+}
+
+// boxLines wraps the visible input into the box's lines, capped at maxBox
+// (the last lines are kept: the caret stays visible).
+func (t *screen) boxLines(maxBox int) []string {
+	text := ""
 	if t.partial == "" {
-		boxText = t.visibleInput()
+		text = t.visibleInput()
 	}
-	boxLines := wrapInput(boxText, boxWidth-4)
-	if ceiling := max(1, h/3); len(boxLines) > ceiling {
-		boxLines = boxLines[len(boxLines)-ceiling:]
+	// The text starts two columns inside the ┃, and the box has 2 columns of
+	// right padding: that is the width the typed text wraps at.
+	return wrapInputLimit(text, t.boxWidthCols()-t.panePadCols()-4, maxBox)
+}
+
+// ensure initializes the fields a zero-value screen (the tests build one
+// directly, without newScreen) needs.
+func (t *screen) ensure() {
+	if t.hits == nil {
+		t.hits = newHits()
 	}
-	grow := len(boxLines) - 1
-	// Row 1 is margin; the conversation goes from row 2 to h-7-grow.
-	height := max(3, h-8-grow)
+	if t.thinking == nil {
+		t.thinking = map[int]bool{}
+	}
+	if t.thoughtBodies == nil {
+		t.thoughtBodies = map[int]string{}
+	}
+}
+
+// drawLocked paints the whole frame and rebuilds the hit regions. Called with
+// t.mu held.
+func (t *screen) drawLocked() {
+	t.ensure()
+	t.hits.clear()
+	fullClear := t.measure()
+	f := t.frameFor()
 
 	var sb strings.Builder
 	sb.WriteString(escSyncStart + escHideCursor)
@@ -354,15 +634,12 @@ func (t *screen) drawLocked() {
 		sb.WriteString(escClear)
 	}
 	line := func(r int, s string) {
-		fmt.Fprintf(&sb, "\033[%d;1H%s%s%s", r, reset, s, escClearLine)
+		fmt.Fprintf(&sb, "\033[%d;1H%s%s%s", r, bgScreen, s, escClearLine)
 	}
 
 	// No title line: the session name goes to the terminal tab (OSC 0) and to
 	// the panel. bh has one session per terminal, so OpenCode's tab bar makes
 	// no sense here.
-	// An unnamed session shows as "New session", same as the panel. The title
-	// is compared after resolving: comparing the raw one left the tab untitled
-	// on open (empty == initial value of lastTabTitle).
 	tabName := t.state.title
 	if strings.TrimSpace(tabName) == "" {
 		tabName = "New session"
@@ -372,101 +649,369 @@ func (t *screen) drawLocked() {
 		sb.WriteString(tabTitle(tabName))
 	}
 
-	// conversation
-	var all []string
-	for _, l := range t.lines {
-		all = append(all, wrapVis(l, avail-2)...)
-	}
-	if t.partial != "" {
-		all = append(all, wrapVis("  "+t.partial+t.visibleInput(), avail-2)...)
-	}
-	if t.transit != "" {
-		all = append(all, t.transit)
-	}
+	// conversation: every wrapped line, the visible window taken from the end
+	// only while the view is pinned; once the user scrolled up, new content
+	// must NOT yank the view down (OpenCode's sticky scroll).
+	all := t.wrapped(f.paneCols - 2)
+	height := f.convHeight
 	if t.scroll > len(all)-height {
 		t.scroll = max(0, len(all)-height)
 	}
 	end := len(all) - t.scroll
 	vis := all[max(0, end-height):end]
-	// 2-column left margin, the same as the input box.
-	line(1, "")
-	for i := 0; i < height; i++ {
-		s := ""
-		if i < len(vis) {
-			s = conversationMargin(vis[i]) + vis[i]
-		}
-		line(2+i, s)
-	}
+	t.paintTranscript(&sb, f, vis, height)
+
+	// status row: "Jump to latest ↓" while the view sits above the bottom.
 	if t.scroll > 0 {
-		line(h-6-grow, "   "+grayf(fmt.Sprintf("↓ %d lines below · PgDn to return", t.scroll)))
+		jump := grayf("Jump to latest ↓")
+		row := padding(f.w) + jump
+		t.hits.add(&hitRegion{
+			row: f.statusRow, col: f.w - visWidth(jump) + 1,
+			width: visWidth(jump), height: 1,
+			plain: row, hover: color(colorText, "Jump to latest ↓") + " ↓",
+			action: func() { t.toBottom() },
+		})
+		line(f.statusRow, row)
 	} else {
-		line(h-6-grow, "")
+		line(f.statusRow, "")
 	}
 
-	// input box; while a command prompt awaits an answer, the typed text shows
-	// on the prompt line itself and the box stays empty.
-	// One line of padding above and below, and text 2 spaces from the bar,
-	// like OpenCode's box.
-	blankBox := "  " + withBg(bluef("▌"), bgBox, boxWidth)
-	line(h-5-grow, blankBox)
-	for i, l := range boxLines {
-		if !t.masked {
-			l = highlightImages(l, "") // pasted [Image N] in yellow
-		}
-		line(h-4-grow+i, "  "+withBg(bluef("▌")+"  "+l, bgBox, boxWidth))
-	}
-	line(h-3, blankBox)
-	info := boldf(color(colorText, t.state.model)) + " " + grayf(t.state.provider)
-	if t.state.effort != "" {
-		info += grayf(" · ") + orangef(t.state.effort)
-	}
-	line(h-2, "  "+withBg(bluef("▌")+"  "+info, bgBox, boxWidth))
-	line(h-1, blankBox)
-
-	// footer
-	left := "  " + grayf(t.state.cwd)
-	var rightParts []string
-	switch {
-	case t.notice != "":
-		rightParts = append(rightParts, yellowf(t.notice))
-	case t.busy:
-		rightParts = append(rightParts, boldf(color(colorText, "esc"))+" "+grayf("interrupt"))
-	}
-	if t.state.ctxTokens > 0 {
-		rightParts = append(rightParts, fmtContext(t.state.ctxTokens, t.state.window))
-	}
-	rightParts = append(rightParts, boldf(color(colorText, "/help"))+" "+grayf("commands"))
-	dir := strings.Join(rightParts, "  ")
-	line(h, left+strings.Repeat(" ", max(1, avail-visWidth(left)-visWidth(dir)))+dir)
-
-	// side panel
+	t.drawBox(&sb, f)
+	t.drawFooter(&sb, f)
 	if t.panelVisible() {
-		col := w - panelWidth + 1
-		panel := t.panelLines()
-		// Panel with a top margin (row 1 free) and one inner line of padding
-		// before the title, aligned with the top of the conversation.
-		for r := 2; r <= h-1; r++ {
-			s := ""
-			if r-3 >= 0 && r-3 < len(panel) {
-				s = panel[r-3]
-			}
-			fmt.Fprintf(&sb, "\033[%d;%dH%s%s", r, col, reset, withBg(s, bgPanel, panelWidth-2))
-		}
+		t.drawPanel(&sb, f)
 	}
 
 	// cursor: in the box (also during the turn, to type the next message right
 	// away), or at the end of the command prompt line
 	if t.partial == "" {
-		fmt.Fprintf(&sb, "\033[%d;%dH", h-4, 6+visWidth(boxLines[len(boxLines)-1]))
+		t.promptCol = f.textCol + visWidth(t.boxLines(max(6, t.h/3))[len(t.boxLines(max(6, t.h/3)))-1])
+		fmt.Fprintf(&sb, "\033[%d;%dH", f.boxTextRow+f.boxTextN-1, t.promptCol)
 		sb.WriteString(escShowCursor)
 	} else if len(vis) > 0 {
 		last := vis[len(vis)-1]
-		fmt.Fprintf(&sb, "\033[%d;%dH", 2+len(vis)-1, 1+visWidth(conversationMargin(last)+last))
+		fmt.Fprintf(&sb, "\033[%d;%dH", f.convRow+len(vis)-1, 1+visWidth(conversationMargin(last)+last))
 		sb.WriteString(escShowCursor)
 	}
 	sb.WriteString(escSyncEnd)
 	fmt.Fprint(t.out, sb.String())
 }
+
+// wrapped returns the whole transcript wrapped to width (each entry already
+// colored), the way the frame shows it.
+func (t *screen) wrapped(width int) []string {
+	var all []string
+	for _, l := range t.lines {
+		all = append(all, wrapVis(l, width)...)
+	}
+	if t.partial != "" {
+		all = append(all, wrapVis("  "+t.partial+t.visibleInput(), width)...)
+	}
+	if t.transit != "" {
+		all = append(all, t.transit)
+	}
+	return all
+}
+
+// paintTranscript paints the visible conversation rows, applying the in-app
+// selection over them. Each row is registered as a selection source, and the
+// rows that carry a collapsible Thought line are registered with their click
+// action and hover style, as OpenCode's message-parts do.
+func (t *screen) paintTranscript(sb *strings.Builder, f frame, vis []string, height int) {
+	line := func(r int, s string) {
+		fmt.Fprintf(sb, "\033[%d;1H%s%s%s", r, bgScreen, s, escClearLine)
+	}
+	// Total wrapped lines before the window, so a mouse row maps back to the
+	// index in t.lines (which line of the transcript is on screen).
+	base := len(t.wrapped(f.paneCols-2)) - t.scroll - len(vis)
+	// Row 1 is the pane's top margin; the messages start on row 2.
+	for i := 0; i < height; i++ {
+		row := f.convRow + i
+		s := ""
+		if i < len(vis) {
+			visRow := vis[i]
+			if t.selOn {
+				visRow = t.applySelection(visRow, base+i)
+			}
+			s = conversationMargin(visRow) + visRow
+		}
+		line(row, s)
+		// A drag starts on any conversation cell; when the row holds a Thought
+		// line it also answers a click (and shows the hover variant).
+		region := &hitRegion{row: row, col: 1, width: f.paneCols, height: 1, id: "conv"}
+		idx := base + i
+		if idx >= 0 && idx < len(t.lines) {
+			if body, ok := t.thoughtBodies[idx]; ok && body != "" {
+				head := t.lines[idx]
+				region.id = "thought"
+				region.plain = conversationMargin(head) + head
+				region.hover = thoughtHover(head, t.thinking[idx])
+				region.action = func() { t.expandThought(idx) }
+			}
+		}
+		t.hits.add(region)
+	}
+}
+
+// thoughtHover paints a Thought header's hover variant: the collapsed line
+// flips its "+" to "-" on hover, as OpenCode previews the expansion.
+func thoughtHover(head string, open bool) string {
+	if open {
+		return head
+	}
+	return strings.Replace(head, "+ Thought", "- Thought", 1)
+}
+
+// applySelection paints the selected segment of one wrapped line.
+func (t *screen) applySelection(l string, idx int) string {
+	plain := stripANSI(l)
+	runes := []rune(plain)
+	n := t.sel.normalize()
+	// A line takes part in the selection when it lies between the endpoints
+	// (inclusive); the endpoints then clamp the painted span.
+	if idx < n.from.line || idx > n.to.line {
+		return l
+	}
+	from, to := 0, len(runes)
+	if idx == n.from.line {
+		from = clampInt(n.from.col, 0, len(runes))
+	}
+	if idx == n.to.line {
+		to = clampInt(n.to.col, from, len(runes))
+	}
+	if from >= to {
+		return l
+	}
+	return color(colorText, string(runes[:from])) +
+		bgSelection + fgSelected + string(runes[from:to]) + reset +
+		color(colorText, string(runes[to:]))
+}
+
+// drawBox paints the input box: the ┃ gutter, the padded text rows, the
+// metadata row, and the bottom cap. No bottom padding row inside the box.
+func (t *screen) drawBox(sb *strings.Builder, f frame) {
+	line := func(r int, s string) {
+		fmt.Fprintf(sb, "\033[%d;1H%s%s%s", r, bgScreen, s, escClearLine)
+	}
+	bar := bluef(bar)
+	gutter := strings.Repeat(" ", f.barCol-1) + bar
+	blank := strings.Repeat(" ", f.barCol-1) + withBg(bar, bgBox, f.boxWidth-f.barCol+1)
+	// padding row above the text (paddingTop 1)
+	line(f.boxTop, blank)
+	// text rows
+	maxBox := max(6, t.h/3)
+	boxLines := t.boxLines(maxBox)
+	for i, l := range boxLines {
+		painted := l
+		if !t.masked {
+			painted = highlightImages(l, "")
+		}
+		line(f.boxTextRow+i, gutter+"  "+withBg(painted, bgBox, f.boxWidth-f.textCol+1-2))
+	}
+	// metadata row: a blank padding row first (paddingTop 1), then the model,
+	// provider and effort (the effort in bold warning), as OpenCode does.
+	line(f.boxGapRow, blank)
+	info := color(colorText, t.state.model) + " " + grayf(t.state.provider)
+	if t.state.effort != "" {
+		info += grayf(" · ") + boldf(orangef(t.state.effort))
+	}
+	line(f.boxMetaRow, gutter+"  "+withBg(info, bgBox, f.boxWidth-f.textCol+1-2))
+	// bottom cap: ╹ in the bar colour, then ▀ across the box
+	capRow := strings.Repeat(" ", f.barCol-1) + bar + strings.Repeat(barEdge, f.boxWidth-f.barCol)
+	line(f.boxCapRow, withBg(capRow, bgBox, f.boxWidth))
+	// the whole box is clickable: a click inside it must not reach the
+	// conversation underneath.
+	t.hits.add(&hitRegion{row: f.boxTop, col: 1, width: f.boxWidth,
+		height: f.boxCapRow - f.boxTop + 1, id: "box"})
+	_ = bar
+}
+
+// drawFooter paints the footer on the row right below the cap; the last row
+// stays blank (OpenCode's pane paddingBottom 1).
+func (t *screen) drawFooter(sb *strings.Builder, f frame) {
+	line := func(r int, s string) {
+		fmt.Fprintf(sb, "\033[%d;1H%s%s%s", r, bgScreen, s, escClearLine)
+	}
+	// The footer is aligned to the prompt box: it starts at the pane's left
+	// padding and never crosses into the sidebar.
+	width := f.boxWidth
+	left, right := t.footerParts(width)
+	gap := max(1, width-visWidth(left)-visWidth(right))
+	line(f.footerRow, left+strings.Repeat(" ", gap)+truncateVis(right, width-visWidth(left)-gap))
+	line(f.h, "")
+}
+
+// footerParts builds the left (location or interrupt state) and right (usage
+// and shortcut hint) half of the footer, following OpenCode's fit rules: the
+// shortcuts are dropped before the usage, and the right side disappears
+// entirely while an interrupt is armed on a narrow screen.
+func (t *screen) footerParts(w int) (string, string) {
+	var left string
+	if t.busy {
+		label := color(colorText, "esc") + " " + grayf(interruptLabel)
+		if t.interruptArmed {
+			label = orangef("esc " + interruptLabelArmed)
+		}
+		left = "   " + currentSpin(t.spinnerSeqVal, t.interruptArmed) + " " + label
+	} else if t.state.cwd != "" {
+		left = "  " + grayf(t.state.cwd)
+	}
+	usage := ""
+	if t.state.ctxTokens > 0 {
+		usage = fmtContext(t.state.ctxTokens, t.state.window)
+	}
+	// OpenCode's fit rule: available = (W-8) - min(28, (W-8)/2).
+	available := max(0, w-8-min(28, (w-8)/2))
+	hint := boldf(color(colorText, footerCopyHint)) + " " + grayf("commands")
+	fits := func(parts ...string) bool {
+		return visWidth(strings.Join(parts, " · ")) <= available
+	}
+	var right []string
+	switch {
+	case usage != "" && hint != "" && fits(usage, hint):
+		right = []string{usage, hint}
+	case usage != "" && fits(usage):
+		right = []string{usage}
+	case hint != "" && fits(hint):
+		right = []string{hint}
+	}
+	// Interrupt armed on a narrow screen hides the right side entirely.
+	if t.busy && t.interruptArmed && w < 80 {
+		right = nil
+	}
+	if t.notice != "" {
+		right = []string{yellowf(t.notice)}
+	}
+	return left, strings.Join(right, grayf(" · "))
+}
+
+func (t *screen) visibleInput() string {
+	if t.masked {
+		return strings.Repeat("•", utf8.RuneCountInString(t.input))
+	}
+	return t.input
+}
+
+// sidebarScroll is the sidebar's own scroll offset (its content grows taller
+// than the pane).
+func (t *screen) drawPanel(sb *strings.Builder, f frame) {
+	col := t.w - panelWidth + 1
+	panel, n := t.panelLines()
+	avail := f.h - 2 // top/bottom padding of 1
+	// off is how many leading lines the sidebar clips (its content can grow
+	// taller than the pane); the visible slice starts there.
+	off := 0
+	if d := n - avail; d > 0 {
+		off = d
+	}
+	visible := panel[min(off, len(panel)):]
+	// The MCP heading, when it is one of the visible lines and there are more
+	// than two servers: a mouse-down collapses the section.
+	mcpVisible := -1
+	for i, l := range visible {
+		if strings.Contains(stripANSI(l), "MCP") {
+			mcpVisible = i
+			break
+		}
+	}
+	for i := 0; i < avail; i++ {
+		row := 2 + i
+		s := ""
+		if i < len(visible) {
+			s = visible[i]
+		}
+		fmt.Fprintf(sb, "\033[%d;%dH%s%s", row, col, reset, withBg(s, bgPanel, panelWidth-2))
+		if i == mcpVisible && len(t.state.mcps) > 2 {
+			t.hits.add(&hitRegion{row: row, col: col, width: panelWidth - 2, height: 1,
+				id: "mcpheader", action: func() { t.mcpOpen = !t.mcpOpen; t.drawLocked() }})
+			continue // the region is registered; nothing else to do on this row
+		}
+	}
+}
+
+// panelLines renders the sidebar: title, Context (hidden with no usage) and MCP
+// (hidden with no servers, collapsed past two rows when closed).
+func (t *screen) panelLines() ([]string, int) {
+	e := t.state
+	title := e.title
+	if title == "" {
+		title = "New session"
+	}
+	var out []string
+	out = append(out, "") // paddingTop 1
+	for _, l := range strings.Split(wrap(title, panelWidth-6), "\n") {
+		out = append(out, "  "+boldf(color(colorText, l)))
+	}
+	// Context: hidden entirely while there is no usage (OpenCode's
+	// <Show when={state()}>), not a placeholder row.
+	if e.ctxTokens > 0 {
+		out = append(out, "", "  "+boldf(color(colorText, "Context")))
+		out = append(out, "  "+grayf(fmtTokens(e.ctxTokens)+" tokens"))
+		if e.window > 0 {
+			pct := 100 * e.ctxTokens / e.window
+			txt := fmt.Sprintf("%d%% used", pct)
+			if pct == 0 {
+				txt = "<1% used"
+			}
+			out = append(out, "  "+grayf(txt))
+		}
+	}
+	// MCP: hidden when there are no servers; the header opens/collapses past
+	// two servers, exactly like OpenCode's sidebar/mcp.tsx.
+	if len(e.mcps) > 0 {
+		out = append(out, "", "  "+mcpHeader(e.mcps, t.mcpOpen))
+		if t.mcpOpen || len(e.mcps) <= 2 {
+			for _, m := range e.mcps {
+				name := truncateVis(m.name, panelWidth-18)
+				dot := greenf("•")
+				status := grayf("Connected")
+				if m.falha {
+					dot, status = redf("•"), redf("Error")
+				}
+				out = append(out, "  "+dot+" "+boldf(color(colorText, name))+"  "+status)
+			}
+		}
+	}
+	out = append(out, "")
+	// footer: the working directory and its git branch.
+	loc := e.cwd
+	if e.branch != "" {
+		loc += ":" + e.branch
+	}
+	out = append(out, "  "+grayf(truncateVis(loc, panelWidth-6)))
+	return out, len(out)
+}
+
+// mcpHeader renders the sidebar's MCP heading: "▼ MCP" open, and
+// "▶ MCP 2 active, 1 error" collapsed (OpenCode counts the live and the broken
+// servers so the hidden section still reports them).
+func mcpHeader(mcps []mcpEntry, open bool) string {
+	arrow := "▼"
+	if open {
+		return boldf(color(colorText, arrow+" MCP"))
+	}
+	arrow = "▶"
+	live, bad := 0, 0
+	for _, m := range mcps {
+		if m.falha {
+			bad++
+			continue
+		}
+		live++
+	}
+	tail := fmt.Sprintf(" (%d active", live)
+	if bad > 0 {
+		tail += fmt.Sprintf(", %d error", bad)
+		if bad > 1 {
+			tail += "s"
+		}
+	}
+	tail += ")"
+	return boldf(color(colorText, arrow+" MCP")) + grayf(tail)
+}
+
+// padding pads a footer/status row's left side to width columns.
+func padding(width int) string { return strings.Repeat(" ", max(1, width)) }
 
 // conversationMargin: boxes (user messages) start at the input box column;
 // the rest of the conversation starts at the column of the TEXT inside them,
@@ -478,53 +1023,189 @@ func conversationMargin(l string) string {
 	return "   "
 }
 
-func (t *screen) visibleInput() string {
-	if t.masked {
-		return strings.Repeat("•", utf8.RuneCountInString(t.input))
-	}
-	return t.input
+// ── scroll: sticky bottom that new output must not break ───────────────────
+
+// t.scroll is how many lines the view sits ABOVE the bottom: 0 is the pinned
+// (sticky) position, maxScroll() the very top. The helpers below work with the
+// offset FROM THE TOP, which is what the keys mean (Home = 0, End = max).
+
+// maxScroll is the furthest the view can sit above the bottom.
+func (t *screen) maxScroll() int {
+	return max(0, len(t.wrapped(t.conversationWidth()-2))-t.frameFor().convHeight)
 }
 
-func (t *screen) panelLines() []string {
-	e := t.state
-	title := e.title
-	if title == "" {
-		title = "New session"
+// offsetFromTop is the view's position measured from the top of the transcript.
+func (t *screen) offsetFromTop() int { return t.maxScroll() - t.scroll }
+
+// setOffset pins the view at n lines from the top and re-sticks it when that is
+// the bottom, exactly like OpenCode's sticky scroll.
+func (t *screen) setOffset(n int) {
+	t.scroll = clampInt(t.maxScroll()-n, 0, t.maxScroll())
+	t.sticky = t.scroll == 0
+	t.drawLocked()
+}
+
+// scrollUp/scrollDown move by n lines: "up" means towards the older content
+// (the top), which is a LARGER t.scroll and a smaller offset from the top.
+// Moving up un-sticks the view — the status row then shows "Jump to latest ↓"
+// and new output no longer pulls it down — and reaching the bottom re-sticks it.
+func (t *screen) scrollUp(n int)   { t.setOffset(t.offsetFromTop() - n) }
+func (t *screen) scrollDown(n int) { t.setOffset(t.offsetFromTop() + n) }
+
+// scrollPage moves by a fraction of the visible height: half for PgUp/PgDn
+// (OpenCode's page keys), a quarter for its "half page".
+func (t *screen) scrollPage(fraction int, up bool) {
+	step := t.frameFor().convHeight / fraction
+	if up {
+		t.scrollUp(step)
+		return
 	}
-	var out []string
-	for _, l := range strings.Split(wrap(title, panelWidth-6), "\n") {
-		out = append(out, "  "+boldf(color(colorText, l)))
+	t.scrollDown(step)
+}
+
+// toBottom re-pins the view to the bottom, like OpenCode's toBottom().
+func (t *screen) toBottom() {
+	t.scroll, t.sticky = 0, true
+	t.drawLocked()
+}
+
+// ── mouse dispatch ─────────────────────────────────────────────────────────
+
+// mouse is the screen's left-button state (idle / selecting / pressed).
+var mouse = mouseState{}
+
+// wheelScroll routes a wheel event by the region the pointer is over: the
+// sidebar scrolls its own list, everything else scrolls the transcript, at
+// OpenCode's 3 lines per tick.
+func (t *screen) wheelScroll(row, col, dir int) {
+	if t.panelVisible() && col > t.w-panelWidth {
+		t.drawLocked()
+		return
 	}
-	out = append(out, "", "  "+boldf(color(colorText, "Context")))
-	if e.ctxTokens > 0 {
-		out = append(out, "  "+grayf(thousands(e.ctxTokens)+" tokens"))
-		if e.window > 0 {
-			txt := fmt.Sprintf("%d%% used", 100*e.ctxTokens/e.window)
-			if 100*e.ctxTokens/e.window == 0 {
-				txt = "<1% used"
-			}
-			out = append(out, "  "+grayf(txt))
+	// dir is +1 for a wheel-up event: the view moves UP (older content).
+	if dir > 0 {
+		t.scrollUp(wheelLines)
+		return
+	}
+	t.scrollDown(wheelLines)
+}
+
+// mouseHover repaints the hovered region, but only when the hovered region
+// changed: motion inside one region costs no redraw.
+func (t *screen) mouseHover(row, col int) {
+	if _, change := t.hits.hoverRegion(row, col); !change {
+		return
+	}
+	t.repaintHover()
+}
+
+// repaintHover writes just the row of the region being (un)hovered, instead of
+// the whole frame: a hover must not cost a full repaint.
+func (t *screen) repaintHover() {
+	var sb strings.Builder
+	sb.WriteString(escHideCursor)
+	for _, r := range t.hits.regions {
+		if r.hover == "" || !r.hovered {
+			continue
 		}
-	} else {
-		out = append(out, "  "+grayf("—"))
+		text := r.plain
+		if r.hovered {
+			text = r.hover
+		}
+		fmt.Fprintf(&sb, "\033[%d;%dH%s%s%s%s", r.row, r.col, reset, truncateVis(text, r.width),
+			escClearLine, reset)
 	}
-	out = append(out, "", "  "+boldf(color(colorText, "▼ MCP")))
-	if len(e.mcps) == 0 {
-		out = append(out, "  "+grayf("no servers"))
-	}
-	for _, m := range e.mcps {
-		name := truncateVis(m, panelWidth-18)
-		pad := strings.Repeat(" ", max(1, panelWidth-17-visWidth(name)))
-		out = append(out, "  "+greenf("•")+" "+boldf(color(colorText, name))+pad+grayf("Connected"))
-	}
-	return out
+	sb.WriteString(escShowCursor)
+	fmt.Fprint(t.out, sb.String())
 }
 
-// ── keyboard ──────────────────────────────────────────────────────────────
+// mouseDown handles a left press: it starts a selection over the conversation
+// or arms the click of the region underneath.
+func (t *screen) mouseDown(row, col int) {
+	if r := mouse.press(t.hits, row, col); r != nil {
+		t.repaintHover()
+	}
+}
+
+// mouseDrag extends the selection (or cancels the click). The drag is measured
+// in transcript coordinates: the row maps to the wrapped line (the frame's
+// first conversation row), the column subtracts the pane's left padding.
+func (t *screen) mouseDrag(row, col int) {
+	p := mouse.drag(row, col, t.frameFor().convRow, t.panePadCols())
+	if p == nil {
+		return
+	}
+	if !t.selOn {
+		t.selOn = true
+		t.sel = selRange{from: *p}
+	}
+	t.sel.to = *p
+	t.drawLocked()
+}
+
+// mouseUp closes the interaction: a selection is kept and copied (clicks are
+// then ignored while it holds text, as OpenCode does); a click dispatches the
+// region's action.
+func (t *screen) mouseUp(row, col int) {
+	r, kept := mouse.release(t.hits, row, col)
+	if kept && t.selOn {
+		t.copySelection()
+		return
+	}
+	if r == nil || r.action == nil {
+		return
+	}
+	r.action()
+}
+
+// rightClick copies the current selection, as OpenCode does on Windows (where
+// copy-on-select is "manual" by default).
+func (t *screen) rightClick() {
+	if t.selOn {
+		t.copySelection()
+	}
+}
+
+// selectionText is the plain text of the current in-app selection.
+func (t *screen) selectionText() string {
+	return extractSelection(t.wrapped(t.conversationWidth()-2), t.sel)
+}
+
+// hasSelection reports whether the in-app selection holds any text.
+func (t *screen) hasSelection() bool {
+	return t.selOn && t.selectionText() != ""
+}
+
+// clearSelection drops the in-app selection, as OpenCode's Esc does.
+func (t *screen) clearSelection() {
+	if !t.selOn {
+		return
+	}
+	t.selOn = false
+	t.drawLocked()
+}
+
+// copySelection copies the selection to the terminal clipboard (OSC 52) and to
+// the OS clipboard, and shows the "Copied to clipboard" notice.
+func (t *screen) copySelection() {
+	text := t.selectionText()
+	if text == "" {
+		return
+	}
+	fmt.Fprint(t.out, osc52(text))
+	if clipboardWrite == nil || clipboardWrite(text) != nil {
+		t.notice, t.noticeAt = "copied to clipboard", time.Now()
+	}
+	t.drawLocked()
+}
 
 type keyEvent struct {
 	text   string
 	action string
+	// mouse is set when the event came from an SGR mouse sequence.
+	mouse bool
+	col   int
+	row   int
 }
 
 // readKeys decodes raw stdin into keys. Arrows and PgUp/PgDn arrive as escape
@@ -570,25 +1251,23 @@ func readKeys(r *bufio.Reader, ch chan<- keyEvent) {
 			case 'B':
 				ch <- keyEvent{action: "baixo"}
 			case '<':
-				// SGR mouse: "<button;col;rowM". 64/65 are wheel up/down;
-				// clicks and drags are ignored.
+				// SGR mouse: "<code;col;rowM" (press) / "m" (release).
 				var seq []byte
 				for {
 					x, err := r.ReadByte()
-					if err != nil || x == 'M' || x == 'm' {
+					if err != nil {
 						break
 					}
 					seq = append(seq, x)
+					if x == 'M' || x == 'm' {
+						break
+					}
 				}
-				button, _, _ := strings.Cut(string(seq), ";")
-				switch button {
-				case "64":
-					ch <- keyEvent{action: "rodacima"}
-				case "65":
-					ch <- keyEvent{action: "rodabaixo"}
+				if e, ok := parseMouseSeq(string(seq)); ok {
+					ch <- mouseEvent(e)
 				}
 			case '2':
-				// "\033[200~" opens a bracketed paste; other "2…" sequences
+				// "[200~" opens a bracketed paste; other "2…" sequences
 				// (Insert, F9…) are discarded up to their final byte.
 				params := []byte{f}
 				for {
@@ -621,6 +1300,10 @@ func readKeys(r *bufio.Reader, ch chan<- keyEvent) {
 				} else {
 					ch <- keyEvent{action: "pgdn"}
 				}
+			case 'H':
+				ch <- keyEvent{action: "home"}
+			case 'F':
+				ch <- keyEvent{action: "end"}
 			default:
 				// other sequences (left/right arrows, F1…): discard up to the final byte
 				for x := f; !(x >= 0x40 && x <= 0x7e) && r.Buffered() > 0; {
@@ -650,6 +1333,33 @@ func readKeys(r *bufio.Reader, ch chan<- keyEvent) {
 			ch <- keyEvent{text: string(rune(b))}
 		}
 	}
+}
+
+// mouseEvent maps a decoded SGR event onto a keyEvent action, carrying the
+// cell it happened on for the dispatcher.
+func mouseEvent(e mouseSeq) keyEvent {
+	k := keyEvent{mouse: true, col: e.Col, row: e.Row}
+	switch {
+	case e.Wheel == 64:
+		k.action = "rodacima"
+	case e.Wheel == 65:
+		k.action = "rodabaixo"
+	case e.Drag && e.Button == 0:
+		k.action = "mousedrag"
+	case e.Drag:
+		k.action = "mousemove"
+	case e.Motion:
+		k.action = "mousemove"
+	case e.Release && e.Button == 0:
+		k.action = "mouseup"
+	case e.Release && e.Button == 2:
+		k.action = "rightclick"
+	case e.Release:
+		k.action = "mouserelease"
+	default:
+		k.action = "mousedown"
+	}
+	return k
 }
 
 // pasteResult is the outcome of reading the clipboard for image n.
@@ -942,26 +1652,95 @@ func runScreen(io IO) int {
 						histPos, t.input = -1, ""
 					}
 				})
-			case "pgup", "pgdn", "rodacima", "rodabaixo":
+			case "pgup", "pgdn", "rodacima", "rodabaixo", "mousedrag", "mousemove",
+				"mousedown", "mouseup", "mouserelease", "rightclick":
+				// A selection suppresses every other input while it holds text,
+				// as OpenCode does: the drag is being made or read.
+				t.mu.Lock()
+				selecting := t.hasSelection()
+				t.mu.Unlock()
+				if selecting && k.action != "mouseup" && k.action != "mouserelease" && k.action != "rightclick" {
+					continue
+				}
 				edit(func() {
-					step := max(3, t.h-10)
-					if strings.HasPrefix(k.action, "roda") {
-						step = 3
+					switch k.action {
+					case "rodacima":
+						t.wheelScroll(k.row, k.col, 1)
+					case "rodabaixo":
+						t.wheelScroll(k.row, k.col, -1)
+					case "mousemove":
+						t.mouseHover(k.row, k.col)
+					case "mousedown":
+						t.mouseDown(k.row, k.col)
+					case "mousedrag":
+						t.mouseDrag(k.row, k.col)
+					case "mouseup":
+						t.mouseUp(k.row, k.col)
+					case "mouserelease":
+						// a region without an action only needs the hover
+						// cleared, which the next frame does
+					case "rightclick":
+						t.rightClick()
+					case "pgup": // half the visible height (OpenCode's page keys)
+						t.scrollPage(2, true)
+					case "pgdn":
+						t.scrollPage(2, false)
 					}
-					if k.action == "pgup" || k.action == "rodacima" {
-						t.scroll += step
-					} else {
-						t.scroll = max(0, t.scroll-step)
+				})
+			case "home", "end", "ctrl+g":
+				edit(func() {
+					// Home and ctrl+g jump to the first message; end and
+					// ctrl+alt+g to the last, as OpenCode binds them.
+					if k.action == "home" || k.action == "ctrl+g" {
+						t.setOffset(0)
+						return
 					}
+					t.setOffset(t.maxScroll())
 				})
 			case "ctrl+l":
 				edit(func() { t.w = 0 }) // forces a clear and repaint
 			case "esc", "ctrl+c":
+				// A selection cancels itself on Esc before any other action,
+				// as OpenCode does.
+				t.mu.Lock()
+				selecting := t.hasSelection()
+				t.mu.Unlock()
+				if selecting && k.action == "esc" {
+					edit(func() { t.clearSelection() })
+					continue
+				}
+				if k.action == "ctrl+c" && selecting {
+					edit(func() { t.copySelection() })
+					continue
+				}
 				if busy {
-					select {
-					case sub.cancelCh <- struct{}{}:
-					default:
+					if k.action == "ctrl+c" {
+						select {
+						case sub.cancelCh <- struct{}{}:
+						default:
+						}
+						continue
 					}
+					// Esc arms the interrupt; a second press within the window
+					// actually interrupts, exactly as OpenCode does.
+					t.mu.Lock()
+					armed := t.interruptArmed && time.Since(t.escAt) < escInterruptWindow
+					t.mu.Unlock()
+					if armed {
+						t.mu.Lock()
+						t.interruptArmed = false
+						t.mu.Unlock()
+						select {
+						case sub.cancelCh <- struct{}{}:
+						default:
+						}
+						continue
+					}
+					edit(func() {
+						t.mu.Lock()
+						t.interruptArmed, t.escAt = true, time.Now()
+						t.mu.Unlock()
+					})
 					continue
 				}
 				if k.action == "esc" {
@@ -981,6 +1760,9 @@ func runScreen(io IO) int {
 				lastCtrlC = time.Now()
 				edit(func() { t.notice, t.noticeAt = "press ctrl+c again to exit", lastCtrlC })
 			case "ctrl+d":
+				if busy {
+					continue // deleting forward / exiting is OpenCode's; bh keeps exiting
+				}
 				send("/exit")
 			}
 		}
@@ -1129,6 +1911,45 @@ func shortCwd(cwd string) string {
 	return cwd
 }
 
+// gitBranch returns the current git branch of dir (for OpenCode's
+// "~/path:branch" location label), reading .git/HEAD of the nearest repository
+// without running git. Empty when dir is not in a repository or HEAD is
+// detached.
+func gitBranch(dir string) string {
+	for d := dir; d != ""; {
+		gitPath := filepath.Join(d, ".git")
+		if st, err := os.Stat(gitPath); err == nil {
+			if !st.IsDir() {
+				// worktree/submodule: ".git" is a file "gitdir: <path>"
+				b, err := os.ReadFile(gitPath)
+				if err != nil {
+					return ""
+				}
+				g := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(b)), "gitdir:"))
+				if !filepath.IsAbs(g) {
+					g = filepath.Join(d, g)
+				}
+				gitPath = g
+			}
+			head, err := os.ReadFile(filepath.Join(gitPath, "HEAD"))
+			if err != nil {
+				return ""
+			}
+			ref := strings.TrimSpace(string(head))
+			if !strings.HasPrefix(ref, "ref: refs/heads/") {
+				return ""
+			}
+			return strings.TrimPrefix(ref, "ref: refs/heads/")
+		}
+		parent := filepath.Dir(d)
+		if parent == d {
+			break
+		}
+		d = parent
+	}
+	return ""
+}
+
 // isWorkingState reports whether a user message is the compaction working
 // state. "[estado de trabalho" is the legacy marker still found in old logs.
 func isWorkingState(s string) bool {
@@ -1219,11 +2040,81 @@ func (r *screenTurn) Eco(output string) {
 	r.t.Adicionar("  " + grayf("› "+truncateVis(first, avail)))
 }
 
-// Pensou closes "Thinking" like OpenCode: a "+ Thought · 8.1s" line in place
-// of the spinner.
-func (r *screenTurn) Pensou(_ string, dur time.Duration) {
+// Pensou closes "Thinking" like OpenCode: a "+ Thought: <title> · 8.1s" line
+// in place of the spinner, clickable to expand the reasoning.
+func (r *screenTurn) Pensou(text string, dur time.Duration) {
 	r.t.stopSpin()
-	r.t.Adicionar("  " + orangef("+ Thought") + grayf(" · "+fmtDur(dur)))
+	r.t.thought(dur, text)
+}
+
+// thought appends the collapsed Thought line and remembers the reasoning text
+// so a click can expand it: OpenCode's reasoningSummary turns a "**Title**"
+// prefix into "Thought: Title".
+func (t *screen) thought(dur time.Duration, reasoning string) {
+	title, body := reasoningSummary(reasoning)
+	t.mu.Lock()
+	t.thoughtBodies[len(t.lines)] = strings.TrimRight(body, "\n")
+	t.mu.Unlock()
+	mid := ""
+	label := "+ Thought"
+	if title != "" {
+		label, mid = "+ Thought: "+title, " · "
+	}
+	t.Adicionar("  " + orangef(label) + mid + grayf(fmtDur(dur)))
+}
+
+// reasoningSummary mirrors OpenCode's context/thinking.ts: a leading
+// "**Title**" paragraph becomes the title and the rest is the body.
+func reasoningSummary(text string) (title, body string) {
+	content := strings.TrimSpace(text)
+	if !strings.HasPrefix(content, "**") {
+		return "", content
+	}
+	end := strings.Index(content, "**")
+	if end < 0 {
+		return "", content
+	}
+	rest := content[end+2:]
+	// The title ends at the closing "**", and the body starts after the blank
+	// line that follows it (or at the end).
+	stop := strings.Index(rest, "**")
+	if stop < 0 {
+		return "", content
+	}
+	title = strings.TrimSpace(rest[:stop])
+	body = strings.TrimSpace(strings.TrimPrefix(rest[stop+2:], "\n"))
+	return title, body
+}
+
+// expandThought toggles a Thought line's body in place, the way OpenCode's
+// click does: the "+"/"-" prefix flips and the reasoning shows below the header,
+// indented, all in the muted colour.
+func (t *screen) expandThought(idx int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if idx < 0 || idx >= len(t.lines) {
+		return
+	}
+	body, ok := t.thoughtBodies[idx]
+	if !ok {
+		return
+	}
+	open := t.thinking[idx]
+	t.thinking[idx] = !open
+	head := t.lines[idx]
+	switch {
+	case open: // collapse: "+ Thought[: title] · dur"
+		t.lines[idx] = strings.Replace(head, "- Thought", "+ Thought", 1)
+	case strings.HasPrefix(stripANSI(head), "  + Thought"):
+		t.lines[idx] = strings.Replace(head, "+ Thought", "- Thought", 1)
+		width := t.conversationWidth() - 2
+		var shown []string
+		for _, l := range strings.Split(body, "\n") {
+			shown = append(shown, wrapVis("     "+grayf(l), width)...)
+		}
+		t.lines = append(t.lines[:idx+1], append(shown, t.lines[idx+1:]...)...)
+	}
+	t.drawLocked()
 }
 
 func (r *screenTurn) Cortada(ceiling int, gaveUp bool) {

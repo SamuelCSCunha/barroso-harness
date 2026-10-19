@@ -10,6 +10,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -207,7 +208,9 @@ func pasteText(s string) string {
 	}, s)
 }
 
-// highlightImages paints the [Image N] placeholders yellow over the base color.
+// highlightImages paints the attachment tokens the way OpenCode does: fg
+// background.base on bg feedback.warning, bold — the inverted "chip" used for
+// [Image N], [PDF N] and [Pasted ~N lines].
 func highlightImages(s, base string) string {
 	locs := placeholderRe.FindAllStringIndex(s, -1)
 	if len(locs) == 0 || !colorsOn {
@@ -219,11 +222,46 @@ func highlightImages(s, base string) string {
 		if l[0] > prev {
 			sb.WriteString(color(base, s[prev:l[0]]))
 		}
-		sb.WriteString(yellowf(s[l[0]:l[1]]))
+		sb.WriteString(boldf(bgWarning + colorText + s[l[0]:l[1]]))
 		prev = l[1]
 	}
 	if prev < len(s) {
 		sb.WriteString(color(base, s[prev:]))
 	}
 	return sb.String()
+}
+
+// clipboardWrite puts text on the OS clipboard. A variable so tests never
+// touch the real clipboard. The terminal clipboard (OSC 52) is written by the
+// screen itself; this is the native half of OpenCode's "all-available".
+var clipboardWrite = writeOSClipboard
+
+// writeOSClipboard writes text with the platform tool, feeding it on stdin:
+// PowerShell Set-Clipboard on Windows, pbcopy on macOS, wl-copy or xclip on
+// Linux.
+func writeOSClipboard(text string) error {
+	var cmd *exec.Cmd
+	switch goruntime.GOOS {
+	case "windows":
+		cmd = exec.Command("powershell", "-NoProfile", "-NonInteractive", "-STA", "-Command",
+			"[Console]::InputEncoding = [System.Text.Encoding]::UTF8; $t = [Console]::In.ReadToEnd(); Set-Clipboard -Value $t")
+	case "darwin":
+		cmd = exec.Command("pbcopy")
+	default:
+		if _, err := exec.LookPath("wl-copy"); err == nil && os.Getenv("WAYLAND_DISPLAY") != "" {
+			cmd = exec.Command("wl-copy")
+		} else if _, err := exec.LookPath("xclip"); err == nil {
+			cmd = exec.Command("xclip", "-selection", "clipboard")
+		} else {
+			return errors.New("install wl-copy or xclip to copy")
+		}
+	}
+	cmd.Stdin = strings.NewReader(text)
+	return cmd.Run()
+}
+
+// osc52 is the terminal escape that sets the system clipboard (OSC 52), the
+// way OpenCode writes it alongside the native clipboard.
+func osc52(text string) string {
+	return "\033]52;c;" + base64.StdEncoding.EncodeToString([]byte(text)) + "\a"
 }
