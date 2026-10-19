@@ -1,9 +1,9 @@
-// Package config guarda a configuração persistente da harness. Fonte de
-// verdade no disco: ~/.barroso-harness/config.json, com o provider ativo em
-// current_provider + providers (mapa, para troca sem apagar credenciais).
-// As credenciais vivem NESTE arquivo, com permissão restrita — nunca em
-// variáveis de ambiente, código, README ou log. BARROSO_HARNESS_HOME segue
-// válido apenas para mover o diretório de dados.
+// Package config holds the harness's persistent configuration. Source of
+// truth on disk: ~/.barroso-harness/config.json, with the active provider in
+// current_provider + providers (a map, so switching never erases credentials).
+// Credentials live in THIS file, with restricted permissions — never in
+// environment variables, code, README or logs. BARROSO_HARNESS_HOME remains
+// valid only to relocate the data directory.
 package config
 
 import (
@@ -15,57 +15,59 @@ import (
 	"strings"
 )
 
-// DefaultBaseURL é o gateway padrão da casa (padrão Chat Completions da
-// OpenAI, com /v1 no fim).
+// DefaultBaseURL is the in-house default gateway (OpenAI Chat Completions
+// style, with /v1 at the end).
 const DefaultBaseURL = "https://keys.barroso.tec.br/v1"
 
-// Fontes possíveis da janela de contexto:
-//   - FonteCatalogo: valor derivado do /models do provider (a troca de
-//     modelo pode atualizar ou limpar este valor).
-//   - FonteManual: valor escrito à mão no config.json (nunca é apagado
-//     automaticamente).
+// Possible sources of the context window:
+//   - FonteCatalogo: value derived from the provider's /models (switching
+//     models may update or clear it).
+//   - FonteManual: value written by hand in config.json (never cleared
+//     automatically).
 const (
 	FonteCatalogo = "catalog"
 	FonteManual   = "manual"
 )
 
-// Provider é um endpoint Chat Completions: base URL + chave.
+// Provider is a Chat Completions endpoint: base URL + key.
 type Provider struct {
 	BaseURL string `json:"base_url"`
 	APIKey  string `json:"api_key,omitempty"`
 }
 
+// Config is the persisted harness configuration.
 type Config struct {
 	CurrentProvider string               `json:"current_provider"`
 	Providers       map[string]*Provider `json:"providers,omitempty"`
 	Model           string               `json:"model"`
-	Effort          string               `json:"effort,omitempty"`                // vazio = desativado (o dealer omite o campo)
-	Janela          int                  `json:"context_window"`                  // janela em tokens; 0 = desconhecida (guardrail inativo)
+	Effort          string               `json:"effort,omitempty"`                // empty = disabled (the dealer omits the field)
+	Janela          int                  `json:"context_window"`                  // window in tokens; 0 = unknown (guardrail off)
 	JanelaSource    string               `json:"context_window_source,omitempty"` // FonteCatalogo | FonteManual | ""
-	MaxTokens       int                  `json:"max_tokens"`                      // reservado ao provider; 0 = padrão do dealer
-	BytesPorToken   int                  `json:"bytes_per_token"`                 // calibragem manual; 0 = estimador padrão (4)
-	BaseURL         string               `json:"-"`                               // resolvido do provider ativo
-	APIKey          string               `json:"-"`                               // resolvido do provider ativo; nunca logar
+	MaxTokens       int                  `json:"max_tokens"`                      // reserved for the provider; 0 = dealer default
+	BytesPorToken   int                  `json:"bytes_per_token"`                 // manual calibration; 0 = default estimator (4)
+	BaseURL         string               `json:"-"`                               // resolved from the active provider
+	APIKey          string               `json:"-"`                               // resolved from the active provider; never log
 	Home            string               `json:"-"`
 
-	// SearchURL é o endpoint do SearXNG com a API JSON habilitada. Vazio
-	// DESATIVA a tool: web_search entra no catálogo mesmo assim (a tool
-	// explica o que falta), então web_fetch continua útil sozinho.
+	// SearchURL is the SearXNG endpoint with the JSON API enabled. Empty
+	// DISABLES the tool: web_search still enters the catalog (the tool
+	// explains what is missing), so web_fetch remains useful on its own.
 	SearchURL string `json:"search_url,omitempty"`
 
-	// MCPServidores lista servidores MCP (stdio ou HTTP streamable). As
-	// ferramentas publicadas entram no catálogo do turno.
+	// MCPServidores lists MCP servers (stdio or streamable HTTP). The tools
+	// they publish enter the turn's catalog.
 	MCPServidores []MCPServidor `json:"mcp_servers,omitempty"`
 
-	// PoliticaContexto escolhe quem decide compactar: "agente" (padrão; o
-	// modelo chama ctx_compact num marco da tarefa, com o guardrail de rede)
-	// ou "limiar" (só o guardrail, ao estourar a janela).
+	// PoliticaContexto chooses who decides to compact: "agente" (default; the
+	// model calls ctx_compact at a task milestone, with the guardrail as a
+	// safety net) or "limiar" (threshold: only the guardrail, when the window
+	// overflows). These values are part of the on-disk format.
 	PoliticaContexto string `json:"context_policy,omitempty"`
 }
 
-// MCPServidor espelha mcp.Servidor sem importar o pacote — config é a raiz da
-// árvore de dependências e não pode apontar para um pacote que fala protocolo.
-// A conversão para mcp.Servidor é uma linha no wiring.
+// MCPServidor mirrors mcp.Servidor without importing the package — config is
+// the root of the dependency tree and must not point to a package that speaks
+// a protocol. Converting to mcp.Servidor is one line in the wiring.
 type MCPServidor struct {
 	Nome    string            `json:"name"`
 	Tipo    string            `json:"type"` // "stdio" | "http"
@@ -74,47 +76,49 @@ type MCPServidor struct {
 	Env     map[string]string `json:"env,omitempty"`
 	URL     string            `json:"url,omitempty"`
 	Headers map[string]string `json:"headers,omitempty"`
-	Timeout int               `json:"timeout_segundos,omitempty"` // segundos; 0 = padrão
+	Timeout int               `json:"timeout_segundos,omitempty"` // seconds; 0 = default
 }
 
-// BuscaAtiva diz se há endpoint de busca configurado. A tool web_search entra
-// no catálogo de todo jeito (com o erro acionável dentro), mas quem precisa
-// SABER — wiring, UI, teste — pergunta por aqui em vez de comparar string.
+// BuscaAtiva reports whether a search endpoint is configured. The web_search
+// tool enters the catalog either way (with the actionable error inside), but
+// whoever needs to KNOW — wiring, UI, tests — asks here instead of comparing
+// strings.
 func (c Config) BuscaAtiva() bool { return strings.TrimSpace(c.SearchURL) != "" }
 
-// servidoresValidos devolve só os servidores MCP com nome e tipo
-// reconhecíveis. A validação FINA é do pacote mcp (ele conhece o protocolo);
-// aqui só se descarta o que nunca abriria, para o wiring não tentar.
-func (c Config) servidoresValidos() []MCPServidor {
+// validServers returns only the MCP servers with a recognizable name and
+// type. FINE-grained validation belongs to the mcp package (it knows the
+// protocol); here we only drop what would never open, so the wiring does not
+// try.
+func (c Config) validServers() []MCPServidor {
 	var out []MCPServidor
-	vistos := map[string]bool{}
+	seen := map[string]bool{}
 	for _, s := range c.MCPServidores {
-		nome := strings.TrimSpace(s.Nome)
-		if nome == "" || vistos[nome] {
+		name := strings.TrimSpace(s.Nome)
+		if name == "" || seen[name] {
 			continue
 		}
-		tipo := strings.ToLower(strings.TrimSpace(s.Tipo))
-		tipo = strings.NewReplacer("_", "-", " ", "-").Replace(tipo)
+		kind := strings.ToLower(strings.TrimSpace(s.Tipo))
+		kind = strings.NewReplacer("_", "-", " ", "-").Replace(kind)
 		switch {
-		case tipo == "stdio":
+		case kind == "stdio":
 			if strings.TrimSpace(s.Command) == "" {
 				continue
 			}
-		case tipo == "http", tipo == "streamable-http", tipo == "http-streamable",
-			tipo == "http-streaming", tipo == "streamablehttp":
+		case kind == "http", kind == "streamable-http", kind == "http-streamable",
+			kind == "http-streaming", kind == "streamablehttp":
 			if strings.TrimSpace(s.URL) == "" {
 				continue
 			}
 		default:
 			continue
 		}
-		vistos[nome] = true
+		seen[name] = true
 		out = append(out, s)
 	}
 	return out
 }
 
-// Dir é a raiz dos dados da harness (~/.barroso-harness por padrão).
+// Dir is the harness data root (~/.barroso-harness by default).
 func Dir() string {
 	if v := os.Getenv("BARROSO_HARNESS_HOME"); v != "" {
 		return v
@@ -126,17 +130,17 @@ func Dir() string {
 	return filepath.Join(home, ".barroso-harness")
 }
 
-// Provider devolve o provider de nome dado (nil se não existe).
-func (c *Config) Provider(nome string) *Provider {
-	if c.Providers == nil || nome == "" {
+// Provider returns the provider with the given name (nil if it does not exist).
+func (c *Config) Provider(name string) *Provider {
+	if c.Providers == nil || name == "" {
 		return nil
 	}
-	return c.Providers[nome]
+	return c.Providers[name]
 }
 
-// Ativo devolve o provider corrente (nil se nenhum está selecionado). Os
-// campos BaseURL/APIKey em memória mantêm compatibilidade com callers antigos;
-// nunca são serializados e o disco continua com providers/current_provider.
+// Ativo returns the current provider (nil if none is selected). The in-memory
+// BaseURL/APIKey fields keep compatibility with older callers; they are never
+// serialized and the disk keeps using providers/current_provider.
 func (c *Config) Ativo() *Provider {
 	if p := c.Provider(c.CurrentProvider); p != nil {
 		return p
@@ -147,61 +151,61 @@ func (c *Config) Ativo() *Provider {
 	return nil
 }
 
-// SelecionarProvider troca o provider ativo, recalculando a janela quando ela
-// vinha do catálogo (a da fonte manual nunca é sobrescrita).
-func (c *Config) SelecionarProvider(nome string, janela int) {
-	c.CurrentProvider = nome
+// SelecionarProvider switches the active provider, recomputing the window
+// when it came from the catalog (a manual window is never overwritten).
+func (c *Config) SelecionarProvider(name string, window int) {
+	c.CurrentProvider = name
 	if c.JanelaSource == FonteCatalogo {
-		c.Janela = janela
+		c.Janela = window
 		if c.Janela <= 0 {
 			c.JanelaSource = ""
 		}
 	}
 }
 
-// Faltas lista o que falta para a config estar pronta (usado em mensagens
-// acionáveis; nunca contém a chave).
+// Faltas lists what is missing for the config to be ready (used in
+// actionable messages; never contains the key).
 func (c Config) Faltas() []string {
-	var faltas []string
+	var missing []string
 	p := c.Ativo()
 	if p == nil {
-		faltas = append(faltas, "provider (base_url + api_key)")
+		missing = append(missing, "provider (base_url + api_key)")
 	} else {
 		if p.BaseURL == "" {
-			faltas = append(faltas, "base_url")
+			missing = append(missing, "base_url")
 		}
 		if p.APIKey == "" {
-			faltas = append(faltas, "api_key")
+			missing = append(missing, "api_key")
 		}
 	}
 	if c.Model == "" {
-		faltas = append(faltas, "model")
+		missing = append(missing, "model")
 	}
-	return faltas
+	return missing
 }
 
-// Pronta diz se a harness tem provider (URL + chave) e model suficientes para
-// rodar um turno sem interação.
+// Pronta reports whether the harness has a provider (URL + key) and a model,
+// enough to run a turn without interaction.
 func (c Config) Pronta() bool { return len(c.Faltas()) == 0 }
 
-// Resumo é a linha de estado exibida no REPL — SEM a chave.
+// Resumo is the status line shown in the REPL — WITHOUT the key.
 func (c Config) Resumo() string {
 	base := ""
 	if p := c.Ativo(); p != nil {
 		base = p.BaseURL
 	}
-	parte := fmt.Sprintf("provider %q @ %s", c.CurrentProvider, base)
+	line := fmt.Sprintf("provider %q @ %s", c.CurrentProvider, base)
 	if c.Effort != "" {
-		parte += " · effort " + c.Effort
+		line += " · effort " + c.Effort
 	}
-	parte += fmt.Sprintf(" · model %s", c.Model)
+	line += fmt.Sprintf(" · model %s", c.Model)
 	if c.Janela > 0 {
-		parte += fmt.Sprintf(" · window %d (%s)", c.Janela, fonteJanela(c.JanelaSource))
+		line += fmt.Sprintf(" · window %d (%s)", c.Janela, windowSource(c.JanelaSource))
 	}
-	return parte
+	return line
 }
 
-func fonteJanela(s string) string {
+func windowSource(s string) string {
 	switch s {
 	case FonteCatalogo:
 		return FonteCatalogo
@@ -212,8 +216,9 @@ func fonteJanela(s string) string {
 	}
 }
 
-// Load lê config.json. Arquivo ausente NÃO é erro: devolve config vazia
-// (o caminho interativo inicia onboarding; o turno único avisa o que falta).
+// Load reads config.json. A missing file is NOT an error: it returns an empty
+// config (the interactive path starts onboarding; a one-shot turn reports what
+// is missing).
 func Load() (Config, error) {
 	c := Config{Home: Dir()}
 	path := filepath.Join(c.Home, "config.json")
@@ -227,7 +232,7 @@ func Load() (Config, error) {
 	if err := json.Unmarshal(b, &c); err != nil {
 		return c, fmt.Errorf("invalid config %s: %w", path, err)
 	}
-	migrarShapeAntigo(b, &c)
+	migrateLegacyShape(b, &c)
 	c.Home = Dir()
 	if p := c.Provider(c.CurrentProvider); p != nil {
 		c.BaseURL, c.APIKey = p.BaseURL, p.APIKey
@@ -235,11 +240,11 @@ func Load() (Config, error) {
 	return c, nil
 }
 
-// migrarShapeAntigo converte a config do slice 0 ({base_url, model?} na raiz,
-// chave por env) para a forma canônica com provider nomeado.
-func migrarShapeAntigo(b []byte, c *Config) {
+// migrateLegacyShape converts the slice-0 config ({base_url, model?} at the
+// root, key from env) to the canonical shape with a named provider.
+func migrateLegacyShape(b []byte, c *Config) {
 	if c.CurrentProvider != "" || len(c.Providers) != 0 {
-		return // já está na forma nova
+		return // already in the new shape
 	}
 	var legacy struct {
 		BaseURL string `json:"base_url"`
@@ -248,14 +253,14 @@ func migrarShapeAntigo(b []byte, c *Config) {
 	if err := json.Unmarshal(b, &legacy); err != nil || legacy.BaseURL == "" {
 		return
 	}
-	nome := "keys.barroso"
+	name := "keys.barroso"
 	if strings.TrimSuffix(legacy.BaseURL, "/") != DefaultBaseURL {
-		nome = "default"
+		name = "default"
 	}
 	c.Providers = map[string]*Provider{
-		nome: {BaseURL: strings.TrimSuffix(legacy.BaseURL, "/"), APIKey: ""},
+		name: {BaseURL: strings.TrimSuffix(legacy.BaseURL, "/"), APIKey: ""},
 	}
-	c.CurrentProvider = nome
+	c.CurrentProvider = name
 	if c.Model == "" {
 		c.Model = legacy.Model
 	}
@@ -264,8 +269,8 @@ func migrarShapeAntigo(b []byte, c *Config) {
 	}
 }
 
-// Save persiste a config com atomicidade: arquivo temporário no mesmo
-// diretório (permissão 0600), rename por cima. Diretório criado com 0700.
+// Save persists the config atomically: a temp file in the same directory
+// (0600 permissions), renamed over the target. The directory is created 0700.
 func (c Config) Save() error {
 	dir := Dir()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -282,7 +287,7 @@ func (c Config) Save() error {
 	if err := os.WriteFile(tmp, b, 0o600); err != nil {
 		return err
 	}
-	_ = os.Chmod(tmp, 0o600) // best-effort; Windows ignora bits POSIX
+	_ = os.Chmod(tmp, 0o600) // best-effort; Windows ignores POSIX bits
 	if err := atomicReplace(tmp, final); err != nil {
 		_ = os.Remove(tmp)
 		return err
@@ -290,9 +295,9 @@ func (c Config) Save() error {
 	return nil
 }
 
-// Init cria a estrutura de dados de forma NÃO destrutiva: diretório 0700,
-// BARROSO.md global de exemplo e um esqueleto de config.json (que o
-// onboarding de `bh` completa). Nada existente é sobrescrito.
+// Init creates the data layout NON-destructively: a 0700 directory, a sample
+// global BARROSO.md and a config.json skeleton (completed by `bh` onboarding).
+// Nothing that already exists is overwritten.
 func Init() error {
 	dir := Dir()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -300,9 +305,9 @@ func Init() error {
 	}
 	barPath := filepath.Join(dir, "BARROSO.md")
 	if _, err := os.Stat(barPath); errors.Is(err, os.ErrNotExist) {
-		exemplo := "# BARROSO.md global\n\nInstruções que valem para TODAS as sessões da harness, em qualquer diretório.\n" +
-			"BARROSO.md por projeto (na pasta do projeto ou nos pais) entra antes deste.\n"
-		if err := os.WriteFile(barPath, []byte(exemplo), 0o644); err != nil {
+		sample := "# Global BARROSO.md\n\nInstructions that apply to ALL harness sessions, in any directory.\n" +
+			"A per-project BARROSO.md (in the project folder or its parents) comes before this one.\n"
+		if err := os.WriteFile(barPath, []byte(sample), 0o644); err != nil {
 			return err
 		}
 	}

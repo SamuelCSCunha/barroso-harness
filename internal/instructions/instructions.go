@@ -1,7 +1,7 @@
-// Package instructions resolve o BARROSO.md que entra como instrução de
-// sistema. Precedência explícita e documentada: BARROSO.md do diretório de
-// trabalho, depois dos diretórios pais até a raiz, depois o global em
-// ~/.barroso-harness/BARROSO.md. O mesmo texto nunca entra duas vezes.
+// Package instructions resolves the BARROSO.md that goes in as the system
+// instruction. Explicit, documented precedence: the working directory's
+// BARROSO.md, then the parent directories up to the root, then the global one
+// in ~/.barroso-harness/BARROSO.md. The same text never goes in twice.
 package instructions
 
 import (
@@ -12,41 +12,42 @@ import (
 	"github.com/ruanbarroso/barroso-harness/internal/config"
 )
 
-// Resolve devolve o(s) BARROSO.md aplicáveis concatenados em ordem de
-// precedência (mais específico primeiro). Vazio é válido: sessão sem
-// instrução extra funciona.
+// Resolve returns the applicable BARROSO.md file(s) concatenated in
+// precedence order (most specific first). Empty is valid: a session with no
+// extra instruction works.
 func Resolve(cwd string) (string, error) {
-	var partes []string
-	ja := map[string]bool{}
+	var parts []string
+	seen := map[string]bool{}
 
 	dir := cwd
 	for {
 		p := filepath.Join(dir, "BARROSO.md")
 		if b, err := os.ReadFile(p); err == nil {
-			if t := strings.TrimSpace(string(b)); t != "" && !ja[t] {
-				ja[t] = true
-				partes = append(partes, "# BARROSO.md — "+dir+"\n\n"+t)
+			if t := strings.TrimSpace(string(b)); t != "" && !seen[t] {
+				seen[t] = true
+				parts = append(parts, "# BARROSO.md — "+dir+"\n\n"+t)
 			}
 		}
-		pai := filepath.Dir(dir)
-		if pai == dir {
+		parent := filepath.Dir(dir)
+		if parent == dir {
 			break
 		}
-		dir = pai
+		dir = parent
 	}
 
-	// Mesmo diretório do config.json (config.Dir respeita BARROSO_HARNESS_HOME):
-	// sem isso o BARROSO.md global e o config viriam de lugares diferentes.
+	// Same directory as config.json (config.Dir honors BARROSO_HARNESS_HOME):
+	// otherwise the global BARROSO.md and the config would come from
+	// different places.
 	g := filepath.Join(config.Dir(), "BARROSO.md")
 	if b, err := os.ReadFile(g); err == nil {
-		if t := strings.TrimSpace(string(b)); t != "" && !ja[t] {
-			ja[t] = true
-			partes = append(partes, "# BARROSO.md — global\n\n"+t)
+		if t := strings.TrimSpace(string(b)); t != "" && !seen[t] {
+			seen[t] = true
+			parts = append(parts, "# BARROSO.md — global\n\n"+t)
 		}
 	}
 
-	if len(partes) == 0 {
+	if len(parts) == 0 {
 		return "", nil
 	}
-	return strings.Join(partes, "\n\n---\n\n") + "\n", nil
+	return strings.Join(parts, "\n\n---\n\n") + "\n", nil
 }

@@ -6,440 +6,461 @@ import (
 	"testing"
 )
 
-// lojaAbre em diretório temporário; nada de rede, nada de disco do usuário.
-func lojaAbre(t *testing.T) *Store {
+// openTestStore opens in a temp directory; no network, no user disk.
+func openTestStore(t *testing.T) *Store {
 	t.Helper()
 	st, err := Open(filepath.Join(t.TempDir(), "sessions.db"))
 	if err != nil {
-		t.Fatalf("abrir store: %v", err)
+		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Fechar() })
 	return st
 }
 
-func TestOpenCriaArquivoESchema(t *testing.T) {
+func TestOpenCreatesFileAndSchema(t *testing.T) {
 	dir := t.TempDir()
-	caminho := filepath.Join(dir, "sessions.db")
-	st, err := Open(caminho)
+	path := filepath.Join(dir, "sessions.db")
+	st, err := Open(path)
 	if err != nil {
-		t.Fatalf("abrir: %v", err)
+		t.Fatalf("open: %v", err)
 	}
 	defer st.Fechar()
 
-	// WAL deixa o arquivo em disco; se o schema não rodou, toda consulta abaixo
-	// estouraria, então o teste já cobre as duas coisas.
-	for _, tabela := range []string{"sessions", "events", "blobs"} {
+	// WAL leaves the file on disk; if the schema had not run, every query
+	// below would blow up, so the test covers both things.
+	for _, table := range []string{"sessions", "events", "blobs"} {
 		var n int
-		if err := st.db.QueryRow(`SELECT COUNT(*) FROM ` + tabela).Scan(&n); err != nil {
-			t.Fatalf("tabela %s não existe após o schema: %v", tabela, err)
+		if err := st.db.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&n); err != nil {
+			t.Fatalf("table %s missing after schema: %v", table, err)
 		}
 	}
-	if st.Caminho() != caminho {
-		// Caminho absoluto é normalizado; no Windows o case pode divergir, então
-		// só conferimos a terminação.
+	if st.Caminho() != path {
+		// The absolute path is normalized; on Windows the case may differ, so
+		// we only check the suffix.
 		if !strings.HasSuffix(st.Caminho(), "sessions.db") {
-			t.Fatalf("caminho inesperado: %q", st.Caminho())
+			t.Fatalf("unexpected path: %q", st.Caminho())
 		}
 	}
 }
 
-func TestOpenMesmoCaminhoDevolveMesmoStore(t *testing.T) {
-	caminho := filepath.Join(t.TempDir(), "sessions.db")
-	a, err := Open(caminho)
+func TestOpenSamePathReturnsSameStore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.db")
+	a, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer a.Fechar()
-	b, err := Open(caminho)
+	b, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if a != b {
-		t.Fatal("abrir o mesmo caminho duas vezes criou duas conexões")
+		t.Fatal("opening the same path twice created two connections")
 	}
 }
 
-func TestAppendELeEventos(t *testing.T) {
-	st := lojaAbre(t)
+func TestAppendAndReadEvents(t *testing.T) {
+	st := openTestStore(t)
 	const id = "bh-20240101120000-abcd"
 	if err := st.NewSession(id); err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	seq1, err := st.StoreEvent(id, "user_message", map[string]any{"role": "user", "content": "oi"})
+	seq1, err := st.StoreEvent(id, "user_message", map[string]any{"role": "user", "content": "hi"})
 	if err != nil {
 		t.Fatalf("StoreEvent 1: %v", err)
 	}
-	seq2, err := st.StoreEvent(id, "assistant", map[string]any{"role": "assistant", "content": "olá"})
+	seq2, err := st.StoreEvent(id, "assistant", map[string]any{"role": "assistant", "content": "hello"})
 	if err != nil {
 		t.Fatalf("StoreEvent 2: %v", err)
 	}
 	if seq1 != 1 || seq2 != 2 {
-		t.Fatalf("seqs = %d, %d; esperados 1, 2 (autoincrement do zero)", seq1, seq2)
+		t.Fatalf("seqs = %d, %d; want 1, 2 (autoincrement from zero)", seq1, seq2)
 	}
 
-	todos, err := st.ListEvents(id, 0, 0)
+	all, err := st.ListEvents(id, 0, 0)
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)
 	}
-	if len(todos) != 2 {
-		t.Fatalf("eventos = %d; esperado 2", len(todos))
+	if len(all) != 2 {
+		t.Fatalf("events = %d; want 2", len(all))
 	}
-	if todos[0].Kind != "user_message" || todos[1].Kind != "assistant" {
-		t.Fatalf("ordem dos eventos invertida: %q, %q", todos[0].Kind, todos[1].Kind)
+	if all[0].Kind != "user_message" || all[1].Kind != "assistant" {
+		t.Fatalf("event order reversed: %q, %q", all[0].Kind, all[1].Kind)
 	}
-	if todos[0].Payload != `{"content":"oi","role":"user"}` {
-		t.Fatalf("payload com chaves fora de ordem: %s", todos[0].Payload)
+	if all[0].Payload != `{"content":"hi","role":"user"}` {
+		t.Fatalf("payload keys out of order: %s", all[0].Payload)
 	}
 
-	// fromSeq é inclusive.
-	parcial, err := st.ListEvents(id, seq2, 0)
+	// fromSeq is inclusive.
+	partial, err := st.ListEvents(id, seq2, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(parcial) != 1 || parcial[0].Seq != seq2 {
-		t.Fatalf("fromSeq inclusivo falhou: %+v", parcial)
+	if len(partial) != 1 || partial[0].Seq != seq2 {
+		t.Fatalf("inclusive fromSeq failed: %+v", partial)
 	}
 
-	// limit conta do fim para trás do intervalo pedido.
-	limitado, err := st.ListEvents(id, 0, 1)
+	// limit counts from the start of the requested range.
+	limited, err := st.ListEvents(id, 0, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(limitado) != 1 || limitado[0].Seq != seq1 {
-		t.Fatalf("limit deveria trazer o primeiro evento: %+v", limitado)
+	if len(limited) != 1 || limited[0].Seq != seq1 {
+		t.Fatalf("limit should return the first event: %+v", limited)
 	}
 
-	um, err := st.GetEvent(id, seq2)
+	one, err := st.GetEvent(id, seq2)
 	if err != nil {
 		t.Fatalf("GetEvent: %v", err)
 	}
-	if um.Kind != "assistant" {
-		t.Fatalf("GetEvent seq %d devolveu %q", seq2, um.Kind)
+	if one.Kind != "assistant" {
+		t.Fatalf("GetEvent seq %d returned %q", seq2, one.Kind)
 	}
 	if _, err := st.GetEvent(id, 999); err == nil {
-		t.Fatal("GetEvent de seq inexistente deveria falhar")
+		t.Fatal("GetEvent of a missing seq should fail")
 	}
 }
 
 func TestBlobRoundtrip(t *testing.T) {
-	st := lojaAbre(t)
+	st := openTestStore(t)
 	const id = "bh-20240101130000-0001"
-	dados := []byte(strings.Repeat("saída grande de tool\n", 2000))
+	data := []byte(strings.Repeat("large tool output\n", 2000))
 
-	ref, err := st.PutBlob(dados)
+	ref, err := st.PutBlob(data)
 	if err != nil {
 		t.Fatalf("PutBlob: %v", err)
 	}
 	hash, _ := ref["blob"].(string)
 	if len(hash) != 64 {
-		t.Fatalf("hash sha256 deveria ter 64 hex, veio %q", hash)
+		t.Fatalf("sha256 hash should have 64 hex chars, got %q", hash)
 	}
-	if ref["size"].(int) != len(dados) {
-		t.Fatalf("size = %v, esperado %d", ref["size"], len(dados))
+	if ref["size"].(int) != len(data) {
+		t.Fatalf("size = %v, want %d", ref["size"], len(data))
 	}
 
-	volta, err := st.GetBlob(hash)
+	back, err := st.GetBlob(hash)
 	if err != nil {
 		t.Fatalf("GetBlob: %v", err)
 	}
-	if string(volta) != string(dados) {
-		t.Fatal("blob não voltou igual")
+	if string(back) != string(data) {
+		t.Fatal("blob did not round-trip unchanged")
 	}
 
-	// Idempotente: o mesmo conteúdo não duplica linha nem muda o hash.
-	ref2, err := st.PutBlob(dados)
+	// Idempotent: the same content neither duplicates the row nor changes the hash.
+	ref2, err := st.PutBlob(data)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if ref2["blob"] != ref["blob"] {
-		t.Fatalf("hash instável: %v vs %v", ref2["blob"], ref["blob"])
+		t.Fatalf("unstable hash: %v vs %v", ref2["blob"], ref["blob"])
 	}
 	var n int
 	if err := st.db.QueryRow(`SELECT COUNT(*) FROM blobs`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 1 {
-		t.Fatalf("blobs duplicados: %d linhas", n)
+		t.Fatalf("duplicated blobs: %d rows", n)
 	}
 
-	// Evento que referencia o blob: o payload fica curto e a reidratação
-	// devolve o conteúdo inteiro.
+	// An event referencing the blob: the payload stays short and rehydration
+	// returns the whole content.
 	payload := map[string]any{
 		"role":    "tool_result",
-		"content": "conteúdo enorme",
+		"content": "huge content",
 		"blob":    hash,
-		"size":    len(dados),
-		"preview": "primeiros bytes…",
+		"size":    len(data),
+		"preview": "first bytes…",
 	}
 	if _, err := st.StoreEvent(id, "tool_result", payload); err != nil {
 		t.Fatal(err)
 	}
-	eventos, err := st.ListEvents(id, 0, 0)
+	events, err := st.ListEvents(id, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(eventos) != 1 {
-		t.Fatalf("eventos = %d", len(eventos))
+	if len(events) != 1 {
+		t.Fatalf("events = %d", len(events))
 	}
-	if len(eventos[0].Payload) > 512 {
-		t.Fatalf("payload com blob ficou grande (%d bytes)", len(eventos[0].Payload))
+	if len(events[0].Payload) > 512 {
+		t.Fatalf("payload with blob grew large (%d bytes)", len(events[0].Payload))
 	}
-	cheio, err := st.Rehydrate(eventos[0].Payload)
+	full, err := st.Rehydrate(events[0].Payload)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Reidratar devolve o conteúdo INTEIRO, sem repetir o preview: o preview é
-	// o começo do próprio blob, e somá-los duplicaria os primeiros bytes.
-	if cheio != string(dados) {
-		t.Fatalf("reidratação deveria devolver o blob inteiro (%d bytes), veio %d", len(dados), len(cheio))
+	// Rehydrating returns the WHOLE content without repeating the preview:
+	// the preview is the beginning of the blob itself, and adding them would
+	// duplicate the first bytes.
+	if full != string(data) {
+		t.Fatalf("rehydration should return the whole blob (%d bytes), got %d", len(data), len(full))
 	}
 
-	// Blob inexistente não quebra: devolve o payload como está.
+	// A missing blob does not break anything: the payload comes back as is.
 	if _, err := st.GetBlob(strings.Repeat("0", 64)); err == nil {
-		t.Fatal("GetBlob de hash inexistente deveria falhar")
+		t.Fatal("GetBlob of a missing hash should fail")
 	}
-	semBlob, err := st.Rehydrate(`{"role":"user","content":"oi"}`)
-	if err != nil || semBlob != `{"role":"user","content":"oi"}` {
-		t.Fatalf("payload sem blob voltou alterado: %q (%v)", semBlob, err)
+	noBlob, err := st.Rehydrate(`{"role":"user","content":"hi"}`)
+	if err != nil || noBlob != `{"role":"user","content":"hi"}` {
+		t.Fatalf("payload without blob came back changed: %q (%v)", noBlob, err)
 	}
 }
 
-func TestListSessionsOrdenaPorUpdatedAtDesc(t *testing.T) {
-	st := lojaAbre(t)
+func TestListSessionsOrdersByUpdatedAtDesc(t *testing.T) {
+	st := openTestStore(t)
 	ids := []string{"s1", "s2", "s3"}
 	for _, id := range ids {
 		if err := st.NewSession(id); err != nil {
 			t.Fatal(err)
 		}
 	}
-	// updated_at tem resolução de milissegundo; um evento em cada uma garante
-	// timestamps distintos sem dormir no teste.
+	// updated_at has millisecond resolution; one event in each guarantees
+	// distinct timestamps without sleeping in the test.
 	for _, id := range []string{"s1", "s2", "s3"} {
 		if _, err := st.StoreEvent(id, "user_message", map[string]any{"content": id}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	// s2 foi a última usada → topo da lista.
+	// s2 was used last → top of the list.
 	if err := st.TouchSession("s2"); err != nil {
 		t.Fatal(err)
 	}
-	lista, err := st.ListSessions(10)
+	list, err := st.ListSessions(10)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
-	if len(lista) != 3 {
-		t.Fatalf("sessões = %d", len(lista))
+	if len(list) != 3 {
+		t.Fatalf("sessions = %d", len(list))
 	}
-	if lista[0].ID != "s2" {
-		t.Fatalf("a mais recente devia ser s2, veio %q", lista[0].ID)
+	if list[0].ID != "s2" {
+		t.Fatalf("most recent should be s2, got %q", list[0].ID)
 	}
 
 	n, err := st.ContarEventos("s1")
 	if err != nil || n != 1 {
 		t.Fatalf("ContarEventos(s1) = %d, %v", n, err)
 	}
-	if n, _ := st.ContarEventos("nao-existe"); n != 0 {
-		t.Fatalf("ContarEventos de inexistente = %d", n)
+	if n, _ := st.ContarEventos("does-not-exist"); n != 0 {
+		t.Fatalf("ContarEventos of a missing session = %d", n)
 	}
 
-	// Título e GetSession.
-	if err := st.SetTitle("s2", "conversa sobre o log"); err != nil {
+	// Title and GetSession.
+	if err := st.SetTitle("s2", "conversation about the log"); err != nil {
 		t.Fatal(err)
 	}
 	se, err := st.GetSession("s2")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if se.Title != "conversa sobre o log" {
-		t.Fatalf("título = %q", se.Title)
+	if se.Title != "conversation about the log" {
+		t.Fatalf("title = %q", se.Title)
 	}
 	if se.CreatedAt == "" || se.UpdatedAt == "" {
-		t.Fatal("timestamps não preenchidos")
+		t.Fatal("timestamps not filled in")
 	}
-	if _, err := st.GetSession("nao-existe"); err == nil {
-		t.Fatal("GetSession de inexistente deveria falhar")
+	if _, err := st.GetSession("does-not-exist"); err == nil {
+		t.Fatal("GetSession of a missing session should fail")
 	}
 
-	// limit respeitado.
-	soDuas, _ := st.ListSessions(2)
-	if len(soDuas) != 2 {
-		t.Fatalf("limit=2 devolveu %d", len(soDuas))
+	// limit is honored.
+	onlyTwo, _ := st.ListSessions(2)
+	if len(onlyTwo) != 2 {
+		t.Fatalf("limit=2 returned %d", len(onlyTwo))
 	}
 }
 
-func TestBuscarPorSubstringSemCase(t *testing.T) {
-	st := lojaAbre(t)
+func TestSearchCaseInsensitiveSubstring(t *testing.T) {
+	st := openTestStore(t)
 	const id = "bh-20240101140000-0002"
 	corpus := []map[string]any{
-		{"role": "user", "content": "preciso corrigir o Terminal_Run do windows"},
-		{"role": "assistant", "content": "claro, vamos olhar o shell"},
-		{"role": "tool_call", "tool_name": "terminal_run", "tool_id": "call_1", "args": `{"command":"echo oi"}`},
-		{"role": "tool_result", "content": "exit_code: 0\noi"},
+		{"role": "user", "content": "I need to fix the Windows Terminal_Run"},
+		{"role": "assistant", "content": "sure, let's look at the shell"},
+		{"role": "tool_call", "tool_name": "terminal_run", "tool_id": "call_1", "args": `{"command":"echo hi"}`},
+		{"role": "tool_result", "content": "exit_code: 0\nhi"},
 	}
 	for _, p := range corpus {
 		if _, err := st.StoreEvent(id, p["role"].(string), p); err != nil {
 			t.Fatal(err)
 		}
 	}
-	// Busca sem distinguir maiúscula, sobre o campo content.
+	// Case-insensitive search over the content field.
 	hits, err := st.Buscar(id, "TERMINAL_RUN", 10)
 	if err != nil {
 		t.Fatalf("Buscar: %v", err)
 	}
 	if len(hits) == 0 {
-		t.Fatal("busca sem resultado")
+		t.Fatal("search returned nothing")
 	}
 	if !strings.Contains(strings.ToLower(hits[0].Snippet), "terminal_run") {
-		t.Fatalf("snippet sem o termo: %q", hits[0].Snippet)
+		t.Fatalf("snippet missing the term: %q", hits[0].Snippet)
 	}
-	// Busca sobre tool_name (campo humano indexado).
+	// Search over tool_name (an indexed human field).
 	hits, err = st.Buscar(id, "terminal_run", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var viuToolCall bool
+	var sawToolCall bool
 	for _, h := range hits {
 		if h.Kind == "tool_call" {
-			viuToolCall = true
+			sawToolCall = true
 		}
 	}
-	if !viuToolCall {
-		t.Fatalf("tool_name não foi indexado na busca: %+v", hits)
+	if !sawToolCall {
+		t.Fatalf("tool_name was not indexed by search: %+v", hits)
 	}
-	// Hit carrega seq, tempo e kind.
+	// A hit carries seq, time and kind.
 	if hits[0].Seq <= 0 || hits[0].Time == "" || hits[0].Kind == "" {
-		t.Fatalf("Hit incompleto: %+v", hits[0])
+		t.Fatalf("incomplete Hit: %+v", hits[0])
 	}
-	// Termo ausente não é erro.
-	vazio, err := st.Buscar(id, "zzz-nao-existe", 10)
-	if err != nil || len(vazio) != 0 {
-		t.Fatalf("busca sem casar devolveu %v, %v", vazio, err)
+	// A missing term is not an error.
+	empty, err := st.Buscar(id, "zzz-does-not-exist", 10)
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("non-matching search returned %v, %v", empty, err)
 	}
-	// Consulta vazia é erro do caller.
+	// An empty query is a caller error.
 	if _, err := st.Buscar(id, "", 10); err == nil {
-		t.Fatal("consulta vazia deveria falhar")
+		t.Fatal("empty query should fail")
 	}
 }
 
-func TestJanelaDeContexto(t *testing.T) {
-	longo := strings.Repeat("a", 400) + "AGULHA" + strings.Repeat("b", 400)
-	ini := strings.Index(longo, "AGULHA")
-	trecho := janela(longo, ini, 6)
-	if len(trecho) > 300 {
-		t.Fatalf("janela não cortou: %d bytes", len(trecho))
+func TestContextWindow(t *testing.T) {
+	long := strings.Repeat("a", 400) + "NEEDLE" + strings.Repeat("b", 400)
+	start := strings.Index(long, "NEEDLE")
+	snippet := window(long, start, 6)
+	if len(snippet) > 300 {
+		t.Fatalf("window did not cut: %d bytes", len(snippet))
 	}
-	if !strings.Contains(trecho, "AGULHA") {
-		t.Fatalf("janela perdeu a agulha: %q", trecho)
+	if !strings.Contains(snippet, "NEEDLE") {
+		t.Fatalf("window lost the needle: %q", snippet)
 	}
-	if !strings.HasPrefix(trecho, "…") || !strings.HasSuffix(trecho, "…") {
-		t.Fatalf("janela devia elipsar os dois lados: %q", trecho)
+	if !strings.HasPrefix(snippet, "…") || !strings.HasSuffix(snippet, "…") {
+		t.Fatalf("window should add ellipses on both sides: %q", snippet)
 	}
-	// Começo e fim da string não levam elipse.
-	if j := janela("abc", 0, 3); j != "abc" {
-		t.Fatalf("janela de string inteira = %q", j)
+	// The start and end of the string get no ellipsis.
+	if w := window("abc", 0, 3); w != "abc" {
+		t.Fatalf("window of the whole string = %q", w)
 	}
 }
 
-func TestMarshalSortedDeterministico(t *testing.T) {
-	// O mesmo mapa, em iterações diferentes, tem de gerar os MESMOS bytes —
-	// é o que torna o log reproduzível.
-	fazer := func() map[string]any {
+func TestMarshalSortedDeterministic(t *testing.T) {
+	// The same map, across different iterations, must produce the SAME bytes —
+	// that is what makes the log reproducible.
+	build := func() map[string]any {
 		return map[string]any{
 			"zebra":  1,
-			"alpha":  "dois",
-			"meio":   []any{3, 4},
-			"cento":  map[string]any{"b": true, "a": nil},
-			"vazio":  "",
-			"numero": 7,
+			"alpha":  "two",
+			"middle": []any{3, 4},
+			"center": map[string]any{"b": true, "a": nil},
+			"empty":  "",
+			"number": 7,
 		}
 	}
-	primeiro, err := marshalSorted(fazer())
+	first, err := marshalSorted(build())
 	if err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 50; i++ {
-		outro, err := marshalSorted(fazer())
+		other, err := marshalSorted(build())
 		if err != nil {
 			t.Fatal(err)
 		}
-		if outro != primeiro {
-			t.Fatalf("marshalSorted instável:\n%s\n%s", primeiro, outro)
+		if other != first {
+			t.Fatalf("marshalSorted unstable:\n%s\n%s", first, other)
 		}
 	}
-	quero := `{"alpha":"dois","cento":{"a":null,"b":true},"meio":[3,4],"numero":7,"vazio":"","zebra":1}`
-	if primeiro != quero {
-		t.Fatalf("ordem/valor errados:\n quer %s\n veio %s", quero, primeiro)
+	want := `{"alpha":"two","center":{"a":null,"b":true},"empty":"","middle":[3,4],"number":7,"zebra":1}`
+	if first != want {
+		t.Fatalf("wrong order/value:\n want %s\n  got %s", want, first)
 	}
-	if vazio, _ := marshalSorted(nil); vazio != "{}" {
-		t.Fatalf("payload vazio = %q", vazio)
+	if empty, _ := marshalSorted(nil); empty != "{}" {
+		t.Fatalf("empty payload = %q", empty)
 	}
-	if vazio, _ := marshalSorted(map[string]any{}); vazio != "{}" {
-		t.Fatalf("payload vazio (mapa) = %q", vazio)
+	if empty, _ := marshalSorted(map[string]any{}); empty != "{}" {
+		t.Fatalf("empty payload (map) = %q", empty)
 	}
-	// Valor não serializável devolve erro, não linha parcial.
-	if _, err := marshalSorted(map[string]any{"ruim": func() {}}); err == nil {
-		t.Fatal("payload com função deveria falhar")
+	// A non-serializable value returns an error, not a partial row.
+	if _, err := marshalSorted(map[string]any{"bad": func() {}}); err == nil {
+		t.Fatal("payload with a func should fail")
 	}
 }
 
-func TestStoreEventRejeitaEntradaRuim(t *testing.T) {
-	st := lojaAbre(t)
+func TestStoreEventRejectsBadInput(t *testing.T) {
+	st := openTestStore(t)
 	if _, err := st.StoreEvent("", "k", nil); err == nil {
-		t.Fatal("sessionID vazio deveria falhar")
+		t.Fatal("empty sessionID should fail")
 	}
 	if _, err := st.StoreEvent("s", "", nil); err == nil {
-		t.Fatal("kind vazio deveria falhar")
+		t.Fatal("empty kind should fail")
 	}
-	if _, err := st.StoreEvent("s", "k", map[string]any{"ruim": func() {}}); err == nil {
-		t.Fatal("payload não serializável deveria falhar")
+	if _, err := st.StoreEvent("s", "k", map[string]any{"bad": func() {}}); err == nil {
+		t.Fatal("non-serializable payload should fail")
 	}
-	// Nada foi gravado com as entradas inválidas.
-	eventos, err := st.ListEvents("s", 0, 0)
+	// Nothing was written with the invalid inputs.
+	events, err := st.ListEvents("s", 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(eventos) != 0 {
-		t.Fatalf("eventos gravados apesar do erro: %+v", eventos)
+	if len(events) != 0 {
+		t.Fatalf("events written despite the error: %+v", events)
 	}
 }
 
-func TestStoreEventCriaSessaoAutomaticamente(t *testing.T) {
-	st := lojaAbre(t)
-	if _, err := st.StoreEvent("nova", "user_message", map[string]any{"content": "x"}); err != nil {
-		t.Fatalf("StoreEvent em sessão inexistente: %v", err)
+func TestStoreEventCreatesSessionAutomatically(t *testing.T) {
+	st := openTestStore(t)
+	if _, err := st.StoreEvent("new", "user_message", map[string]any{"content": "x"}); err != nil {
+		t.Fatalf("StoreEvent on a missing session: %v", err)
 	}
-	if _, err := st.GetSession("nova"); err != nil {
-		t.Fatalf("sessão não foi indexada: %v", err)
+	if _, err := st.GetSession("new"); err != nil {
+		t.Fatalf("session was not indexed: %v", err)
 	}
 }
 
-// Tocar uma sessão que não existe não a cria: abrir o bh sem conversar não
-// pode deixar sessão vazia no banco. O título, sim, cria.
-func TestTouchSessionNaoCriaSessaoVazia(t *testing.T) {
-	st := lojaAbre(t)
-	if err := st.TouchSession("fantasma"); err != nil {
-		t.Fatalf("TouchSession de inexistente: %v", err)
+// Touching a session that does not exist does not create it: opening bh
+// without chatting must not leave an empty session in the database. Setting
+// the title does create it.
+func TestTouchSessionDoesNotCreateEmptySession(t *testing.T) {
+	st := openTestStore(t)
+	if err := st.TouchSession("ghost"); err != nil {
+		t.Fatalf("TouchSession of a missing session: %v", err)
 	}
-	if _, err := st.GetSession("fantasma"); err == nil {
-		t.Fatal("TouchSession criou sessão vazia")
+	if _, err := st.GetSession("ghost"); err == nil {
+		t.Fatal("TouchSession created an empty session")
 	}
-	if err := st.SetTitle("fantasma", "nome"); err != nil {
+	if err := st.SetTitle("ghost", "name"); err != nil {
 		t.Fatal(err)
 	}
-	if se, err := st.GetSession("fantasma"); err != nil || se.Title != "nome" {
-		t.Fatalf("SetTitle deveria criar com título: %v %v", se, err)
+	if se, err := st.GetSession("ghost"); err != nil || se.Title != "name" {
+		t.Fatalf("SetTitle should create it with the title: %v %v", se, err)
 	}
 }
 
-// PrimeiraFala é o nome provisório da sessão sem título no /resume.
-func TestPrimeiraFala(t *testing.T) {
-	st := lojaAbre(t)
+// PrimeiraFala is the provisional name of an untitled session in /resume.
+func TestFirstUserMessage(t *testing.T) {
+	st := openTestStore(t)
 	if got := st.PrimeiraFala("x"); got != "" {
-		t.Fatalf("sessão inexistente = %q", got)
+		t.Fatalf("missing session = %q", got)
 	}
-	_, _ = st.StoreEvent("x", "user_message", map[string]any{"role": "user", "content": "revisar o parser"})
-	_, _ = st.StoreEvent("x", "user_message", map[string]any{"role": "user", "content": "segunda"})
-	if got := st.PrimeiraFala("x"); got != "revisar o parser" {
-		t.Fatalf("primeira fala = %q", got)
+	_, _ = st.StoreEvent("x", "user_message", map[string]any{"role": "user", "content": "review the parser"})
+	_, _ = st.StoreEvent("x", "user_message", map[string]any{"role": "user", "content": "second"})
+	if got := st.PrimeiraFala("x"); got != "review the parser" {
+		t.Fatalf("first message = %q", got)
+	}
+}
+
+// Synthetic user messages (compaction working state, in both the legacy
+// Portuguese and the English marker, plus output limit and subagent notices)
+// never become the session name.
+func TestFirstUserMessageSkipsSyntheticMessages(t *testing.T) {
+	st := openTestStore(t)
+	for _, synthetic := range []string{
+		"[estado de trabalho] legacy summary",
+		"[working state] summary",
+		"[output limit] notice",
+		"[subagents] notice",
+	} {
+		_, _ = st.StoreEvent("y", "user_message", map[string]any{"role": "user", "content": synthetic})
+	}
+	_, _ = st.StoreEvent("y", "user_message", map[string]any{"role": "user", "content": "real question"})
+	if got := st.PrimeiraFala("y"); got != "real question" {
+		t.Fatalf("first message = %q", got)
 	}
 }

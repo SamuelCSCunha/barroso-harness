@@ -7,52 +7,52 @@ import (
 	"testing"
 )
 
-// isolarHome aponta o diretório global para um temporário: os testes não
-// podem depender do BARROSO.md real da máquina.
-func isolarHome(t *testing.T) string {
+// isolateHome points the global directory at a temp dir: tests must not
+// depend on the machine's real BARROSO.md.
+func isolateHome(t *testing.T) string {
 	t.Helper()
 	h := t.TempDir()
 	t.Setenv("BARROSO_HARNESS_HOME", h)
 	return h
 }
 
-func TestResolveSemArquivoDevolveVazio(t *testing.T) {
-	isolarHome(t)
+func TestResolveWithoutFileReturnsEmpty(t *testing.T) {
+	isolateHome(t)
 	dir := t.TempDir()
 	s, err := Resolve(dir)
 	if err != nil {
-		t.Fatalf("sem BARROSO.md deve devolver string vazia, não erro: %v", err)
+		t.Fatalf("without BARROSO.md it must return an empty string, not an error: %v", err)
 	}
 	if s != "" {
-		t.Fatalf("esperava vazio, veio %q", s)
+		t.Fatalf("expected empty, got %q", s)
 	}
 }
 
-func TestResolveFilhoAntesDoPai(t *testing.T) {
-	pai := t.TempDir()
-	filho := filepath.Join(pai, "proj", "sub")
-	if err := os.MkdirAll(filho, 0o755); err != nil {
+func TestResolveChildBeforeParent(t *testing.T) {
+	parent := t.TempDir()
+	child := filepath.Join(parent, "proj", "sub")
+	if err := os.MkdirAll(child, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	paiMD := "regra do pai"
-	filhoMD := "regra do filho"
-	if err := os.WriteFile(filepath.Join(pai, "BARROSO.md"), []byte(paiMD), 0o644); err != nil {
+	parentMD := "parent rule"
+	childMD := "child rule"
+	if err := os.WriteFile(filepath.Join(parent, "BARROSO.md"), []byte(parentMD), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(filho, "BARROSO.md"), []byte(filhoMD), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(child, "BARROSO.md"), []byte(childMD), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got, err := Resolve(filho)
+	got, err := Resolve(child)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if iFilho, iPai := strings.Index(got, filhoMD), strings.Index(got, paiMD); iFilho > iPai {
-		t.Fatalf("esperava filho antes do pai, veio:\n%s", got)
+	if iChild, iParent := strings.Index(got, childMD), strings.Index(got, parentMD); iChild > iParent {
+		t.Fatalf("expected child before parent, got:\n%s", got)
 	}
 }
 
-func TestResolveArquivoVazioNaoEntra(t *testing.T) {
-	isolarHome(t)
+func TestResolveEmptyFileIsSkipped(t *testing.T) {
+	isolateHome(t)
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "BARROSO.md"), []byte("   \n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -62,6 +62,6 @@ func TestResolveArquivoVazioNaoEntra(t *testing.T) {
 		t.Fatal(err)
 	}
 	if s != "" {
-		t.Fatalf("BARROSO.md em branco não deve entrar na instrução, veio %q", s)
+		t.Fatalf("a blank BARROSO.md must not enter the instruction, got %q", s)
 	}
 }

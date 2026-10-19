@@ -15,26 +15,27 @@ import (
 	"time"
 )
 
-// AssetPlataformaNome é o nome do binário desta plataforma, na nomenclatura do
-// deployer (.deploy/release.json): barroso-harness-<goos>-<goarch>, com .exe
-// no Windows. Fica aqui — e não em update.go — para que install_*.go, que
-// precisa do mesmo nome, não importe símbolo de plataforma cruzada.
+// AssetPlataformaNome is this platform's binary name, in the deployer's
+// naming (.deploy/release.json): barroso-harness-<goos>-<goarch>, with .exe
+// on Windows. It lives here — not in update.go — so that install_*.go, which
+// needs the same name, does not import a cross-platform symbol.
 func AssetPlataformaNome() string {
-	nome := prefixoAsset + runtime.GOOS + "-" + runtime.GOARCH
+	name := assetPrefix + runtime.GOOS + "-" + runtime.GOARCH
 	if runtime.GOOS == "windows" {
-		nome += ".exe"
+		name += ".exe"
 	}
-	return nome
+	return name
 }
 
-// Baixar baixa um asset para staging, conferindo tamanho e SHA256 enquanto
-// escreve. A soma esperada vem do SHA256SUMS publicado (soma canal), não do
-// metadata do asset: o SHA256SUMS é publicado pelo mesmo pipeline do binário,
-// e conferir os dois entre si pega download truncado ou corrompido.
+// Baixar downloads an asset to staging, checking size and SHA256 while it
+// writes. The expected checksum comes from the published SHA256SUMS (channel
+// checksum), not from the asset metadata: SHA256SUMS is published by the same
+// pipeline as the binary, and checking one against the other catches a
+// truncated or corrupted download.
 //
-// O arquivo staged sai com 0750 — é executável, mas só o dono o cria. O dono
-// do processo é quem mandou atualizar.
-func Baixar(ctx context.Context, asset Asset, soma string, staging string) (string, error) {
+// The staged file is created 0750 — executable, but only the owner creates
+// it. The process owner is whoever asked for the update.
+func Baixar(ctx context.Context, asset Asset, sum string, staging string) (string, error) {
 	if asset.URL == "" {
 		return "", errors.New("asset has no URL")
 	}
@@ -43,22 +44,23 @@ func Baixar(ctx context.Context, asset Asset, soma string, staging string) (stri
 		return "", fmt.Errorf("asset %q is not the binary for this platform (%s)",
 			asset.Name, AssetPlataformaNome())
 	}
-	if soma != "" && !éSHA256(soma) {
-		return "", fmt.Errorf("declared checksum for %s is invalid: %q", asset.Name, soma)
+	if sum != "" && !isSHA256(sum) {
+		return "", fmt.Errorf("declared checksum for %s is invalid: %q", asset.Name, sum)
 	}
 
-	cliente := &http.Client{Timeout: timeoutHTTP}
+	client := &http.Client{Timeout: httpTimeout}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, asset.URL, nil)
 	if err != nil {
 		return "", fmt.Errorf("build download request for %s: %w", asset.Name, err)
 	}
-	// octet-stream é o que a API do GitHub quer para devolver BYTES em vez do
-	// metadata JSON do asset. O token vai no header, NUNCA na query: URL com
-	// credencial acaba em log de proxy e de servidor.
+	// octet-stream is what the GitHub API wants in order to return BYTES
+	// instead of the asset's JSON metadata. The token goes in the header,
+	// NEVER in the query: a URL with credentials ends up in proxy and server
+	// logs.
 	req.Header.Set("Accept", "application/octet-stream")
-	req.Header.Set("Authorization", "Bearer "+tokenDe())
+	req.Header.Set("Authorization", "Bearer "+envToken())
 
-	resp, err := cliente.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("download %s: %w", asset.Name, err)
 	}
@@ -73,58 +75,59 @@ func Baixar(ctx context.Context, asset Asset, soma string, staging string) (stri
 	if err := os.MkdirAll(filepath.Dir(staging), 0o750); err != nil {
 		return "", fmt.Errorf("create staging: %w", err)
 	}
-	arquivo, err := os.OpenFile(staging, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o750)
+	file, err := os.OpenFile(staging, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o750)
 	if err != nil {
 		return "", fmt.Errorf("create staging %s: %w", staging, err)
 	}
 
-	gravado := false
+	written := false
 	defer func() {
-		_ = arquivo.Close()
-		if !gravado {
+		_ = file.Close()
+		if !written {
 			removeIfExists(staging)
 		}
 	}()
 
 	hasher := sha256.New()
-	limite := int64(tetoAsset)
-	if asset.Bytes > 0 && asset.Bytes < limite {
-		limite = asset.Bytes
+	limit := int64(assetCap)
+	if asset.Bytes > 0 && asset.Bytes < limit {
+		limit = asset.Bytes
 	}
-	// +1 byte: se o servidor mandar MAIS que o limite, o Copy grava o byte
-	// extra e a comparação abaixo detecta. Sem o +1, o excesso seria cortado
-	// silenciosamente e a soma conferiria contra um arquivo truncado.
-	bytes, err := io.Copy(io.MultiWriter(arquivo, hasher), io.LimitReader(resp.Body, limite+1))
+	// +1 byte: if the server sends MORE than the limit, Copy writes the extra
+	// byte and the comparison below catches it. Without the +1, the excess
+	// would be silently cut and the checksum would be checked against a
+	// truncated file.
+	bytes, err := io.Copy(io.MultiWriter(file, hasher), io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return "", fmt.Errorf("write %s: %w", asset.Name, err)
 	}
-	if bytes > limite {
-		return "", fmt.Errorf("%s exceeds the %d-byte limit", asset.Name, tetoAsset)
+	if bytes > limit {
+		return "", fmt.Errorf("%s exceeds the %d-byte limit", asset.Name, assetCap)
 	}
 	if asset.Bytes > 0 && bytes != asset.Bytes {
 		return "", fmt.Errorf("size mismatch for %s: got %d, expected %d",
 			asset.Name, bytes, asset.Bytes)
 	}
-	obtida := hex.EncodeToString(hasher.Sum(nil))
-	if soma != "" && !strings.EqualFold(obtida, strings.ToLower(soma)) {
+	got := hex.EncodeToString(hasher.Sum(nil))
+	if sum != "" && !strings.EqualFold(got, strings.ToLower(sum)) {
 		return "", fmt.Errorf("SHA256 mismatch for %s: got %s, expected %s",
-			asset.Name, obtida, soma)
+			asset.Name, got, sum)
 	}
-	if err := arquivo.Chmod(0o750); err != nil {
+	if err := file.Chmod(0o750); err != nil {
 		return "", fmt.Errorf("chmod staged binary: %w", err)
 	}
-	if err := arquivo.Sync(); err != nil {
+	if err := file.Sync(); err != nil {
 		return "", fmt.Errorf("sync staged binary: %w", err)
 	}
-	if err := arquivo.Close(); err != nil {
+	if err := file.Close(); err != nil {
 		return "", fmt.Errorf("close staged binary: %w", err)
 	}
-	gravado = true
+	written = true
 	return staging, nil
 }
 
-// éSHA256 reconhece 64 hexadecimais — a forma que o SHA256SUMS publica.
-func éSHA256(s string) bool {
+// isSHA256 recognizes 64 hex digits — the form SHA256SUMS publishes.
+func isSHA256(s string) bool {
 	if len(s) != 64 {
 		return false
 	}
@@ -136,7 +139,7 @@ func éSHA256(s string) bool {
 	return true
 }
 
-// camadaTempo só existe para os testes injetarem relógio sem depender de sleep.
-var camadaTempo = struct {
-	Agora func() time.Time
-}{Agora: time.Now}
+// clock exists only so tests can inject a clock without relying on sleep.
+var clock = struct {
+	Now func() time.Time
+}{Now: time.Now}

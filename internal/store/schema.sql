@@ -1,15 +1,15 @@
--- Log de eventos append-only das sessões do Barroso Harness.
+-- Append-only session event log of Barroso Harness.
 --
--- Três tabelas e uma obrigação: `events` é append-only. Nada aqui é editado
--- ou apagado durante a vida de uma sessão — o histórico do transcript se
--- reconstrói pela ordem de `seq`, e a reprodutibilidade do log depende disso.
+-- Three tables and one obligation: `events` is append-only. Nothing here is
+-- edited or deleted during a session's life — the transcript history is
+-- rebuilt from `seq` order, and the log's reproducibility depends on it.
 --
--- `sessions` é a única linha mutável: `updated_at` (TouchSession), `title`
--- (SetTitle) e `metadata_json`. São metadados de índice, não conteúdo.
+-- `sessions` is the only mutable row: `updated_at` (TouchSession), `title`
+-- (SetTitle) and `metadata_json`. These are index metadata, not content.
 --
--- `blobs` guarda o que não cabe (nem deve) no log: saídas grandes de tool.
--- O evento referencia por {"blob": "<sha256hex>", "size": N}, então o log
--- continua curto e legível sem perder o dado.
+-- `blobs` holds what does not (and should not) fit in the log: large tool
+-- outputs. The event references them by {"blob": "<sha256hex>", "size": N},
+-- so the log stays short and readable without losing data.
 
 CREATE TABLE IF NOT EXISTS sessions (
     id             TEXT PRIMARY KEY,
