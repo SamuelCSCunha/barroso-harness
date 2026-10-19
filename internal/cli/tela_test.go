@@ -34,7 +34,7 @@ func TestTelaSemLinhaDeTitulo(t *testing.T) {
 	if !strings.Contains(s, "\033]0;BH | minha sessão\a") {
 		t.Fatal("título não foi para a aba")
 	}
-	if !strings.Contains(s, "\033[2;1H\033[0m  primeira linha da conversa") {
+	if !strings.Contains(s, "\033[2;1H\033[0m   primeira linha da conversa") {
 		t.Fatalf("conversa deveria começar na linha 2, depois da margem")
 	}
 }

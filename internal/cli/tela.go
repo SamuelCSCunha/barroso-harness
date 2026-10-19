@@ -134,8 +134,8 @@ func (t *tela) Usuario(texto string) {
 		t.linhas = append(t.linhas, "")
 	}
 	t.linhas = append(t.linhas, vazia)
-	for _, l := range strings.Split(quebrar(texto, larg-4), "\n") {
-		t.linhas = append(t.linhas, comFundo(azulf("▌")+" "+cor(corTexto, l), fundoUsuario, larg))
+	for _, l := range strings.Split(quebrar(texto, larg-5), "\n") {
+		t.linhas = append(t.linhas, comFundo(azulf("▌")+"  "+cor(corTexto, l), fundoUsuario, larg))
 	}
 	t.linhas = append(t.linhas, vazia, "")
 	t.aparar()
@@ -270,8 +270,8 @@ func (t *tela) larguraConversa() int {
 
 // desenharTrancado pinta o quadro inteiro. Chamado com t.mu travado.
 //
-// Linhas: 1..h-5 conversa · h-4 vazio/rolagem ·
-// h-3..h-1 caixa de entrada · h rodapé. O painel ocupa as colunas da direita
+// Linhas: 1 margem · 2..h-7 conversa · h-6 vazio/rolagem ·
+// h-5..h-1 caixa de entrada (com respiro) · h rodapé. O painel ocupa as colunas da direita
 // nas linhas 1..h-1; nada é escrito na última coluna da última linha (isso
 // faria o terminal rolar).
 func (t *tela) desenharTrancado() {
@@ -279,7 +279,7 @@ func (t *tela) desenharTrancado() {
 	w, h := t.w, t.h
 	larg := t.larguraConversa()
 	// Linha 1 é margem; a conversa vai da linha 2 até h-5.
-	altura := max(3, h-6)
+	altura := max(3, h-8)
 
 	var sb strings.Builder
 	sb.WriteString(escSyncIni + escCurOcult)
@@ -326,14 +326,14 @@ func (t *tela) desenharTrancado() {
 	for i := 0; i < altura; i++ {
 		s := ""
 		if i < len(vis) {
-			s = "  " + vis[i]
+			s = margemConversa(vis[i]) + vis[i]
 		}
 		linha(2+i, s)
 	}
 	if t.rolagem > 0 {
-		linha(h-4, "  "+cinzaf(fmt.Sprintf("↓ %d linhas abaixo · PgDn volta", t.rolagem)))
+		linha(h-6, "   "+cinzaf(fmt.Sprintf("↓ %d linhas abaixo · PgDn volta", t.rolagem)))
 	} else {
-		linha(h-4, "")
+		linha(h-6, "")
 	}
 
 	// caixa de entrada; enquanto um prompt de comando espera resposta, o texto
@@ -346,13 +346,18 @@ func (t *tela) desenharTrancado() {
 			texto = cinzaf("Pergunte qualquer coisa…  /help lista os comandos")
 		}
 	}
-	linha(h-3, "  "+comFundo(azulf("▌")+" "+texto, fundoCaixa, caixa))
-	linha(h-2, "  "+comFundo(azulf("▌"), fundoCaixa, caixa))
+	// Respiro de uma linha em cima e embaixo, e texto a 2 espaços da barra,
+	// como a caixa do OpenCode.
+	vaziaCaixa := "  " + comFundo(azulf("▌"), fundoCaixa, caixa)
+	linha(h-5, vaziaCaixa)
+	linha(h-4, "  "+comFundo(azulf("▌")+"  "+texto, fundoCaixa, caixa))
+	linha(h-3, vaziaCaixa)
 	info := negritof(cor(corTexto, t.estado.modelo)) + " " + cinzaf(t.estado.provider)
 	if t.estado.effort != "" {
 		info += cinzaf(" · ") + laranjaf(t.estado.effort)
 	}
-	linha(h-1, "  "+comFundo(azulf("▌")+" "+info, fundoCaixa, caixa))
+	linha(h-2, "  "+comFundo(azulf("▌")+"  "+info, fundoCaixa, caixa))
+	linha(h-1, vaziaCaixa)
 
 	// rodapé
 	esq := "  " + cinzaf(t.estado.cwd)
@@ -388,14 +393,25 @@ func (t *tela) desenharTrancado() {
 	// cursor: na caixa, ou no fim da linha do prompt de comando
 	if !t.ocupado {
 		if t.parcial == "" {
-			fmt.Fprintf(&sb, "\033[%d;%dH", h-3, 5+larguraVis(t.entradaVisivel()))
+			fmt.Fprintf(&sb, "\033[%d;%dH", h-4, 6+larguraVis(t.entradaVisivel()))
 		} else if len(vis) > 0 {
-			fmt.Fprintf(&sb, "\033[%d;%dH", 2+len(vis)-1, 3+larguraVis(vis[len(vis)-1]))
+			ult := vis[len(vis)-1]
+			fmt.Fprintf(&sb, "\033[%d;%dH", 2+len(vis)-1, 1+larguraVis(margemConversa(ult)+ult))
 		}
 		sb.WriteString(escCurVisiv)
 	}
 	sb.WriteString(escSyncFim)
 	fmt.Fprint(t.out, sb.String())
+}
+
+// margemConversa: as caixas (mensagem do usuário) começam na coluna da caixa
+// de entrada; o resto da conversa começa na coluna do TEXTO dentro delas,
+// como no OpenCode.
+func margemConversa(l string) string {
+	if coresLigadas && strings.HasPrefix(l, fundoUsuario) {
+		return "  "
+	}
+	return "   "
 }
 
 func (t *tela) entradaVisivel() string {
@@ -434,7 +450,7 @@ func (t *tela) linhasPainel() []string {
 	}
 	for _, m := range e.mcps {
 		nome := cortarVis(m, larguraPain-18)
-		pad := strings.Repeat(" ", max(1, larguraPain-15-larguraVis(nome)))
+		pad := strings.Repeat(" ", max(1, larguraPain-17-larguraVis(nome)))
 		out = append(out, "  "+verdof("•")+" "+negritof(cor(corTexto, nome))+pad+cinzaf("Conectado"))
 	}
 	return out
