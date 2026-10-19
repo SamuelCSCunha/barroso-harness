@@ -4,5 +4,5 @@ import (
 	"github.com/ruanbarroso/barroso-harness/internal/dealer"
 )
 
-// alias de histórico para os testes
-type MensagemHist = dealer.Mensagem
+// history alias for tests
+type historyMessage = dealer.Mensagem

@@ -1,0 +1,169 @@
+package runtime
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"github.com/ruanbarroso/barroso-harness/internal/dealer"
+	"github.com/ruanbarroso/barroso-harness/internal/tools"
+)
+
+// Context policies (config.json, field context_policy).
+//
+//   - PoliticaAgente (default): the model has ctx_compact and decides WHEN to
+//     compact, at a task milestone, by writing the working state. The budget
+//     guardrail stays on as a safety net.
+//   - PoliticaLimiar: no ctx_compact; only the guardrail compacts, on overflow.
+//
+// Both record every compaction in the log (event "compactacao" or
+// "guardrail", both with the politica field), so they can be compared under
+// the same harness against the real sessions in sessions.db.
+//
+// The constant values are what gets persisted in sessions.db and read back by
+// other packages, so they keep their original form; config.json also accepts
+// the English aliases "agent" and "threshold".
+const (
+	PoliticaAgente = "agente"
+	PoliticaLimiar = "limiar"
+)
+
+// policyThresholdAlias is the English spelling of PoliticaLimiar accepted in
+// config.json ("agent" needs no alias: anything not threshold is the default).
+const policyThresholdAlias = "threshold"
+
+// policy normalizes the config value; unknown values fall back to the default.
+func policy(v string) string {
+	v = strings.TrimSpace(v)
+	if strings.EqualFold(v, PoliticaLimiar) || strings.EqualFold(v, policyThresholdAlias) {
+		return PoliticaLimiar
+	}
+	return PoliticaAgente
+}
+
+// Event kinds of an agent compaction. eventCompaction is what is WRITTEN (kept
+// in its original form because sessions.db readers outside this package match
+// on it); eventCompactionEN is also accepted on read.
+const (
+	eventCompaction   = "compactacao"
+	eventCompactionEN = "compaction"
+)
+
+const compactToolName = "ctx_compact"
+
+// maxSummary caps the state written by the model: a summary larger than this
+// is no longer a compaction.
+const maxSummary = 16 << 10
+
+// compactSpec is the agent's compaction action. Exec only validates; the turn
+// loop swaps the history, after the round's results are in (the history
+// cannot change in the middle of a tool round).
+func compactSpec() tools.Spec {
+	return tools.Spec{
+		Name: compactToolName,
+		Description: "Compacts this conversation's history: everything BEFORE the current request is replaced by the " +
+			"working state you write. Use it at a natural milestone of the task (e.g. you found the cause and are " +
+			"about to edit; you finished exploring) — do not wait for the context to fill up. The state must be " +
+			"enough to carry on: goal, decisions, discovered facts (paths, signatures, values), what has " +
+			"already been changed and the next step. The full log remains retrievable through session_search.",
+		Schema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"state": map[string]any{"type": "string", "description": "structured working state that replaces the earlier history"},
+			},
+			"required": []string{"state"},
+		},
+		Exec: func(_ context.Context, _ string, raw json.RawMessage) (string, error) {
+			state, err := readCompactState(raw)
+			if err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("compaction scheduled: the history before this request will be replaced by the state (%d characters) at the end of this round", len(state)), nil
+		},
+	}
+}
+
+// readCompactState parses ctx_compact arguments. The legacy "estado" key is
+// still accepted, for calls from models primed with the old schema.
+func readCompactState(raw json.RawMessage) (string, error) {
+	var c struct {
+		State  string `json:"state"`
+		Estado string `json:"estado"`
+	}
+	if err := json.Unmarshal(raw, &c); err != nil {
+		return "", fmt.Errorf("invalid input: %w", err)
+	}
+	e := strings.TrimSpace(c.State)
+	if e == "" {
+		e = strings.TrimSpace(c.Estado)
+	}
+	if e == "" {
+		return "", fmt.Errorf("empty state: write the working state that replaces the history")
+	}
+	if len(e) > maxSummary {
+		return "", fmt.Errorf("state of %d bytes exceeds the limit of %d: summarize further", len(e), maxSummary)
+	}
+	return e, nil
+}
+
+// summaryPrefix marks the synthetic message; Resume and later compactions
+// recognize it by this prefix.
+const summaryPrefix = "[working state — written by the agent itself when compacting the earlier history]\n"
+
+// legacySummaryPrefix is the marker of sessions recorded before the English
+// translation; it is still recognized.
+const legacySummaryPrefix = "[estado de trabalho"
+
+// isSummary reports whether a message content is a compaction summary (new or
+// legacy marker).
+func isSummary(content string) bool {
+	return strings.HasPrefix(content, summaryPrefix) || strings.HasPrefix(content, legacySummaryPrefix)
+}
+
+// compactHistory replaces everything before the CURRENT request (the last real
+// user message) with a message carrying the state. The current request and
+// the ongoing round — with its tool_call/tool_result pairs — stay intact, so
+// the request remains valid for the provider.
+//
+// With nothing before the current request there is nothing to compact and h
+// is returned unchanged.
+func compactHistory(h []dealer.Mensagem, state string) []dealer.Mensagem {
+	cut := -1
+	for i := len(h) - 1; i >= 0; i-- {
+		if h[i].Role == "user" && !isSummary(h[i].Conteudo) {
+			cut = i
+			break
+		}
+	}
+	if cut <= 0 {
+		return h
+	}
+	out := make([]dealer.Mensagem, 0, len(h)-cut+1)
+	out = append(out, dealer.Mensagem{Role: "user", Conteudo: summaryPrefix + state})
+	return append(out, h[cut:]...)
+}
+
+func historyBytes(h []dealer.Mensagem) int {
+	n := 0
+	for _, m := range h {
+		n += len(m.Conteudo) + len(m.ToolArgs)
+	}
+	return n
+}
+
+// compactedState returns the state of the round's last SUCCESSFUL
+// ctx_compact, or "" when there was none. A failed call (empty state, over the
+// limit) compacts nothing: the model got the error and may try again.
+func compactedState(calls []dealer.ToolChamada, results []dealer.Mensagem) string {
+	state := ""
+	for i, c := range calls {
+		if c.Nome != compactToolName || i >= len(results) || results[i].IsErro {
+			continue
+		}
+		if e, err := readCompactState(json.RawMessage(c.Args)); err == nil {
+			state = e
+		}
+	}
+	return state
+}

@@ -1,24 +1,24 @@
-// Catálogo estendido do turno: tudo que NÃO é built-in e NÃO é do subsistema
-// de sessão (session_search/session_retrieve, que vivem em tools_session.go
-// porque fecham sobre o store).
+// Extended turn catalog: everything that is NOT a built-in and NOT part of the
+// session subsystem (session_search/session_retrieve, which live in
+// tools_session.go because they close over the store).
 //
-// A divisão de responsabilidade é esta:
+// The split of responsibility is:
 //
-//   - runtime monta SOZINHO o que é função pura da configuração e do cwd —
-//     contexto vivo (ctx_vivo.go), web (internal/web) e skills
-//     (internal/skills). Nenhum deles depende do ciclo de vida do processo,
-//     então podem ser reconstruídos a cada turno sem custo de verdade.
-//   - o CHAMADOR injeta o que tem dono externo — sub-agentes
-//     (internal/subagent) e servidores MCP (internal/mcp). Os dois precisam
-//     de recursos de processo (goroutines de worker, subprocesso stdio,
-//     conexão HTTP) que não podem nascer e morrer dentro de um turno. Por
-//     isso eles não são importados aqui: subagent importa este pacote, e
-//     importar de volta seria ciclo. Ver Injetar.
+//   - runtime builds ON ITS OWN whatever is a pure function of configuration
+//     and cwd — live context (live_context.go), web (internal/web) and skills
+//     (internal/skills). None of them depends on the process lifecycle, so
+//     they can be rebuilt every turn at no real cost.
+//   - the CALLER injects what has an external owner — subagents
+//     (internal/subagent) and MCP servers (internal/mcp). Both need process
+//     resources (worker goroutines, stdio subprocess, HTTP connection) that
+//     cannot be born and die within a turn. That is why they are not imported
+//     here: subagent imports this package, and importing back would be a
+//     cycle. See Injetar.
 //
-// O nome de tool é único no catálogo. Dois ctx_read num schema é chamada
-// ambígua para o provider, e uma ferramenta externa chamada terminal_run
-// seria um sequestro de built-in. semRepetir e semSombra resolvem os dois
-// casos com políticas diferentes, de propósito.
+// A tool name is unique in the catalog. Two ctx_read in a schema is an
+// ambiguous call for the provider, and an external tool called terminal_run
+// would hijack a built-in. dedupe and noShadow handle the two cases with
+// different policies, on purpose.
 package runtime
 
 import (
@@ -31,41 +31,42 @@ import (
 	"github.com/ruanbarroso/barroso-harness/internal/web"
 )
 
-// Injetar acrescenta specs de subsistemas externos ao catálogo de todos os
-// turnos desta sessão. Chamado pelo wiring (CLI, ACP, main) depois de criar a
-// sessão, com o que o pacote dono devolve:
+// Retirar removes from the catalog the injected specs with these names — the
+// mcp_remove path: the server goes away and its tools disappear from the next
+// turn on.
+func (s *Session) Retirar(names ...string) {
+	if len(names) == 0 {
+		return
+	}
+	out := make(map[string]bool, len(names))
+	for _, n := range names {
+		out[strings.TrimSpace(n)] = true
+	}
+	s.muExtras.Lock()
+	defer s.muExtras.Unlock()
+	kept := s.injected[:0]
+	for _, sp := range s.injected {
+		if !out[strings.TrimSpace(sp.Name)] {
+			kept = append(kept, sp)
+		}
+	}
+	s.injected = kept
+}
+
+// Injetar adds specs from external subsystems to the catalog of every turn of
+// this session. Called by the wiring (CLI, ACP, main) after creating the
+// session, with what the owning package returns:
 //
 //	sess := runtime.NewSession(cfg)
 //	sess.Injetar(subagent.Especificacoes(gerente, cfg)...)
 //	sess.Injetar(mcp.Especificacoes...)
 //
-// Specs injetadas NUNCA sombreiam built-in, contexto vivo, web ou skills: ver
-// semSombra. Injetar depois de um turno já ter rodado vale para os próximos —
-// a lista é monta a cada Send, não cacheada na sessão.
+// Injected specs NEVER shadow built-ins, live context, web or skills: see
+// noShadow. Injecting after a turn has run applies to the following ones —
+// the list is built on each Send, not cached in the session.
 //
-// Seguro para chamar concorrentemente; não é o caminho quente (o wiring chama
-// uma vez), e o lock cobre o caso de um /model trocar a config no meio.
-// Retirar remove do catálogo as specs injetadas com esses nomes — o caminho
-// de mcp_remove: o servidor sai e as tools dele somem já no próximo turno.
-func (s *Session) Retirar(nomes ...string) {
-	if len(nomes) == 0 {
-		return
-	}
-	fora := make(map[string]bool, len(nomes))
-	for _, n := range nomes {
-		fora[strings.TrimSpace(n)] = true
-	}
-	s.muExtras.Lock()
-	defer s.muExtras.Unlock()
-	mantidas := s.injetadas[:0]
-	for _, sp := range s.injetadas {
-		if !fora[strings.TrimSpace(sp.Name)] {
-			mantidas = append(mantidas, sp)
-		}
-	}
-	s.injetadas = mantidas
-}
-
+// Safe to call concurrently; it is not the hot path (the wiring calls it once),
+// and the lock covers the case of a /model swapping the config midway.
 func (s *Session) Injetar(specs ...tools.Spec) {
 	if len(specs) == 0 {
 		return
@@ -76,29 +77,30 @@ func (s *Session) Injetar(specs ...tools.Spec) {
 		if strings.TrimSpace(sp.Name) == "" {
 			continue
 		}
-		s.injetadas = append(s.injetadas, sp)
+		s.injected = append(s.injected, sp)
 	}
 }
 
-// extrasDoTurno devolve o catálogo estendido: os do runtime primeiro, os
-// injetados depois, concatenados sem colisão de nome.
-func (s *Session) extrasDoTurno(cwd string) []tools.Spec {
+// turnExtras returns the extended catalog: runtime-owned first, injected
+// after, concatenated without name collisions.
+func (s *Session) turnExtras(cwd string) []tools.Spec {
 	s.muExtras.Lock()
-	injetadas := append([]tools.Spec(nil), s.injetadas...)
+	injected := append([]tools.Spec(nil), s.injected...)
 	s.muExtras.Unlock()
 
-	proprios := semRepetir(append(
+	own := dedupe(append(
 		EspecificacoesContextoVivoSessao(s),
-		append(web.Especificacoes(s.busca()), specsDeSkills(cwd)...)...,
+		append(web.Especificacoes(s.search()), skillSpecs(cwd)...)...,
 	))
-	return semSombra(proprios, injetadas)
+	return noShadow(own, injected)
 }
 
-// busca traduz a configuração no handle do pacote web. nil quando não há
-// search_url: a tool web_search entra no catálogo MESMO assim, porque o erro
-// de configuração precisa aparecer na saída da tool — o modelo lê e sabe o
-// que pedir — em vez de a tool silenciosamente não existir.
-func (s *Session) busca() *web.Busca {
+// search translates the configuration into the web package handle. nil when
+// there is no search_url: the web_search tool enters the catalog ANYWAY,
+// because the configuration error must show up in the tool output — the model
+// reads it and knows what to ask for — instead of the tool silently not
+// existing.
+func (s *Session) search() *web.Busca {
 	url := strings.TrimSpace(s.config.SearchURL)
 	if url == "" {
 		return nil
@@ -106,135 +108,137 @@ func (s *Session) busca() *web.Busca {
 	return &web.Busca{Endpoint: url}
 }
 
-// specsDeSkills descobre as skills do disco e devolve as duas tools. Descobrir
-// devolve erro só quando TODAS as fontes existem e nenhuma pôde ser lida; a
-// resposta certa aí é catálogo vazio (skills_list explica que não há skills),
-// não um turno abortado — skill é conveniência, não pré-requisito.
+// skillSpecs discovers the skills on disk and returns their tools. Discovery
+// only errors when ALL sources exist and none could be read; the right answer
+// then is an empty catalog (skills_list explains there are no skills), not an
+// aborted turn — a skill is a convenience, not a prerequisite.
 //
-// A descoberta acontece a cada turno, de propósito: ler três diretórios e os
-// SKILL.md custa microssegundos, e cachear significaria que uma skill criada
-// agora só apareceria na próxima sessão — o agente sendo avisado de uma
-// habilidade que ainda não enxerga é pior que o custo.
-func specsDeSkills(cwd string) []tools.Spec {
-	hab, err := skills.Descobrir(fontesDeSkills(cwd))
+// Discovery happens every turn, on purpose: reading three directories and the
+// SKILL.md files costs microseconds, and caching would mean a skill created
+// now only shows up in the next session — the agent being told about a skill
+// it cannot yet see is worse than the cost.
+func skillSpecs(cwd string) []tools.Spec {
+	found, err := skills.Descobrir(skillSources(cwd))
 	if err != nil {
-		hab = nil
+		found = nil
 	}
-	gestao := skills.EspecificacoesGestao(map[string]string{
+	// The scope labels ("projeto"/"global") are defined by package skills.
+	management := skills.EspecificacoesGestao(map[string]string{
 		"projeto": filepath.Join(cwd, ".barroso", "skills"),
 		"global":  filepath.Join(config.Dir(), "skills"),
 	})
-	return append(skills.Especificacoes(hab), gestao...)
+	return append(skills.Especificacoes(found), management...)
 }
 
-// fontesDeSkills compõe as raízes de skills na ordem de precedência:
-// cwd/.barroso/skills, cwd/skills (projeto) e <dados da harness>/skills
+// skillSources composes the skill roots in precedence order:
+// cwd/.barroso/skills, cwd/skills (project) and <harness data>/skills
 // (global).
 //
-// A raiz global vem de config.Dir(), e não do home do usuário: quando
-// BARROSO_HARNESS_HOME aponta para outro lugar, os dados da harness — inclusive
-// as skills globais — foram com ele. skills.FontesPadrao assume o home padrão
-// e erraria justamente no caso que a variável de ambiente existe para servir.
-func fontesDeSkills(cwd string) []skills.Fonte {
-	var fontes []skills.Fonte
+// The global root comes from config.Dir(), not from the user's home: when
+// BARROSO_HARNESS_HOME points elsewhere, the harness data — including the
+// global skills — went with it. skills.FontesPadrao assumes the default home
+// and would get exactly the case the environment variable exists for wrong.
+func skillSources(cwd string) []skills.Fonte {
+	var sources []skills.Fonte
 	if c := strings.TrimSpace(cwd); c != "" {
-		fontes = append(fontes,
+		sources = append(sources,
 			skills.Fonte{Raiz: filepath.Join(c, ".barroso", "skills"), Rotulo: "projeto"},
 			skills.Fonte{Raiz: filepath.Join(c, "skills"), Rotulo: "projeto"},
 		)
 	}
-	fontes = append(fontes, skills.Fonte{
+	sources = append(sources, skills.Fonte{
 		Raiz:   filepath.Join(config.Dir(), "skills"),
 		Rotulo: "global",
 	})
-	return fontes
+	return sources
 }
 
-// ── deduplicação ──────────────────────────────────────────────────────────
+// ── deduplication ─────────────────────────────────────────────────────────
 
-// semRepetir colapsa nomes repetidos ficando com a ÚLTIMA definição, na
-// POSIÇÃO da primeira. É a política dos catálogos que o runtime controla: o
-// ctx_read placeholder de tools/specs.go é substituído pelo de ctx_vivo.go
-// (que tem corpo de verdade), e a posição estável mantém a ordem do schema
-// previsível entre turnos.
+// dedupe collapses repeated names keeping the LAST definition, at the
+// POSITION of the first. It is the policy for catalogs the runtime controls:
+// the placeholder ctx_read from tools/specs.go is replaced by the one from
+// live_context.go (which has a real body), and the stable position keeps the
+// schema order predictable across turns.
 //
-// Spec sem nome é descartada: tool anônima não pode ser chamada pelo provider
-// de jeito nenhum, e deixá-la na lista só inflaria o request.
-func semRepetir(specs []tools.Spec) []tools.Spec {
-	indice := make(map[string]int, len(specs))
+// A spec without a name is dropped: an anonymous tool can never be called by
+// the provider, and keeping it in the list would only bloat the request.
+func dedupe(specs []tools.Spec) []tools.Spec {
+	index := make(map[string]int, len(specs))
 	out := make([]tools.Spec, 0, len(specs))
 	for _, sp := range specs {
-		nome := strings.TrimSpace(sp.Name)
-		if nome == "" {
+		name := strings.TrimSpace(sp.Name)
+		if name == "" {
 			continue
 		}
-		if i, ok := indice[nome]; ok {
+		if i, ok := index[name]; ok {
 			out[i] = sp
 			continue
 		}
-		indice[nome] = len(out)
+		index[name] = len(out)
 		out = append(out, sp)
 	}
 	return out
 }
 
-// semSombra acrescenta as specs externas SÓ com nomes que a base ainda não
-// tem. Política oposta à de semRepetir, e deliberadamente:
+// noShadow appends the external specs ONLY with names the base does not have
+// yet. The opposite policy of dedupe, deliberately:
 //
-// Um servidor MCP que publique uma tool chamada terminal_run não pode tomar o
-// lugar da built-in — o nome viraria um cavalo de Troia com a aparência de
-// privilégio local. O mesmo vale para um subagente. Originado de fora, o nome
-// perde para o de dentro; o dono legítimo fica no catálogo e a ferramenta
-// externa simplesmente não é exposta (o aviso de conexão do MCP e o catálogo
-// de skills continuam sendo o lugar de ver o que foi publicado).
-func semSombra(base, externas []tools.Spec) []tools.Spec {
-	if len(externas) == 0 {
+// An MCP server publishing a tool called terminal_run must not take the place
+// of the built-in — the name would become a Trojan horse looking like a local
+// privilege. The same goes for a subagent. Coming from outside, the name loses
+// to the inside one; the legitimate owner stays in the catalog and the
+// external tool is simply not exposed (the MCP connection notice and the
+// skills catalog remain the place to see what was published).
+func noShadow(base, external []tools.Spec) []tools.Spec {
+	if len(external) == 0 {
 		return base
 	}
-	tomados := make(map[string]bool, len(base))
+	taken := make(map[string]bool, len(base))
 	for _, sp := range base {
-		tomados[strings.TrimSpace(sp.Name)] = true
+		taken[strings.TrimSpace(sp.Name)] = true
 	}
 	out := append([]tools.Spec(nil), base...)
-	for _, sp := range externas {
-		nome := strings.TrimSpace(sp.Name)
-		if nome == "" || tomados[nome] {
+	for _, sp := range external {
+		name := strings.TrimSpace(sp.Name)
+		if name == "" || taken[name] {
 			continue
 		}
-		tomados[nome] = true
+		taken[name] = true
 		out = append(out, sp)
 	}
 	return out
 }
 
-// catalogoTools é a RECEITA ÚNICA do catálogo de ferramentas de um turno,
-// usada pelos três pontos de entrada (REPL, -p e ACP — o ACP chega pela
-// mesma Session.Send). A ordem importa para o dedup e para o provider:
+// toolCatalog is the SINGLE RECIPE of a turn's tool catalog, used by the three
+// entry points (REPL, -p and ACP — ACP arrives through the same Session.Send).
+// The order matters for dedup and for the provider:
 //
-//  1. built-ins (terminal, arquivos, list_dir) — a base;
-//  2. recuperação do log (session_search/session_retrieve) — fecha sobre a
-//     sessão, então entra aqui e não no pacote tools;
-//  3. contexto vivo (ctx_read/ctx_write/ctx_append) — substitui o placeholder
-//     de ctx_read que vem das built-ins;
-//  4. web + skills — função da config e do cwd, reconstruídos a cada turno;
-//  5. injetadas (sub-agentes, MCP) — só com nomes que a base não tem.
+//  1. built-ins (terminal, files, list_dir) — the base;
+//  2. log retrieval (session_search/session_retrieve) — closes over the
+//     session, so it enters here and not in package tools;
+//  3. live context (ctx_read/ctx_write/ctx_append) — replaces the ctx_read
+//     placeholder that comes with the built-ins;
+//  4. web + skills — a function of config and cwd, rebuilt every turn;
+//  5. injected (subagents, MCP) — only with names the base does not have.
 //
-// semRepetir resolve o ctx_read duplicado (placeholder × vivo) ficando com a
-// ÚLTIMA definição; semSombra impede tool externa de sequestrar nome local.
-func (s *Session) catalogoTools(cwd string) []tools.Spec {
+// dedupe resolves the duplicated ctx_read (placeholder vs live) keeping the
+// LAST definition; noShadow prevents an external tool from hijacking a local
+// name.
+func (s *Session) toolCatalog(cwd string) []tools.Spec {
 	base := append(tools.SpecsBuiltins(), SessaoSpecs(s)...)
 	base = append(base, EspecificacoesContextoVivoSessao(s)...)
-	base = append(base, web.Especificacoes(s.busca())...)
-	base = append(base, specsDeSkills(cwd)...)
-	if politica(s.config.PoliticaContexto) == PoliticaAgente {
-		base = append(base, specCompactar())
+	base = append(base, web.Especificacoes(s.search())...)
+	base = append(base, skillSpecs(cwd)...)
+	if policy(s.config.PoliticaContexto) == PoliticaAgente {
+		base = append(base, compactSpec())
 	}
 	s.muExtras.Lock()
-	injetadas := append([]tools.Spec(nil), s.injetadas...)
+	injected := append([]tools.Spec(nil), s.injected...)
 	s.muExtras.Unlock()
-	return semSombra(semRepetir(base), injetadas)
+	return noShadow(dedupe(base), injected)
 }
 
-// Catalogo expõe a receita do turno para wiring e testes conferirem o que o
-// modelo vai ver.
-func (s *Session) Catalogo(cwd string) []tools.Spec { return s.catalogoTools(cwd) }
+// Catalogo exposes the turn recipe so wiring and tests can check what the
+// model will see.
+func (s *Session) Catalogo(cwd string) []tools.Spec { return s.toolCatalog(cwd) }

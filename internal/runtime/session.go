@@ -1,6 +1,6 @@
-// Package runtime implementa uma sessão de conversa reutilizável. O transcript
-// só confirma uma rodada depois de uma resposta válida e, para tool_calls,
-// depois de todos os resultados — erros/cancelamentos não deixam chamadas órfãs.
+// Package runtime implements a reusable conversation session. The transcript
+// only commits a round after a valid response and, for tool_calls, after all
+// results — errors/cancellations never leave orphaned calls.
 package runtime
 
 import (
@@ -19,42 +19,42 @@ import (
 	"github.com/ruanbarroso/barroso-harness/internal/tools"
 )
 
-// Session guarda o transcript e estado reconfigurável de um REPL.
+// Session holds the transcript and reconfigurable state of a REPL.
 type Session struct {
 	config  config.Config
 	dealer  *dealer.Cliente
 	history []dealer.Mensagem
 	est     budget.Estimador
-	key     string // calibração por (URL normalizada, model)
+	key     string // calibration per (normalized URL, model)
 
-	// Persistência é OPCIONAL. store nil = sessão só em memória (o caminho de
-	// NewSession, usado pelo modo -p e pelos testes). Quando há store, cada
-	// evento confirmado do turno entra no log — e a sessão pode ser retomada
-	// por Resume num processo novo.
+	// Persistence is OPTIONAL. A nil store means an in-memory-only session (the
+	// NewSession path, used by -p mode and by tests). With a store, every
+	// committed event of the turn goes into the log — and the session can be
+	// resumed by Resume in a new process.
 	store     *store.Store
 	sessionID string
 
-	// injetadas são as specs de subsistemas EXTERNOS (sub-agentes, MCP),
-	// acrescentadas pelo wiring com Injetar. Não vivem no catálogo estático
-	// porque essas ferramentas têm dono de processo: ver extras.go.
+	// injected holds the specs of EXTERNAL subsystems (subagents, MCP), added
+	// by the wiring through Injetar. They do not live in the static catalog
+	// because those tools are owned by a process: see extras.go.
 	//
-	// muExtras só protege estes dois campos. O mutex é fino de propósito — o
-	// caminho quente (Send, montando a lista do turno) o segura só para
-	// copiar o slice, e nunca enquanto fala com o provider.
-	muExtras  sync.Mutex
-	injetadas []tools.Spec
+	// muExtras only guards this field. The mutex is fine-grained on purpose —
+	// the hot path (Send, building the turn's list) holds it only to copy the
+	// slice, and never while talking to the provider.
+	muExtras sync.Mutex
+	injected []tools.Spec
 }
 
-// NewSession cria uma sessão vazia sobre a configuração fornecida.
+// NewSession creates an empty session over the given configuration.
 func NewSession(cfg config.Config) *Session {
 	s := &Session{config: cfg}
 	s.rebuild()
 	return s
 }
 
-// NewSessionWithStore cria uma sessão JÁ persistente; o id só entra no log
-// com o primeiro evento. É o caminho do REPL, que sabe de antemão onde o
-// banco está.
+// NewSessionWithStore creates an ALREADY persistent session; the id only
+// enters the log with the first event. It is the REPL path, which knows up
+// front where the database is.
 func NewSessionWithStore(cfg config.Config, st *store.Store, sessionID string) *Session {
 	s := &Session{config: cfg}
 	s.rebuild()
@@ -62,34 +62,34 @@ func NewSessionWithStore(cfg config.Config, st *store.Store, sessionID string) *
 	return s
 }
 
-// Attach liga a sessão a um store existente. Pode ser chamado depois de
-// NewSession (quando o banco só abre depois, ex.: falha best-effort no REPL);
-// os eventos do próximo Send passam a ser gravados.
+// Attach binds the session to an existing store. It may be called after
+// NewSession (when the database only opens later, e.g. a best-effort failure
+// in the REPL); events of the next Send start being recorded.
 func (s *Session) Attach(st *store.Store, sessionID string) {
 	if st == nil || strings.TrimSpace(sessionID) == "" {
 		return
 	}
 	s.store = st
 	s.sessionID = sessionID
-	// Não indexa aqui: a linha da sessão nasce com o primeiro evento
-	// (StoreEvent) ou com /rename. Abrir e fechar o bh sem conversar não
-	// deixa sessão vazia no banco nem na lista do /resume.
+	// No indexing here: the session row is born with the first event
+	// (StoreEvent) or with /rename. Opening and closing bh without talking
+	// leaves no empty session in the database nor in the /resume list.
 }
 
-// ID devolve o id da sessão (vazio quando não há persistência).
+// ID returns the session id (empty when there is no persistence).
 func (s *Session) ID() string { return s.sessionID }
 
-// Persistente diz se há log gravando (usado pela CLI para mostrar `sess`).
+// Persistente reports whether a log is recording (used by the CLI to show `sess`).
 func (s *Session) Persistente() bool { return s.store != nil && s.sessionID != "" }
 
 func (s *Session) Config() config.Config { return s.config }
 
-// Configure atualiza provider/model/effort, limpando tool state pendente (o
-// transcript completo mantém somente turns confirmados; texto segue compatível).
+// Configure updates provider/model/effort, clearing pending tool state (the
+// full transcript only keeps committed turns; text stays compatible).
 func (s *Session) Configure(cfg config.Config) {
 	if s.config.Model != cfg.Model || s.config.CurrentProvider != cfg.CurrentProvider {
-		// Não há tool calls pendentes por causa da transação de Send; histórico
-		// textual confirmado é válido entre modelos e providers.
+		// There are no pending tool calls thanks to Send's transaction; committed
+		// textual history is valid across models and providers.
 	}
 	s.config = cfg
 	s.rebuild()
@@ -116,13 +116,13 @@ func (s *Session) rebuild() {
 	})
 }
 
-// History devolve uma cópia para testes/observabilidade segura; não expõe o
-// slice mutável interno.
+// History returns a copy for tests/safe observability; it does not expose the
+// internal mutable slice.
 func (s *Session) History() []dealer.Mensagem { return append([]dealer.Mensagem(nil), s.history...) }
 
-// UltimoContexto devolve os prompt tokens do último request registrado no
-// transcript (0 se não houver): o tamanho do contexto de uma sessão retomada,
-// antes de qualquer turno novo.
+// UltimoContexto returns the prompt tokens of the last request recorded in the
+// transcript (0 if none): the context size of a resumed session, before any
+// new turn.
 func (s *Session) UltimoContexto() int {
 	for i := len(s.history) - 1; i >= 0; i-- {
 		if u := s.history[i].Usage; u != nil && u.PromptTokens > 0 {
@@ -132,93 +132,95 @@ func (s *Session) UltimoContexto() int {
 	return 0
 }
 
-// ClearHistory limpa o transcript. Usado só quando faz sentido iniciar uma
-// nova conversa explicitamente; não é chamado ao trocar modelo.
+// ClearHistory clears the transcript. Used only when it makes sense to start a
+// new conversation explicitly; it is not called when switching models.
 //
-// Com persistência, a quebra também entra no log (session_reset): o log é
-// append-only e não pode "desfazer" os eventos anteriores, mas precisa
-// registrar que a conversa foi cortada — senão um Resume montaria um
-// transcript que o usuário acha que descartou.
+// With persistence, the break also enters the log (session_reset): the log is
+// append-only and cannot "undo" earlier events, but it must record that the
+// conversation was cut — otherwise a Resume would rebuild a transcript the
+// user thinks they discarded.
 func (s *Session) ClearHistory() {
 	s.history = nil
-	s.registrar("session_reset", map[string]any{"role": "system", "content": "história limpa; conversa nova"})
+	s.record("session_reset", map[string]any{"role": "system", "content": "history cleared; new conversation"})
 }
 
-// Send executa um turno e mantém transcript entre chamadas. O append da
-// mensagem do usuário e das rodadas fica num buffer privado e só é confirmado
-// em sucesso completo; tool execution de YOLO já realizada não pode ser
-// revertida, mas o histórico do provider nunca fica em estado malformado.
-func (s *Session) Send(ctx context.Context, r Renderer, cwd, pedido string) error {
+// Send runs a turn and keeps the transcript between calls. The user message
+// and the rounds are appended to a private buffer and only committed on full
+// success; YOLO tool execution already performed cannot be reverted, but the
+// provider history is never left malformed.
+func (s *Session) Send(ctx context.Context, r Renderer, cwd, prompt string) error {
 	if r == nil {
 		r = RendererDe(&strings.Builder{})
 	}
-	if strings.TrimSpace(pedido) == "" {
+	if strings.TrimSpace(prompt) == "" {
 		return fmt.Errorf("empty prompt")
 	}
 	if !s.config.Pronta() {
 		return fmt.Errorf("incomplete configuration (%s); run `bh` with no arguments to set it up", strings.Join(s.config.Faltas(), ", "))
 	}
 	if ctx == nil {
-		var cancelado context.CancelFunc
-		ctx, cancelado = context.WithTimeout(context.Background(), 30*time.Minute)
-		defer cancelado()
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.Background(), 30*time.Minute)
+		defer cancel()
 	}
-	inicio := time.Now()
+	start := time.Now()
 	baroMD, err := instructions.Resolve(cwd)
 	if err != nil {
 		return err
 	}
 	working := append([]dealer.Mensagem(nil), s.history...)
-	working = append(working, dealer.Mensagem{Role: "user", Conteudo: pedido})
-	piso := 0
-	// Cortes seguidos pelo teto de saída, e o teto da nova tentativa quando
-	// o corte veio vazio (o modelo gastou tudo pensando).
-	cortes, tetoExtra := 0, 0
-	reativaFeita := false
-	compactou := false
-	// Soma do turno inteiro: cada ciclo de tool gasta request e resposta, e o
-	// rodapé da UI mostra o total, não o do último ciclo.
-	usoPrompt, usoSaida := 0, 0
+	working = append(working, dealer.Mensagem{Role: "user", Conteudo: prompt})
+	floor := 0
+	// Consecutive cuts at the output limit, and the limit of the retry when the
+	// cut came back empty (the model spent everything thinking).
+	cuts, extraLimit := 0, 0
+	reactiveDone := false
+	compacted := false
+	// Whole-turn totals: each tool cycle spends request and response, and the
+	// UI footer shows the total, not the last cycle's.
+	promptUsage, outputUsage := 0, 0
 
-	// O pedido do usuário entra no log ANTES do loop: se o turno falhar no
-	// meio, o log ainda registra o que foi pedido.
-	s.registrar("user_message", map[string]any{"role": "user", "content": pedido})
+	// The user prompt enters the log BEFORE the loop: if the turn fails midway,
+	// the log still records what was asked.
+	s.record("user_message", map[string]any{"role": "user", "content": prompt})
 
-	for ciclo := 0; ciclo < 64; ciclo++ {
-		// Catálogo remontado a CADA ciclo: mcp_add, mcp_remove e skill_create
-		// mudam as tools no meio do turno, e a próxima rodada já precisa ver.
-		// Montado uma vez só, a tool recém-conectada ficava invisível até o
-		// pedido seguinte — o modelo via o servidor em mcp_list e não podia
-		// chamar a tool dele.
-		lista := s.catalogoTools(cwd)
-		schemas := toolSchemas(lista)
-		system := "Você é o agente Barroso Harness, rodando localmente na máquina do usuário em modo YOLO: as ferramentas executam sem pedir aprovação.\n" +
-			"Use as ferramentas para agir (terminal, arquivos) e TEXTO para falar com o usuário. Quando a tarefa terminar, responda com texto puro.\n"
+	for cycle := 0; cycle < 64; cycle++ {
+		// Catalog rebuilt on EVERY cycle: mcp_add, mcp_remove and skill_create
+		// change the tools mid-turn, and the next round must already see them.
+		// Built only once, a freshly connected tool stayed invisible until the
+		// next prompt — the model saw the server in mcp_list and could not call
+		// its tool.
+		list := s.toolCatalog(cwd)
+		schemas := toolSchemas(list)
+		system := "You are the Barroso Harness agent, running locally on the user's machine in YOLO mode: tools execute without asking for approval.\n" +
+			"Use tools to act (terminal, files) and TEXT to talk to the user. When the task is done, reply with plain text.\n"
 		if baroMD != "" {
-			system += "\n## BARROSO.md (instrução de sistema)\n" + baroMD
+			system += "\n## BARROSO.md (system instructions)\n" + baroMD
 		}
-		system += "\n## Ambiente\n- cwd: " + cwd + "\n- plataforma: use tools para descobrir; não presuma shell.\n"
+		system += "\n## Environment\n- cwd: " + cwd + "\n- platform: use tools to find out; do not assume a shell.\n"
 
-		corpo, err := s.dealer.Corpo(system, working, schemas)
+		body, err := s.dealer.Corpo(system, working, schemas)
 		if err != nil {
 			return err
 		}
-		av := budget.Avaliar(string(corpo), s.config.Janela, s.est)
-		if !av.Cabe {
-			podado := podar(working, &piso, av.TokensEntrada+av.TokensSaida-s.config.Janela)
-			if podado == nil {
-				return fmt.Errorf("guardrail: request does not fit (%s) and pruning did not free enough", av.Veredito())
+		ev := budget.Avaliar(string(body), s.config.Janela, s.est)
+		if !ev.Cabe {
+			pruned := prune(working, &floor, ev.TokensEntrada+ev.TokensSaida-s.config.Janela)
+			if pruned == nil {
+				return fmt.Errorf("guardrail: request does not fit (%s) and pruning did not free enough", ev.Veredito())
 			}
 			r.Guardrail(true)
-			s.registrar("guardrail", map[string]any{
+			// Persisted kind/keys/values stay in their original (Portuguese)
+			// form: sessions.db readers (cli context stats) match on them.
+			s.record("guardrail", map[string]any{
 				"tipo":       "proativa",
-				"politica":   politica(s.config.PoliticaContexto),
-				"veredito":   av.Veredito(),
+				"politica":   policy(s.config.PoliticaContexto),
+				"veredito":   ev.Veredito(),
 				"janela":     s.config.Janela,
-				"estimativa": av.TokensEntrada + av.TokensSaida,
+				"estimativa": ev.TokensEntrada + ev.TokensSaida,
 			})
-			compactou = true
-			working = podado
+			compacted = true
+			working = pruned
 			continue
 		}
 
@@ -226,168 +228,167 @@ func (s *Session) Send(ctx context.Context, r Renderer, cwd, pedido string) erro
 			rd.Pensando()
 		}
 		cli := s.dealer
-		teto := cli.MaxTokens()
-		if tetoExtra > 0 {
-			teto = tetoExtra
+		limit := cli.MaxTokens()
+		if extraLimit > 0 {
+			limit = extraLimit
 		}
 		if s.config.Janela > 0 {
-			// O teto não pode passar do que sobra na janela (como OpenCode e
-			// pi fazem), com piso para o modelo ainda conseguir responder.
-			teto = max(1024, min(teto, s.config.Janela-av.TokensEntrada))
+			// The limit cannot exceed what is left in the window (as OpenCode and
+			// pi do), with a floor so the model can still answer.
+			limit = max(1024, min(limit, s.config.Janela-ev.TokensEntrada))
 		}
-		if teto != cli.MaxTokens() {
-			cli = cli.ComTeto(teto)
+		if limit != cli.MaxTokens() {
+			cli = cli.ComTeto(limit)
 		}
-		rodada, err := cli.RodarContext(ctx, system, working, schemas)
+		round, err := cli.RodarContext(ctx, system, working, schemas)
 		if err != nil {
-			if estouraContexto(err) && s.config.Janela > 0 && !reativaFeita {
-				reativaFeita = true
+			if contextOverflow(err) && s.config.Janela > 0 && !reactiveDone {
+				reactiveDone = true
 				r.Guardrail(false)
-				s.registrar("guardrail", map[string]any{
+				s.record("guardrail", map[string]any{
 					"tipo":     "reativa",
-					"politica": politica(s.config.PoliticaContexto),
-					"motivo":   umaLinha(err.Error()),
+					"politica": policy(s.config.PoliticaContexto),
+					"motivo":   oneLine(err.Error()),
 				})
-				podado := podar(working, &piso, budget.ReservaOperacional)
-				if podado != nil {
-					compactou = true
-					working = podado
+				pruned := prune(working, &floor, budget.ReservaOperacional)
+				if pruned != nil {
+					compacted = true
+					working = pruned
 					continue
 				}
 			}
 			return err
 		}
-		if rr, ok := r.(RendererRaciocinio); ok && strings.TrimSpace(rodada.Raciocinio) != "" {
-			rr.Pensou(rodada.Raciocinio, rodada.DurRaciocinio)
+		if rr, ok := r.(RendererRaciocinio); ok && strings.TrimSpace(round.Raciocinio) != "" {
+			rr.Pensou(round.Raciocinio, round.DurRaciocinio)
 		}
-		if rodada.Usage != nil {
+		if round.Usage != nil {
 			if rd, ok := r.(RendererDetalhado); ok {
-				rd.Contexto(rodada.Usage.PromptTokens)
+				rd.Contexto(round.Usage.PromptTokens)
 			}
-			s.est.Calibrar(len(corpo), rodada.Usage.PromptTokens)
-			if rodada.Usage.PromptTokens > 0 {
-				usoPrompt += rodada.Usage.PromptTokens
+			s.est.Calibrar(len(body), round.Usage.PromptTokens)
+			if round.Usage.PromptTokens > 0 {
+				promptUsage += round.Usage.PromptTokens
 			}
-			usoSaida += rodada.Usage.OutputTokens
+			outputUsage += round.Usage.OutputTokens
 		}
-		if rodada.Cortada {
-			// Resposta cortada pelo teto de saída nunca é resposta final:
-			// nenhuma harness estudada (OpenCode, Codex, Claude Code, Gemini
-			// CLI, dsh, pi, Crush, Aider) encerra o turno calada nesse caso.
-			cortes++
+		if round.Cortada {
+			// A response cut at the output limit is never a final answer: no
+			// harness studied (OpenCode, Codex, Claude Code, Gemini CLI, dsh, pi,
+			// Crush, Aider) silently ends the turn in that case.
+			cuts++
 			rc, _ := r.(RendererCorte)
-			if cortes > maxCortes {
+			if cuts > maxCuts {
 				if rc != nil {
-					rc.Cortada(teto, true)
+					rc.Cortada(limit, true)
 				}
-				r.Tokens(usoPrompt, usoSaida, time.Since(inicio), compactou)
-				return fmt.Errorf("response cut at the output limit (%d tokens) %d times in a row; send \"continue\" to resume", teto, cortes)
+				r.Tokens(promptUsage, outputUsage, time.Since(start), compacted)
+				return fmt.Errorf("response cut at the output limit (%d tokens) %d times in a row; send \"continue\" to resume", limit, cuts)
 			}
 			if rc != nil {
-				rc.Cortada(teto, false)
+				rc.Cortada(limit, false)
 			}
-			if strings.TrimSpace(rodada.Texto) == "" && len(rodada.Tools) == 0 {
-				// Só pensou: tenta de novo com o dobro do teto.
-				tetoExtra = teto * 2
+			if strings.TrimSpace(round.Texto) == "" && len(round.Tools) == 0 {
+				// Only thought: retry with twice the limit.
+				extraLimit = limit * 2
 				continue
 			}
-			// Texto (ou tool call) pela metade: o texto fica, as tools não
-			// rodam (os argumentos podem estar cortados) e o modelo é avisado
-			// para continuar em partes menores.
-			if rodada.Texto != "" {
-				r.Resposta(rodada.Texto)
-				working = append(working, dealer.Mensagem{Role: "assistant", Conteudo: rodada.Texto, Usage: rodada.Usage})
-				s.registrar("assistant", map[string]any{"role": "assistant", "content": rodada.Texto})
+			// Half-written text (or tool call): the text stays, the tools do not
+			// run (their arguments may be truncated) and the model is told to
+			// continue in smaller pieces.
+			if round.Texto != "" {
+				r.Resposta(round.Texto)
+				working = append(working, dealer.Mensagem{Role: "assistant", Conteudo: round.Texto, Usage: round.Usage})
+				s.record("assistant", map[string]any{"role": "assistant", "content": round.Texto})
 			}
-			aviso := avisoCorte
-			if len(rodada.Tools) > 0 {
-				aviso += " " + avisoCorteTools
+			notice := cutNotice
+			if len(round.Tools) > 0 {
+				notice += " " + cutNoticeTools
 			}
-			working = append(working, dealer.Mensagem{Role: "user", Conteudo: aviso})
-			s.registrar("user_message", map[string]any{"role": "user", "content": aviso})
+			working = append(working, dealer.Mensagem{Role: "user", Conteudo: notice})
+			s.record("user_message", map[string]any{"role": "user", "content": notice})
 			continue
 		}
-		cortes, tetoExtra = 0, 0
-		if len(rodada.Tools) == 0 {
-			r.Resposta(rodada.Texto)
-			r.Tokens(usoPrompt, usoSaida, time.Since(inicio), compactou)
-			working = append(working, dealer.Mensagem{Role: "assistant", Conteudo: rodada.Texto, Usage: rodada.Usage})
+		cuts, extraLimit = 0, 0
+		if len(round.Tools) == 0 {
+			r.Resposta(round.Texto)
+			r.Tokens(promptUsage, outputUsage, time.Since(start), compacted)
+			working = append(working, dealer.Mensagem{Role: "assistant", Conteudo: round.Texto, Usage: round.Usage})
 			s.history = working
-			// Texto confirmado entra no log DEPOIS da confirmação do transcript:
-			// uma rodada que falhou não deixa rastro de resposta que não existiu.
-			assistente := map[string]any{"role": "assistant", "content": rodada.Texto}
-			if rodada.Usage != nil {
-				assistente["usage"] = map[string]any{
-					"prompt_tokens": rodada.Usage.PromptTokens,
-					"output_tokens": rodada.Usage.OutputTokens,
+			// Committed text enters the log AFTER the transcript commit: a failed
+			// round leaves no trace of a response that never existed.
+			assistant := map[string]any{"role": "assistant", "content": round.Texto}
+			if round.Usage != nil {
+				assistant["usage"] = map[string]any{
+					"prompt_tokens": round.Usage.PromptTokens,
+					"output_tokens": round.Usage.OutputTokens,
 				}
 			}
-			s.registrar("assistant", assistente)
+			s.record("assistant", assistant)
 			return nil
 		}
 
-		// Monta assistant tool-call + resultados numa transação separada; só
-		// adiciona à working quando todas as execuções terminaram.
-		turn := make([]dealer.Mensagem, 0, len(rodada.Tools)+1)
-		if rodada.Texto != "" {
-			turn = append(turn, dealer.Mensagem{Role: "assistant", Conteudo: rodada.Texto, Usage: rodada.Usage})
+		// Build the assistant tool-call + results in a separate transaction; only
+		// add them to working when every execution has finished.
+		turn := make([]dealer.Mensagem, 0, len(round.Tools)+1)
+		if round.Texto != "" {
+			turn = append(turn, dealer.Mensagem{Role: "assistant", Conteudo: round.Texto, Usage: round.Usage})
 		}
-		results := make([]dealer.Mensagem, 0, len(rodada.Tools))
-		for _, call := range rodada.Tools {
+		results := make([]dealer.Mensagem, 0, len(round.Tools))
+		for _, call := range round.Tools {
 			turn = append(turn, dealer.Mensagem{Role: "tool_call", ToolID: call.ID, ToolName: call.Nome, ToolArgs: call.Args})
-			// A chamada entra no log aqui, antes de executar: se a execução
-			// travar ou estourar, o log ainda mostra o que foi pedido e com
-			// quais argumentos.
-			s.registrar("tool_call", map[string]any{
+			// The call enters the log here, before executing: if execution hangs
+			// or blows up, the log still shows what was requested and with which
+			// arguments.
+			s.record("tool_call", map[string]any{
 				"role":      "tool_call",
 				"tool_id":   call.ID,
 				"tool_name": call.Nome,
 				"tool_args": call.Args,
 			})
 		}
-		for _, call := range rodada.Tools {
+		for _, call := range round.Tools {
 			if rd, ok := r.(RendererDetalhado); ok {
 				rd.ToolInicio(call.Nome, call.Args)
 			}
-			inicio := time.Now()
-			saida, exeErr := ferramenta(ctx, lista, cwd, call)
-			dur := time.Since(inicio)
-			isErr := exeErr != nil
+			toolStart := time.Now()
+			output, execErr := runTool(ctx, list, cwd, call)
+			dur := time.Since(toolStart)
+			isErr := execErr != nil
 			if isErr {
-				saida = "erro: " + exeErr.Error()
+				output = "error: " + execErr.Error()
 			}
-			results = append(results, dealer.Mensagem{Role: "tool_result", Conteudo: saida, ToolID: call.ID, ToolName: call.Nome, IsErro: isErr})
-			// Só grava o resultado quando o turno foi confirmado (a transação
-			// fecha logo abaixo, com working recebendo turn+results). Saídas
-			// acima de limiteBlob viram blob + preview.
-			s.registrarResultado(call.ID, call.Nome, saida, isErr)
+			results = append(results, dealer.Mensagem{Role: "tool_result", Conteudo: output, ToolID: call.ID, ToolName: call.Nome, IsErro: isErr})
+			// Outputs above blobThreshold become blob + preview.
+			s.recordResult(call.ID, call.Nome, output, isErr)
 			r.Tool(call.Nome, dur, isErr)
-			r.Eco(resultadoSaida(saida))
+			r.Eco(echoExcerpt(output))
 		}
 		working = append(working, turn...)
 		working = append(working, results...)
-		if estado := estadoCompactado(rodada.Tools, results); estado != "" {
-			antes := bytesHistorico(working)
-			working = compactarHistorico(working, estado)
-			piso = 0 // o histórico mudou de forma; a poda recomeça do início
-			compactou = true
+		if state := compactedState(round.Tools, results); state != "" {
+			before := historyBytes(working)
+			working = compactHistory(working, state)
+			floor = 0 // the history changed shape; pruning restarts from the beginning
+			compacted = true
 			r.Guardrail(true)
-			s.registrar("compactacao", map[string]any{
+			// Kind and keys kept as originally persisted (see persist.go).
+			s.record(eventCompaction, map[string]any{
 				"politica":     PoliticaAgente,
-				"ciclo":        ciclo,
-				"bytes_antes":  antes,
-				"bytes_depois": bytesHistorico(working),
-				"estado_bytes": len(estado),
-				"estado":       estado,
+				"ciclo":        cycle,
+				"bytes_antes":  before,
+				"bytes_depois": historyBytes(working),
+				"estado_bytes": len(state),
+				"estado":       state,
 			})
 		}
 	}
 	return fmt.Errorf("turn exceeded 64 cycles; configurable technical limit (not a permission check)")
 }
 
-func toolSchemas(lista []tools.Spec) []map[string]any {
-	schemas := make([]map[string]any, 0, len(lista))
-	for _, s := range lista {
+func toolSchemas(list []tools.Spec) []map[string]any {
+	schemas := make([]map[string]any, 0, len(list))
+	for _, s := range list {
 		schemas = append(schemas, map[string]any{
 			"type":     "function",
 			"function": map[string]any{"name": s.Name, "description": s.Description, "parameters": s.Schema},
@@ -396,23 +397,22 @@ func toolSchemas(lista []tools.Spec) []map[string]any {
 	return schemas
 }
 
-func ferramenta(ctx context.Context, lista []tools.Spec, cwd string, call dealer.ToolChamada) (string, error) {
-	for _, s := range lista {
+func runTool(ctx context.Context, list []tools.Spec, cwd string, call dealer.ToolChamada) (string, error) {
+	for _, s := range list {
 		if s.Name == call.Nome {
 			return s.Exec(ctx, cwd, json.RawMessage(call.Args))
 		}
 	}
-	return "", fmt.Errorf("tool desconhecida: %q (checar o nome exato)", call.Nome)
+	return "", fmt.Errorf("unknown tool: %q (check the exact name)", call.Nome)
 }
 
-// maxCortes: quantos cortes seguidos pelo teto de saída o turno tolera antes
-// de parar e avisar (OpenCode usa 3).
-const maxCortes = 3
+// maxCuts: how many consecutive cuts at the output limit the turn tolerates
+// before stopping and reporting (OpenCode uses 3).
+const maxCuts = 3
 
-// Mensagens sintéticas de continuação depois de um corte. O prefixo
-// "[output limit]" deixa a tela reconhecê-las e não desenhá-las como fala do
-// usuário.
+// Synthetic continuation messages after a cut. The "[output limit]" prefix
+// lets the screen recognize them and not draw them as user speech.
 const (
-	avisoCorte      = "[output limit] Your last response hit the output token limit and was cut off. Continue exactly where you stopped, without repeating what you already wrote, and break the remaining work into smaller pieces."
-	avisoCorteTools = "Tool calls in the cut response were NOT executed because their arguments may be incomplete; call them again, with smaller arguments if needed."
+	cutNotice      = "[output limit] Your last response hit the output token limit and was cut off. Continue exactly where you stopped, without repeating what you already wrote, and break the remaining work into smaller pieces."
+	cutNoticeTools = "Tool calls in the cut response were NOT executed because their arguments may be incomplete; call them again, with smaller arguments if needed."
 )
