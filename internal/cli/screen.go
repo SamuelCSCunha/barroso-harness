@@ -14,6 +14,7 @@ package cli
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -36,6 +37,10 @@ const (
 	escNormal     = "\033[?1049l"
 	escMouseOn    = "\033[?1000h\033[?1006h" // mouse wheel arrives as SGR (\033[<64;x;yM)
 	escMouseOff   = "\033[?1006l\033[?1000l"
+	escPasteOn    = "\033[?2004h" // bracketed paste: a paste arrives as \033[200~...\033[201~
+	escPasteOff   = "\033[?2004l"
+	pasteStart    = "\033[200~"
+	pasteEnd      = "\033[201~"
 	escSyncStart  = "\033[?2026h" // paints the whole frame at once (no flicker)
 	escSyncEnd    = "\033[?2026l"
 	escClear      = "\033[2J"
@@ -75,6 +80,15 @@ type screen struct {
 	masked  bool // the typed answer is a secret (API key)
 	busy    bool // model turn in progress
 	notice  string
+	// noticeAt is when notice was set; it clears after 2s.
+	noticeAt time.Time
+	// images pasted into the current input ([Image N]); imageCount numbers
+	// them per message.
+	images     []pastedImage
+	imageCount int
+	// sentImages holds the images of lines already sent and not yet taken by
+	// the REPL, keyed by the trimmed line (see takeImages).
+	sentImages map[string][][]string
 	// lastTabTitle is the last title sent to the tab (resent only on change).
 	lastTabTitle string
 	spin         chan struct{}
@@ -82,15 +96,33 @@ type screen struct {
 }
 
 func newScreen(out io.Writer) *screen {
-	fmt.Fprint(out, escAlt+escMouseOn+escClear)
+	fmt.Fprint(out, escAlt+escMouseOn+escPasteOn+escClear)
 	return &screen{out: out}
+}
+
+// takeImages returns (and forgets) the images sent with line: the REPL reads
+// lines from a pipe, so the attachments travel beside it, keyed by the text.
+func (t *screen) takeImages(line string) []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	key := strings.TrimSpace(line)
+	q := t.sentImages[key]
+	if len(q) == 0 {
+		return nil
+	}
+	if len(q) == 1 {
+		delete(t.sentImages, key)
+	} else {
+		t.sentImages[key] = q[1:]
+	}
+	return q[0]
 }
 
 func (t *screen) shutdown() {
 	t.stopSpin()
 	// The tab goes back to a neutral title: the shell (cmd/PowerShell) does not
 	// rewrite it, and the session name would stick to the tab after bh exits.
-	fmt.Fprint(t.out, escMouseOff+escShowCursor+escNormal+tabTitle(""))
+	fmt.Fprint(t.out, escPasteOff+escMouseOff+escShowCursor+escNormal+tabTitle(""))
 }
 
 // tabTitle is the OSC 0 sequence that sets the terminal tab/window name.
@@ -137,7 +169,7 @@ func (t *screen) Usuario(text string) {
 	}
 	t.lines = append(t.lines, blank)
 	for _, l := range strings.Split(wrap(text, avail-5), "\n") {
-		t.lines = append(t.lines, withBg(bluef("▌")+"  "+color(colorText, l), bgUser, avail))
+		t.lines = append(t.lines, withBg(bluef("▌")+"  "+highlightImages(l, colorText), bgUser, avail))
 	}
 	t.lines = append(t.lines, blank, "")
 	t.trim()
@@ -378,6 +410,9 @@ func (t *screen) drawLocked() {
 	blankBox := "  " + withBg(bluef("▌"), bgBox, boxWidth)
 	line(h-5-grow, blankBox)
 	for i, l := range boxLines {
+		if !t.masked {
+			l = highlightImages(l, "") // pasted [Image N] in yellow
+		}
 		line(h-4-grow+i, "  "+withBg(bluef("▌")+"  "+l, bgBox, boxWidth))
 	}
 	line(h-3, blankBox)
@@ -515,6 +550,10 @@ func readKeys(r *bufio.Reader, ch chan<- keyEvent) {
 			ch <- keyEvent{action: "ctrl+l"}
 		case b == 21:
 			ch <- keyEvent{action: "ctrl+u"}
+		case b == 22:
+			// raw Ctrl+V (terminals without bracketed paste, or a keybinding
+			// that sends it): bh reads the clipboard itself.
+			ch <- keyEvent{action: "pasteimage"}
 		case b == 27:
 			if r.Buffered() == 0 {
 				ch <- keyEvent{action: "esc"}
@@ -547,6 +586,33 @@ func readKeys(r *bufio.Reader, ch chan<- keyEvent) {
 					ch <- keyEvent{action: "rodacima"}
 				case "65":
 					ch <- keyEvent{action: "rodabaixo"}
+				}
+			case '2':
+				// "\033[200~" opens a bracketed paste; other "2…" sequences
+				// (Insert, F9…) are discarded up to their final byte.
+				params := []byte{f}
+				for {
+					x, err := r.ReadByte()
+					if err != nil {
+						return
+					}
+					if x >= 0x40 && x <= 0x7e {
+						if x == '~' && string(params) == "200" {
+							content, ok := readPaste(r)
+							if !ok {
+								return
+							}
+							if content == "" {
+								// Windows Terminal < 1.25: an image-only clipboard
+								// arrives as an empty paste.
+								ch <- keyEvent{action: "pasteimage"}
+							} else {
+								ch <- keyEvent{action: "paste", text: content}
+							}
+						}
+						break
+					}
+					params = append(params, x)
 				}
 			case '5', '6':
 				_, _ = r.ReadByte() // '~'
@@ -582,6 +648,77 @@ func readKeys(r *bufio.Reader, ch chan<- keyEvent) {
 			ch <- keyEvent{text: string(buf)}
 		case b >= 32 || b == '\t':
 			ch <- keyEvent{text: string(rune(b))}
+		}
+	}
+}
+
+// pasteResult is the outcome of reading the clipboard for image n.
+type pasteResult struct {
+	n          int
+	path, text string
+	err        error
+}
+
+// applyPaste puts a clipboard read into the input: an image becomes the
+// [Image N] placeholder, text goes in as typed, a failure becomes a footer
+// notice. Called with t.mu held.
+func (t *screen) applyPaste(p pasteResult) {
+	switch {
+	case p.err != nil:
+		if errors.Is(p.err, errNoClipboard) {
+			t.notice = "nothing to paste"
+		} else {
+			t.notice = "paste failed: " + oneLineErr(p.err)
+		}
+		t.noticeAt = time.Now()
+	case p.path != "":
+		if p.n <= t.imageCount {
+			p.n = t.imageCount + 1 // the input was sent/cleared meanwhile
+		}
+		t.imageCount = p.n
+		t.images = append(t.images, pastedImage{n: p.n, path: p.path})
+		t.input += imageLabel(p.n)
+	default:
+		t.input += pasteText(p.text)
+	}
+}
+
+// queueImages moves the pasted images still referenced by line to the queue
+// the REPL drains with takeImages, and resets the per-message numbering.
+// Called with t.mu held.
+func (t *screen) queueImages(line string) {
+	imgs := selectImages(line, t.images)
+	t.images, t.imageCount = nil, 0
+	if len(imgs) == 0 {
+		return
+	}
+	if t.sentImages == nil {
+		t.sentImages = map[string][][]string{}
+	}
+	key := strings.TrimSpace(line)
+	t.sentImages[key] = append(t.sentImages[key], imgs)
+}
+
+func oneLineErr(err error) string {
+	s := strings.Join(strings.Fields(err.Error()), " ")
+	if r := []rune(s); len(r) > 60 {
+		s = string(r[:60]) + "…"
+	}
+	return s
+}
+
+// readPaste reads a bracketed paste's content up to "\033[201~". ok is false
+// when the input ends before the closing sequence.
+func readPaste(r *bufio.Reader) (string, bool) {
+	var buf []byte
+	for {
+		x, err := r.ReadByte()
+		if err != nil {
+			return "", false
+		}
+		buf = append(buf, x)
+		if x == '~' && len(buf) >= len(pasteEnd) && string(buf[len(buf)-len(pasteEnd):]) == pasteEnd {
+			return string(buf[:len(buf)-len(pasteEnd)]), true
 		}
 	}
 }
@@ -684,12 +821,19 @@ func runScreen(io IO) int {
 		t.drawLocked()
 		t.mu.Unlock()
 	}
+	// The clipboard is read off the key loop (PowerShell takes a second to
+	// start); the result comes back through pasted.
+	pasted := make(chan pasteResult, 4)
+	pasting := false
 
 	for {
 		select {
 		case c := <-exitCode:
 			_ = pw.Close()
 			return c
+		case p := <-pasted:
+			pasting = false
+			edit(func() { t.applyPaste(p) })
 		case s := <-injected:
 			// With a command prompt awaiting an answer (e.g. /model), the synthetic
 			// line would be read as the answer: hold it until the prompt closes.
@@ -710,7 +854,7 @@ func runScreen(io IO) int {
 				output <- subagentsLine
 			}
 			edit(func() {
-				if t.notice != "" && time.Since(lastCtrlC) > 2*time.Second {
+				if t.notice != "" && time.Since(t.noticeAt) > 2*time.Second {
 					t.notice = ""
 				}
 				// Reassert the tab name: child processes run through cmd.exe
@@ -730,6 +874,20 @@ func runScreen(io IO) int {
 			switch k.action {
 			case "":
 				edit(func() { t.input += k.text })
+			case "paste":
+				edit(func() { t.input += pasteText(k.text) })
+			case "pasteimage":
+				if pasting {
+					continue
+				}
+				pasting = true
+				t.mu.Lock()
+				n := t.imageCount + 1
+				t.mu.Unlock()
+				go func() {
+					path, text, err := pasteClipboard(n)
+					pasted <- pasteResult{n: n, path: path, text: text, err: err}
+				}()
 			case "backspace":
 				edit(func() {
 					if _, n := utf8.DecodeLastRuneInString(t.input); n > 0 {
@@ -760,6 +918,9 @@ func runScreen(io IO) int {
 				}
 				history = append(history, l)
 				histPos = -1
+				t.mu.Lock()
+				t.queueImages(l)
+				t.mu.Unlock()
 				send(l)
 			case "cima", "baixo":
 				if len(history) == 0 {
@@ -818,7 +979,7 @@ func runScreen(io IO) int {
 					continue
 				}
 				lastCtrlC = time.Now()
-				edit(func() { t.notice = "press ctrl+c again to exit" })
+				edit(func() { t.notice, t.noticeAt = "press ctrl+c again to exit", lastCtrlC })
 			case "ctrl+d":
 				send("/exit")
 			}

@@ -5,6 +5,7 @@ package dealer
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -286,5 +287,63 @@ func TestRequestsSendUserAgent(t *testing.T) {
 
 	if catalogUA == "Go-http-client/1.1" || chatUA == "Go-http-client/1.1" {
 		t.Fatal("request went out with Go's default User-Agent — it would break on WAFs again")
+	}
+}
+
+// ── multimodal user content ──────────────────────────────────────────────
+
+// A user message with an image becomes content parts: the text (with an
+// "[Image N: path]" line) and the image as a base64 data URL. A missing file
+// is dropped with a note instead of failing.
+func TestBodyUserMessageWithImage(t *testing.T) {
+	dir := t.TempDir()
+	img := dir + string(os.PathSeparator) + "shot.png"
+	png := []byte("\x89PNG\r\n\x1a\nfake")
+	if err := os.WriteFile(img, png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	missing := dir + string(os.PathSeparator) + "gone.png"
+	c := Novo(Config{BaseURL: "https://x/v1", Model: "m"})
+	b, err := c.Corpo("sys", []Mensagem{{Role: "user", Conteudo: "what is [Image 1] vs [Image 2]?", Images: []string{img, missing}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body struct {
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(b, &body); err != nil {
+		t.Fatal(err)
+	}
+	var parts []struct {
+		Type     string `json:"type"`
+		Text     string `json:"text"`
+		ImageURL *struct {
+			URL string `json:"url"`
+		} `json:"image_url"`
+	}
+	if err := json.Unmarshal(body.Messages[1].Content, &parts); err != nil {
+		t.Fatalf("user content is not parts: %s", body.Messages[1].Content)
+	}
+	if len(parts) != 2 || parts[0].Type != "text" || parts[1].Type != "image_url" {
+		t.Fatalf("parts = %+v", parts)
+	}
+	if !strings.Contains(parts[0].Text, "[Image 1: "+img+"]") || !strings.Contains(parts[0].Text, "[Image 2: "+missing+" (file missing") {
+		t.Fatalf("text = %q", parts[0].Text)
+	}
+	want := "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)
+	if parts[1].ImageURL == nil || parts[1].ImageURL.URL != want {
+		t.Fatalf("image url = %+v", parts[1].ImageURL)
+	}
+	// The budget estimate does not carry the image bytes; plain messages stay strings.
+	e, _ := c.CorpoEstimativa("sys", []Mensagem{{Role: "user", Conteudo: "x", Images: []string{img}}}, nil)
+	if strings.Contains(string(e), base64.StdEncoding.EncodeToString(png)) {
+		t.Fatal("estimate body should not inline the image")
+	}
+	p, _ := c.Corpo("sys", []Mensagem{{Role: "user", Conteudo: "plain"}}, nil)
+	if !strings.Contains(string(p), `"content":"plain"`) {
+		t.Fatalf("plain user message changed: %s", p)
 	}
 }

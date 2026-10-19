@@ -662,7 +662,12 @@ func repl(io IO, cfg *config.Config) {
 				tui = newTUITurn(io.Out, cfg)
 				rend = tui
 			}
-			errTurn := sess.Send(ctx, rend, cwd, request)
+			// Images pasted into the full screen ([Image N]) travel beside the line.
+			var images []string
+			if io.screen != nil && subNotice == "" {
+				images = io.screen.takeImages(line)
+			}
+			errTurn := sess.SendWithImages(ctx, rend, cwd, request, images)
 			if tt != nil {
 				io.screen.stopSpin()
 				io.screen.Ocupado(false)

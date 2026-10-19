@@ -162,6 +162,8 @@ In a real terminal, `bh` opens full screen in the OpenCode layout: conversation 
 
 Keys: `Enter` sends · `↑`/`↓` history of what you typed · mouse wheel and `PgUp`/`PgDn` scroll the conversation · `Esc` or `Ctrl+C` interrupts the response in progress · typing and sending during a response interrupts the turn and sends the new message · `Ctrl+C` twice exits · `Ctrl+U` clears the line · `Ctrl+L` redraws.
 
+`Ctrl+V` with a screenshot in the clipboard inserts a yellow `[Image N]` placeholder; the image (saved under `~/.barroso-harness/attachments/`) is sent with the message, so the model must support vision (images whose placeholder you delete are not sent).
+
 The session name appears in the terminal tab (`BH | <name>`) and in the panel: it is the first message, or whatever you set with `/rename new name`.
 
 With the mouse wheel captured, selecting text to copy is `Shift` + drag (Windows Terminal and most terminals).
