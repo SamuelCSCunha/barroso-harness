@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	goruntime "runtime"
 	"strings"
 	"sync"
 	"time"
@@ -209,12 +210,7 @@ func (s *Session) SendWithImages(ctx context.Context, r Renderer, cwd, prompt st
 		// its tool.
 		list := s.toolCatalog(cwd)
 		schemas := toolSchemas(list)
-		system := "You are the Barroso Harness agent, running locally on the user's machine in YOLO mode: tools execute without asking for approval.\n" +
-			"Use tools to act (terminal, files) and TEXT to talk to the user. When the task is done, reply with plain text.\n"
-		if baroMD != "" {
-			system += "\n## BARROSO.md (system instructions)\n" + baroMD
-		}
-		system += "\n## Environment\n- cwd: " + cwd + "\n- platform: use tools to find out; do not assume a shell.\n"
+		system := systemPrompt(cwd, baroMD, hasTool(list, "task_spawn"), time.Now())
 
 		// Measured without the image bytes: see dealer.CorpoEstimativa.
 		body, err := s.dealer.CorpoEstimativa(system, working, schemas)
@@ -359,22 +355,8 @@ func (s *Session) SendWithImages(ctx context.Context, r Renderer, cwd, prompt st
 				"tool_args": call.Args,
 			})
 		}
-		for _, call := range round.Tools {
-			if rd, ok := r.(RendererDetalhado); ok {
-				rd.ToolInicio(call.Nome, call.Args)
-			}
-			toolStart := time.Now()
-			output, execErr := runTool(ctx, list, cwd, call)
-			dur := time.Since(toolStart)
-			isErr := execErr != nil
-			if isErr {
-				output = "error: " + execErr.Error()
-			}
-			results = append(results, dealer.Mensagem{Role: "tool_result", Conteudo: output, ToolID: call.ID, ToolName: call.Nome, IsErro: isErr})
-			// Outputs above blobThreshold become blob + preview.
-			s.recordResult(call.ID, call.Nome, output, isErr)
-			r.Tool(call.Nome, dur, isErr)
-			r.Eco(echoExcerpt(output))
+		for _, out := range s.runRound(ctx, r, list, cwd, round.Tools) {
+			results = append(results, dealer.Mensagem{Role: "tool_result", Conteudo: out.output, ToolID: out.call.ID, ToolName: out.call.Nome, IsErro: out.isErr})
 		}
 		working = append(working, turn...)
 		working = append(working, results...)
@@ -406,6 +388,157 @@ func toolSchemas(list []tools.Spec) []map[string]any {
 		})
 	}
 	return schemas
+}
+
+// toolOutcome is one executed call of a round.
+type toolOutcome struct {
+	call   dealer.ToolChamada
+	output string
+	isErr  bool
+	dur    time.Duration
+}
+
+// sequentialTools mutate the catalog or the session itself; a round that
+// contains any of them runs one call at a time, in order.
+var sequentialTools = map[string]bool{
+	"mcp_add":      true,
+	"mcp_remove":   true,
+	"skill_create": true,
+	"skill_remove": true,
+	"ctx_compact":  true,
+	"ctx_write":    true,
+	"ctx_append":   true,
+	"task_spawn":   true,
+}
+
+// runRound executes the round's tool calls and returns their outcomes in the
+// ORIGINAL order. Independent calls run concurrently; the renderer and the log
+// (recordResult) are only touched from this goroutine, in call order: every
+// ToolInicio is announced up front, and each call's recordResult/Tool/Eco is
+// emitted as soon as it and all earlier calls are done. Cancellation reaches
+// the tools through ctx; waiting for every goroutine keeps the transcript free
+// of calls without results.
+func (s *Session) runRound(ctx context.Context, r Renderer, list []tools.Spec, cwd string, calls []dealer.ToolChamada) []toolOutcome {
+	outcomes := make([]toolOutcome, len(calls))
+	run := func(i int) {
+		call := calls[i]
+		start := time.Now()
+		output, execErr := runTool(ctx, list, cwd, call)
+		o := toolOutcome{call: call, output: output, dur: time.Since(start)}
+		if execErr != nil {
+			o.isErr = true
+			o.output = "error: " + execErr.Error()
+		}
+		outcomes[i] = o
+	}
+	report := func(i int) {
+		o := outcomes[i]
+		// Outputs above blobThreshold become blob + preview.
+		s.recordResult(o.call.ID, o.call.Nome, o.output, o.isErr)
+		r.Tool(o.call.Nome, o.dur, o.isErr)
+		r.Eco(echoExcerpt(o.output))
+	}
+	rd, detailed := r.(RendererDetalhado)
+
+	parallel := len(calls) > 1
+	for _, c := range calls {
+		if sequentialTools[c.Nome] {
+			parallel = false
+			break
+		}
+	}
+	if !parallel {
+		for i, c := range calls {
+			if detailed {
+				rd.ToolInicio(c.Nome, c.Args)
+			}
+			run(i)
+			report(i)
+		}
+		return outcomes
+	}
+
+	done := make([]chan struct{}, len(calls))
+	var wg sync.WaitGroup
+	for i, c := range calls {
+		if detailed {
+			rd.ToolInicio(c.Nome, c.Args)
+		}
+		done[i] = make(chan struct{})
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			defer close(done[i])
+			run(i)
+		}(i)
+	}
+	for i := range calls {
+		<-done[i]
+		report(i)
+	}
+	wg.Wait()
+	return outcomes
+}
+
+func hasTool(list []tools.Spec, name string) bool {
+	for _, s := range list {
+		if s.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// systemPrompt builds the turn's system message: identity, real environment
+// facts, tool policy and working style, then BARROSO.md.
+func systemPrompt(cwd, baroMD string, canSpawn bool, now time.Time) string {
+	var sb strings.Builder
+	sb.WriteString("You are the Barroso Harness agent, a coding agent running locally on the user's machine. " +
+		"Your tools execute immediately, without asking for approval (YOLO mode): act decisively, but think before destructive actions. " +
+		"You help with software engineering tasks: reading and changing code, running builds and tests, using git, investigating problems.\n")
+
+	sb.WriteString("\n## Environment\n")
+	osName := goruntime.GOOS
+	switch osName {
+	case "windows":
+		osName = "Windows"
+	case "darwin":
+		osName = "macOS"
+	case "linux":
+		osName = "Linux"
+	}
+	fmt.Fprintf(&sb, "- OS: %s (%s/%s)\n", osName, goruntime.GOOS, goruntime.GOARCH)
+	fmt.Fprintf(&sb, "- Shell used by terminal_run: %s\n", tools.ShellName())
+	fmt.Fprintf(&sb, "- Working directory (cwd): %s\n", cwd)
+	fmt.Fprintf(&sb, "- Today's date: %s\n", now.Format("2006-01-02"))
+	if goruntime.GOOS == "windows" {
+		sb.WriteString("- This is Windows: do not use bash/POSIX syntax or tools (grep, sed, ls, cat, rm -rf) in terminal_run. " +
+			"File tools accept both backslashes and forward slashes in paths.\n")
+	}
+
+	sb.WriteString("\n## Tool policy\n" +
+		"- Find things with grep (file contents) and glob (file names). Do not search through terminal_run (findstr, git grep, dir /s, find).\n" +
+		"- Read files with file_read; read whole files when reasonably sized rather than many small windows.\n" +
+		"- Change existing files with edit (exact string replacement of only the changed region). Use file_write only for new files or full rewrites.\n" +
+		"- Use terminal_run for builds, tests, git, package managers and running programs.\n" +
+		"- PARALLEL CALLS: when several tool calls are independent (reading several files, several searches, a build plus a git status), " +
+		"ISSUE THEM ALL IN THE SAME RESPONSE: they run in parallel. Only chain calls across responses when one needs the result of another.\n" +
+		"- If a call fails, read the error and adapt. Never repeat a failing command unchanged.\n" +
+		"- Avoid exploratory loops: decide what you need, gather it in as few rounds as possible, then act.\n")
+	if canSpawn {
+		sb.WriteString("- task_spawn is available: use it for independent work that can proceed in parallel, at most once per turn, and end your turn right after spawning.\n")
+	}
+
+	sb.WriteString("\n## Working style\n" +
+		"- Be direct. Do the task end to end instead of describing what you would do; ask the user only when truly blocked or when the request is ambiguous in a way that matters.\n" +
+		"- Follow the conventions of the existing code (style, libraries, structure) and keep changes focused on the request.\n" +
+		"- After changing code, verify it: build and run the relevant tests, and fix what you broke.\n" +
+		"- Use tools to act and TEXT to talk to the user. When the task is done, reply with a short plain-text answer: what changed and what the user must know. No long recaps.\n")
+
+	if baroMD != "" {
+		sb.WriteString("\n## BARROSO.md (system instructions)\n" + baroMD)
+	}
+	return sb.String()
 }
 
 func runTool(ctx context.Context, list []tools.Spec, cwd string, call dealer.ToolChamada) (string, error) {

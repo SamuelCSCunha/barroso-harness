@@ -8,6 +8,7 @@ An agent harness written in **Go** from scratch: a single binary, no third-party
 - **`BARROSO.md`** becomes the system instruction: from the project directory (and its parents) and/or the global one at `~/.barroso-harness/BARROSO.md`.
 - **Context with a guardrail**: a budget per model window, an estimator calibrated by the real `usage`, and monotonic proactive/reactive compaction. Each turn's transcript is only committed after a complete round.
 - **Persistent sessions** in append-only SQLite (`sessions.db`), with `/resume` and blobs for large tool results.
+- **Built-in tools**: `terminal_run` (`cmd /C` on Windows, `bash -c` elsewhere), `file_read`, `file_write`, `file_append`, `file_copy`, `list_dir`, `grep` (pure-Go regex content search), `glob` (`**` file patterns, newest first) and `edit` (exact string replacement, CRLF-aware). Independent tool calls of one round run in parallel; rounds that touch the catalog or session (`mcp_add`, `ctx_write`, `task_spawn`, ...) run sequentially.
 - **Subsystems**: MCP (stdio and streamable HTTP), skills (`SKILL.md`), `web_fetch`/`web_search`, async sub-agents (`task_spawn`/`task_status`/`task_result`, with no recursive delegation) and **ACP** (`bh -acp`) for editors.
 - **Self-update from the CLI**: `/update` downloads, verifies the SHA256 and installs the newest release.
 - **Installation and recipes**: https://harness.barroso.tec.br

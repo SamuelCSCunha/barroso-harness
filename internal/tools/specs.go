@@ -28,6 +28,9 @@ func SpecsBuiltins() []Spec {
 		specFileAppend(),
 		specFileCopy(),
 		specListDir(),
+		specGrep(),
+		specGlob(),
+		specEdit(),
 		specCtxRead(),
 	}
 }
@@ -69,6 +72,9 @@ func specTerminalRun() Spec {
 	return Spec{
 		Name: "terminal_run",
 		Description: "Runs a command in the local machine's terminal (YOLO mode, no approval prompt). " +
+			shellNote() +
+			" Use it for builds, tests, git, package managers and running programs. Do NOT use it to search or edit files: " +
+			"prefer grep (content search), glob (find files), file_read (read) and edit (change) — they are faster and need no quoting. " +
 			"Returns merged stdout+stderr with exit_code. No timeout by default: the command runs until it ends " +
 			"(the user can interrupt the turn); pass timeout_secs only if you want one.",
 		Schema: map[string]any{
@@ -124,12 +130,31 @@ func specTerminalRun() Spec {
 	}
 }
 
+// shellNote describes the shell terminal_run uses on this platform.
+func shellNote() string {
+	if runtime.GOOS == "windows" {
+		return "On this machine (Windows) the command runs via `cmd /C`: use cmd.exe syntax (dir, type, set, &&, double quotes), " +
+			"or `powershell -NoProfile -Command \"...\"` for PowerShell; POSIX tools like grep/sed/ls may not exist."
+	}
+	return "The command runs via `bash -c`."
+}
+
+// ShellName is the shell terminal_run uses on this platform, for the system prompt.
+func ShellName() string {
+	if runtime.GOOS == "windows" {
+		return "cmd.exe (via `cmd /C`; PowerShell available as `powershell -NoProfile -Command ...`)"
+	}
+	return "bash (via `bash -c`)"
+}
+
 // ── file_read ────────────────────────────────────────────────────────────
 
 func specFileRead() Spec {
 	return Spec{
-		Name:        "file_read",
-		Description: "Reads a file with line numbers. For large files, read windows: start (first line, 1-based) + limit; the result states the delivered range and the total.",
+		Name: "file_read",
+		Description: "Reads a file with line numbers (`N: text`). Read the WHOLE file when it is reasonably sized (a few thousand lines) " +
+			"instead of many tiny windows; for very large files use start (first line, 1-based) + limit, e.g. around a line found with grep. " +
+			"The result states the delivered range and the total line count. The `N: ` prefix is not part of the file content.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -187,7 +212,7 @@ func specFileRead() Spec {
 func specFileWrite() Spec {
 	return Spec{
 		Name:        "file_write",
-		Description: "Writes (overwrites) a file. Creates any missing parent directories.",
+		Description: "Writes (overwrites) a whole file, creating missing parent directories. Use it for NEW files or complete rewrites only; to change part of an existing file use edit.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
