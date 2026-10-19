@@ -510,6 +510,12 @@ func repl(io IO, cfg *config.Config) {
 				continue
 			}
 			ultimoContexto = sess.UltimoContexto()
+			if io.tela != nil {
+				// Tela cheia: a conversa retomada volta para a tela, não só
+				// para o modelo.
+				io.tela.Limpar()
+				reproduzirHistorico(io.tela, sess.History())
+			}
 			okFmt(io.Out, "session "+sess.ID()+" resumed")
 		case "/save":
 			if loja == nil {

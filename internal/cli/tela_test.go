@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ruanbarroso/barroso-harness/internal/dealer"
 )
 
 // O nome da sessão vai para a aba do terminal (OSC 0), sem controles que
@@ -103,5 +105,38 @@ func TestQuebrarEntrada(t *testing.T) {
 	}
 	if got := quebrarEntrada("", 10); len(got) != 1 || got[0] != "" {
 		t.Fatalf("vazio = %q", got)
+	}
+}
+
+// /resume na tela cheia redesenha a conversa: pergunta, tool junto do seu
+// resultado e resposta.
+func TestReproduzirHistorico(t *testing.T) {
+	antes := tamanhoTela
+	tamanhoTela = func() (int, int) { return 140, 40 }
+	defer func() { tamanhoTela = antes }()
+	var sb strings.Builder
+	tl := &tela{out: &sb}
+	tl.Estado(estadoPainel{modelo: "m"}) // mede a tela, como no REPL
+	reproduzirHistorico(tl, []dealer.Mensagem{
+		{Role: "user", Conteudo: "liste os arquivos"},
+		{Role: "assistant", Conteudo: ""},
+		{Role: "tool_call", ToolID: "1", ToolName: "terminal_run", ToolArgs: `{"command":"dir"}`},
+		{Role: "tool_call", ToolID: "2", ToolName: "file_read", ToolArgs: `{"path":"a.go"}`},
+		{Role: "tool_result", ToolID: "1", ToolName: "terminal_run", Conteudo: "exit_code: 0\nx"},
+		{Role: "tool_result", ToolID: "2", ToolName: "file_read", Conteudo: "package a", IsErro: true},
+		{Role: "assistant", Conteudo: "pronto, dois arquivos"},
+	})
+	tudo := strings.Join(tl.linhas, "\n")
+	ordem := []string{"liste os arquivos", "terminal_run", "exit_code: 0", "file_read", "package a", "pronto, dois arquivos"}
+	pos := 0
+	for _, s := range ordem {
+		i := strings.Index(tudo[pos:], s)
+		if i < 0 {
+			t.Fatalf("faltou %q na ordem certa:\n%s", s, tudo)
+		}
+		pos += i + len(s)
+	}
+	if !strings.Contains(tudo, "✗") {
+		t.Fatal("tool com erro deveria sair com ✗")
 	}
 }

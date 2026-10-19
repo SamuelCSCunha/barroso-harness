@@ -1044,3 +1044,38 @@ func tituloAtual(loja *store.Store, sess *runtime.Session) string {
 	}
 	return tituloSessao(sess.History())
 }
+
+// reproduzirHistorico redesenha na tela a conversa de uma sessão retomada,
+// no mesmo formato de um turno ao vivo: caixa do usuário, tools com a prévia
+// do resultado e a resposta em markdown. A duração das tools não fica no
+// log, então a linha da tool sai sem ela. No transcript as chamadas de uma
+// rodada vêm todas antes dos resultados; cada tool é desenhada junto do seu
+// resultado, como ao vivo.
+func reproduzirHistorico(t *tela, h []dealer.Mensagem) {
+	chamadas := map[string]dealer.Mensagem{}
+	r := &turnoTela{t: t}
+	for _, m := range h {
+		switch m.Role {
+		case "user":
+			if strings.HasPrefix(m.Conteudo, "[estado de trabalho") {
+				t.Adicionar("  " + roxof("◆") + " " + cinzaf("context compacted"))
+				continue
+			}
+			t.Usuario(strings.TrimSpace(m.Conteudo))
+		case "tool_call":
+			chamadas[m.ToolID] = m
+		case "tool_result":
+			marca := verdof("✓")
+			if m.IsErro {
+				marca = vermelhof("✗")
+			}
+			c := chamadas[m.ToolID]
+			t.Adicionar("  " + marca + " " + cor(corTexto, m.ToolName) + " " + cinzaf(resumoArgs(c.ToolArgs)))
+			r.Eco(m.Conteudo)
+		case "assistant":
+			if strings.TrimSpace(m.Conteudo) != "" {
+				r.Resposta(m.Conteudo)
+			}
+		}
+	}
+}
