@@ -44,6 +44,12 @@ type RendererDetalhado interface {
 	Contexto(promptTokens int)
 }
 
+// RendererRaciocinio é OPCIONAL: recebe o pensamento da rodada quando o
+// provider o expõe, antes das tools e da resposta (a TUI mostra "Thought").
+type RendererRaciocinio interface {
+	Pensou(texto string, dur time.Duration)
+}
+
 // RendererCorte é OPCIONAL: avisa que a resposta foi cortada pelo teto de
 // saída. desistiu=false: o turno vai continuar sozinho; true: parou.
 type RendererCorte interface {

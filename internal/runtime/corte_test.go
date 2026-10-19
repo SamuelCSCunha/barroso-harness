@@ -1,12 +1,14 @@
 package runtime
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ruanbarroso/barroso-harness/internal/config"
 )
@@ -116,5 +118,38 @@ func TestCorteDesistePorLimite(t *testing.T) {
 	}
 	if n := len(*vistos); n != maxCortes+1 {
 		t.Fatalf("requests = %d", n)
+	}
+}
+
+type rendPensou struct {
+	*RendererPuro
+	pensou string
+}
+
+func (r *rendPensou) Pensou(texto string, _ time.Duration) { r.pensou += texto }
+
+// O raciocínio que o provider expõe (reasoning / reasoning_content) chega ao
+// renderer, e não entra na resposta.
+func TestRaciocinioVaiProRenderer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		for _, d := range []map[string]any{
+			{"reasoning": "pensa ", "reasoning_content": "pensa "},
+			{"reasoning_content": "mais"},
+			{"content": "resposta"},
+		} {
+			b, _ := json.Marshal(map[string]any{"choices": []map[string]any{{"delta": d}}})
+			_, _ = w.Write([]byte("data: " + string(b) + "\n\n"))
+		}
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+	var sb strings.Builder
+	r := &rendPensou{RendererPuro: NovoRendererPuro(&sb)}
+	s := NewSession(config.Config{BaseURL: srv.URL, Model: "m", APIKey: "k"})
+	if err := s.Send(context.Background(), r, t.TempDir(), "oi"); err != nil {
+		t.Fatal(err)
+	}
+	if r.pensou != "pensa mais" || strings.Contains(sb.String(), "pensa") || !strings.Contains(sb.String(), "resposta") {
+		t.Fatalf("pensou=%q saída=%q", r.pensou, sb.String())
 	}
 }

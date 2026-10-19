@@ -161,6 +161,11 @@ func (t *turnoTUI) Eco(saida string) {
 	}
 }
 
+func (t *turnoTUI) Pensou(_ string, dur time.Duration) {
+	t.pararSpin()
+	fmt.Fprintf(t.out, "  %s%s\n", laranjaf("+ Thought"), cinzaf(" · "+fmtDur(dur)))
+}
+
 func (t *turnoTUI) Cortada(teto int, desistiu bool) {
 	t.pararSpin()
 	msg := fmt.Sprintf("response cut at the output limit (%d tokens); continuing", teto)

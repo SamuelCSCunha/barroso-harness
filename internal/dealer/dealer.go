@@ -67,6 +67,11 @@ type Rodada struct {
 	// Cortada: o provider encerrou por teto de saída (finish_reason
 	// "length"). Texto e tool calls podem estar incompletos.
 	Cortada bool
+	// Raciocinio é o pensamento que o provider expôs (reasoning ou
+	// reasoning_content no delta) e DurRaciocinio o tempo do início do
+	// request até o último pedaço dele. Só para mostrar; não volta ao modelo.
+	Raciocinio    string
+	DurRaciocinio time.Duration
 }
 
 // Cliente é instanciado por turno.
@@ -184,8 +189,10 @@ func (c *Cliente) Corpo(system string, msgs []Mensagem, tools []map[string]any) 
 type sseChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content   *string `json:"content"`
-			ToolCalls []struct {
+			Content          *string `json:"content"`
+			Reasoning        *string `json:"reasoning"`
+			ReasoningContent *string `json:"reasoning_content"`
+			ToolCalls        []struct {
 				Index    int    `json:"index"`
 				ID       string `json:"id"`
 				Type     string `json:"type"`
@@ -272,6 +279,7 @@ func lerRodada(resp *http.Response, ctx context.Context) (*Rodada, error) {
 		return nil, fmt.Errorf("provider HTTP %d: %s", resp.StatusCode, resumoErro(b, 300))
 	}
 	r := &Rodada{}
+	inicio := time.Now()
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 0, 1<<20), 4<<20)
 	emCurso := map[int]*oaiCall{}
@@ -311,6 +319,15 @@ func lerRodada(resp *http.Response, ctx context.Context) (*Rodada, error) {
 			}
 			if d.Content != nil {
 				r.Texto += *d.Content
+			}
+			// Providers diferentes usam um ou outro campo (OpenRouter manda
+			// os dois com o mesmo texto): vale o primeiro preenchido.
+			if p := d.Reasoning; p != nil && *p != "" {
+				r.Raciocinio += *p
+				r.DurRaciocinio = time.Since(inicio)
+			} else if p := d.ReasoningContent; p != nil && *p != "" {
+				r.Raciocinio += *p
+				r.DurRaciocinio = time.Since(inicio)
 			}
 			if f := ch.Choices[0].FinishReason; f != nil && *f == "length" {
 				r.Cortada = true

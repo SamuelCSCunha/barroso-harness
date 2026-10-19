@@ -1003,6 +1003,13 @@ func (r *turnoTela) Eco(saida string) {
 	r.t.Adicionar("  " + cinzaf("› "+cortarVis(primeira, larg)))
 }
 
+// Pensou fecha o "Thinking" como no OpenCode: uma linha "+ Thought · 8.1s"
+// no lugar do spinner.
+func (r *turnoTela) Pensou(_ string, dur time.Duration) {
+	r.t.pararSpin()
+	r.t.Adicionar("  " + laranjaf("+ Thought") + cinzaf(" · "+fmtDur(dur)))
+}
+
 func (r *turnoTela) Cortada(teto int, desistiu bool) {
 	r.t.pararSpin()
 	msg := fmt.Sprintf("response cut at the output limit (%s tokens); continuing", milhar(teto))

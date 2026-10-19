@@ -257,6 +257,9 @@ func (s *Session) Send(ctx context.Context, r Renderer, cwd, pedido string) erro
 			}
 			return err
 		}
+		if rr, ok := r.(RendererRaciocinio); ok && strings.TrimSpace(rodada.Raciocinio) != "" {
+			rr.Pensou(rodada.Raciocinio, rodada.DurRaciocinio)
+		}
 		if rodada.Usage != nil {
 			if rd, ok := r.(RendererDetalhado); ok {
 				rd.Contexto(rodada.Usage.PromptTokens)
