@@ -1,17 +1,17 @@
-// Package wiring monta o catálogo estendido da sessão: o que NÃO é built-in e
-// precisa de recurso de processo — gerente de sub-agentes e servidores MCP.
+// Package wiring builds the session's extended catalog: what is NOT built-in
+// and needs a process-level resource — the sub-agent manager and MCP servers.
 //
-// Ele existe para que os três pontos de entrada (REPL, modo -p e o agente ACP)
-// montem a MESMA lista de ferramentas com UMA receita. Sem o pacote, cada
-// chamador repetiria a sequência "conecta MCP, cria gerente, injeta specs,
-// lembra de fechar" — e a receita que um esquece é a tool que o modelo não vê.
+// It exists so that the three entry points (REPL, -p mode and the ACP agent)
+// build the SAME tool list from ONE recipe. Without this package, every caller
+// would repeat the sequence "connect MCP, create manager, inject specs,
+// remember to close" — and the step one forgets is the tool the model never sees.
 //
-// Por que não no runtime: runtime é importado por internal/subagent (o agente
-// filho nasce de uma runtime.Session). Colocar subagent/MCP dentro dele seria
-// ciclo de importação. O runtime resolve a metade independente — contexto
-// vivo, web e skills, ver internal/runtime/extras.go — e este pacote resolve a
-// metade que tem dono externo, entregando o resultado pelo mesmo ponto de
-// entrada: Session.Injetar.
+// Why not in runtime: runtime is imported by internal/subagent (the child
+// agent is born from a runtime.Session). Putting subagent/MCP inside it would
+// be an import cycle. The runtime handles the independent half — live context,
+// web and skills, see internal/runtime/extras.go — and this package handles
+// the externally-owned half, delivering the result through the same entry
+// point: Session.Injetar.
 package wiring
 
 import (
@@ -25,46 +25,47 @@ import (
 	"github.com/ruanbarroso/barroso-harness/internal/subagent"
 )
 
-// Conjunto é o que a sessão ganhou: as specs já injetadas e os recursos que
-// precisam ser FECHADOS no fim do processo. Um Conjunto sem recurso aberto
-// (nenhum servidor MCP; ou o Conjunto{} de sessão nil) é válido — Fechar é
-// no-op. O gerente de sub-agentes nasce SEMPRE: toda sessão principal tem
-// task_spawn/task_status/task_result; a sessão FILHA não as recebe porque o
-// runtime a monta de tools.SpecsBuiltins() (invariante por construção, não
-// por configuração).
+// Conjunto is what the session gained: the already-injected specs and the
+// resources that must be CLOSED at the end of the process. A Conjunto with no
+// open resource (no MCP server; or the Conjunto{} of a nil session) is valid —
+// Fechar is a no-op. The sub-agent manager is ALWAYS created: every main
+// session has task_spawn/task_status/task_result; the CHILD session does not
+// get them because the runtime builds it from tools.SpecsBuiltins() (an
+// invariant by construction, not by configuration).
 type Conjunto struct {
-	gerente *subagent.Gerente // sempre presente quando Montar passou por sessão real
-	gestor  *gestorMCP        // servidores MCP (conectados ou não) e suas tools
+	manager    *subagent.Gerente // always present when Montar went through a real session
+	mcpManager *mcpManager       // MCP servers (connected or not) and their tools
 }
 
-// Gerente devolve o gerente de tarefas-irmãs (nil só num Conjunto vazio —
-// sessão nil). Útil para a UI mostrar contagem e para testes.
+// Gerente returns the sibling-task manager (nil only in an empty Conjunto —
+// nil session). Useful for the UI to show counts and for tests.
 func (c *Conjunto) Gerente() *subagent.Gerente {
 	if c == nil {
 		return nil
 	}
-	return c.gerente
+	return c.manager
 }
 
-// MCP devolve os clientes MCP conectados, na ordem dos servidores da config.
+// MCP returns the connected MCP clients, in the order of the config's servers.
 func (c *Conjunto) MCP() []*mcp.Cliente {
-	if c == nil || c.gestor == nil {
+	if c == nil || c.mcpManager == nil {
 		return nil
 	}
-	return c.gestor.clientes()
+	return c.mcpManager.clients()
 }
 
-// Montar conecta os servidores MCP, sobe o gerente de sub-agentes e injeta
-// tudo na sessão. Devolve o Conjunto para fechar depois e os AVISOS — uma
-// linha por servidor que falhou, para o chamador mostrar sem interromper.
+// Montar connects the MCP servers, starts the sub-agent manager and injects
+// everything into the session. Returns the Conjunto to close later and the
+// WARNINGS — one line per failed server, for the caller to show without
+// interrupting.
 //
-// Regra de tolerância: falha de UM servidor MCP não invalida os demais nem o
-// turno. Ferramenta externa é conveniência; derrubar a sessão porque um
-// subprocesso não subiu seria trocar um problema pequeno por um grande.
+// Tolerance rule: failure of ONE MCP server invalidates neither the others nor
+// the turn. An external tool is a convenience; bringing down the session
+// because a subprocess did not start would trade a small problem for a big one.
 //
-// ctx deve ser de VIDA LONGA (não o de um turno): ele é herdado pelos
-// sub-agentes, que precisam sobreviver ao turno que os criou, e é o prazo do
-// handshake MCP. O REPL passa um ctx que só cancela no fim do processo.
+// ctx must be LONG-LIVED (not a turn's): it is inherited by the sub-agents,
+// which must outlive the turn that created them, and it is the MCP handshake
+// deadline. The REPL passes a ctx that is only cancelled at process exit.
 func Montar(ctx context.Context, cfg config.Config, sess *runtime.Session, cwd string) (*Conjunto, []string) {
 	if sess == nil {
 		return &Conjunto{}, nil
@@ -72,78 +73,79 @@ func Montar(ctx context.Context, cfg config.Config, sess *runtime.Session, cwd s
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	var avisos []string
+	var warnings []string
 
 	// ── MCP ────────────────────────────────────────────────────────────────
-	// O gestor conecta os servidores da config (falha de um vira aviso) e
-	// publica mcp_list/mcp_add/mcp_remove: o agente gerencia os próprios
-	// servidores sem editar o config.json à mão.
-	gestor := novoGestorMCP(ctx, sess)
-	vistos := map[string]bool{}
+	// The manager connects the config's servers (a failure becomes a warning)
+	// and publishes mcp_list/mcp_add/mcp_remove: the agent manages its own
+	// servers without hand-editing config.json.
+	mm := newMCPManager(ctx, sess)
+	seen := map[string]bool{}
 	for _, s := range cfg.MCPServidores {
-		nome := strings.TrimSpace(s.Nome)
-		if nome == "" || vistos[nome] {
+		name := strings.TrimSpace(s.Nome)
+		if name == "" || seen[name] {
 			continue
 		}
-		vistos[nome] = true
-		e := gestor.conectar(s)
-		gestor.registrar(e)
-		if e.erro != "" {
-			avisos = append(avisos, fmt.Sprintf("servidor MCP %q: %s", nome, e.erro))
+		seen[name] = true
+		e := mm.connect(s)
+		mm.register(e)
+		if e.err != "" {
+			warnings = append(warnings, fmt.Sprintf("MCP server %q: %s", name, e.err))
 		}
 	}
-	sess.Injetar(gestor.specs()...)
+	sess.Injetar(mm.specs()...)
 
-	// ── sub-agentes ────────────────────────────────────────────────────────
-	// SEMPRE ligados, sem flag de config: delegar é parte do catálogo base da
-	// sessão principal. O filho não herda a delegação por construção — o
-	// runtime.Session.Send monta a lista dele de tools.SpecsBuiltins(), que
-	// não tem task_* — então não há risco de recursão a administrar.
-	gerente := subagent.Novo(subagent.Config{Nome: subagenteNome()})
-	gerente.DefinirCwd(cwd)
-	// Vincular ao ctx longo ANTES do primeiro Spawn: as tarefas derivam o
-	// contexto filho daqui, e o ctx do turno morre no fim da linha.
-	gerente.Vincular(ctx)
-	sess.Injetar(subagent.Especificacoes(gerente, cfg)...)
+	// ── sub-agents ─────────────────────────────────────────────────────────
+	// ALWAYS on, no config flag: delegating is part of the main session's base
+	// catalog. The child does not inherit delegation by construction — the
+	// runtime.Session.Send builds its list from tools.SpecsBuiltins(), which
+	// has no task_* — so there is no recursion risk to manage.
+	manager := subagent.Novo(subagent.Config{Nome: subagentName()})
+	manager.DefinirCwd(cwd)
+	// Bind to the long-lived ctx BEFORE the first Spawn: tasks derive their
+	// child context from here, and the turn ctx dies at the end of the line.
+	manager.Vincular(ctx)
+	sess.Injetar(subagent.Especificacoes(manager, cfg)...)
 
-	return &Conjunto{gerente: gerente, gestor: gestor}, avisos
+	return &Conjunto{manager: manager, mcpManager: mm}, warnings
 }
 
-// Fechar encerra os servidores MCP. Sub-agentes não têm fechamento: o registro
-// é em memória e as tarefas morrem com o processo (persistência de tarefa está
-// fora deste slice). Devolve nil quando não há cliente aberto.
+// Fechar shuts down the MCP servers. Sub-agents have no shutdown: the registry
+// is in memory and tasks die with the process (task persistence is outside
+// this slice). Returns nil when there is no open client.
 func (c *Conjunto) Fechar() error {
-	if c == nil || c.gestor == nil {
+	if c == nil || c.mcpManager == nil {
 		return nil
 	}
-	return c.gestor.fechar()
+	return c.mcpManager.close()
 }
 
-// ── conversão config → mcp ────────────────────────────────────────────────
+// ── config → mcp conversion ───────────────────────────────────────────────
 
-// servidoresDe traduz a config para o tipo do pacote mcp, filtrando o que
-// certamente não abriria. A validação fina é do mcp (que conhece o protocolo);
-// aqui só se evita tentar abrir servidor sem nome único, sem command/url ou com
-// tipo irreconhecível — cada um desses viraria uma linha de aviso à toa.
+// serversFrom translates the config into the mcp package type, filtering out
+// what certainly would not open. Fine-grained validation belongs to mcp (which
+// knows the protocol); here we only avoid trying to open a server without a
+// unique name, without command/url or with an unrecognizable type — each of
+// those would become a pointless warning line.
 //
-// A tradução é de campo em campo, e não um cast: config não pode importar mcp
-// (é a raiz da árvore de dependências), então os dois tipos são independentes
-// por desenho e esta função é a fronteira única entre eles.
+// The translation is field by field, not a cast: config cannot import mcp (it
+// is the root of the dependency tree), so the two types are independent by
+// design and this function is the single boundary between them.
 //
-// A regra de tipo é a MESMA de config.servidoresValidos (que o REPL usa para
-// listar): "streamable-http" e as variantes de nome entram como "http", que é
-// o único transporte HTTP que o cliente implementa.
-func servidoresDe(cfgs []config.MCPServidor) []mcp.Servidor {
+// The type rule is the SAME as config.servidoresValidos (which the REPL uses
+// for listing): "streamable-http" and the name variants map to "http", the
+// only HTTP transport the client implements.
+func serversFrom(cfgs []config.MCPServidor) []mcp.Servidor {
 	var out []mcp.Servidor
-	vistos := map[string]bool{}
+	seen := map[string]bool{}
 	for _, s := range cfgs {
-		if !aceitavel(s) || vistos[strings.TrimSpace(s.Nome)] {
+		if !acceptable(s) || seen[strings.TrimSpace(s.Nome)] {
 			continue
 		}
-		vistos[strings.TrimSpace(s.Nome)] = true
+		seen[strings.TrimSpace(s.Nome)] = true
 		out = append(out, mcp.Servidor{
 			Nome:    strings.TrimSpace(s.Nome),
-			Tipo:    tipoMCP(s.Tipo),
+			Tipo:    mcpType(s.Tipo),
 			Command: strings.TrimSpace(s.Command),
 			Args:    s.Args,
 			Env:     s.Env,
@@ -155,14 +157,14 @@ func servidoresDe(cfgs []config.MCPServidor) []mcp.Servidor {
 	return out
 }
 
-// aceitavel é o filtro mínimo: nome presente e o campo que o transporte exige.
-// Tipo desconhecido já é recusado aqui em vez de virar erro de cada servidor.
-func aceitavel(s config.MCPServidor) bool {
+// acceptable is the minimal filter: a name present and the field the
+// transport requires. An unknown type is rejected here instead of becoming a
+// per-server error.
+func acceptable(s config.MCPServidor) bool {
 	if strings.TrimSpace(s.Nome) == "" {
 		return false
 	}
-	tipo := tipoMCP(s.Tipo)
-	switch tipo {
+	switch mcpType(s.Tipo) {
 	case "stdio":
 		return strings.TrimSpace(s.Command) != ""
 	case "http":
@@ -172,9 +174,9 @@ func aceitavel(s config.MCPServidor) bool {
 	}
 }
 
-// tipoMCP normaliza o nome do transporte para a forma que o pacote mcp espera
-// ("stdio" | "http"); devolve "" quando não é nenhum dos dois.
-func tipoMCP(t string) string {
+// mcpType normalizes the transport name to the form the mcp package expects
+// ("stdio" | "http"); returns "" when it is neither.
+func mcpType(t string) string {
 	n := strings.ToLower(strings.TrimSpace(t))
 	n = strings.NewReplacer("_", "-", " ", "-").Replace(n)
 	switch n {
@@ -187,25 +189,25 @@ func tipoMCP(t string) string {
 	}
 }
 
-// subagenteNome devolve o prefixo das tools de tarefa (task_spawn/
-// task_status/task_result). Fixo, e não derivado do modelo: prefixo
-// configurável só interessa a quem roda dois gerentes no MESMO catálogo, e aí
-// o risco de ambiguar nomes de tool é maior que o ganho.
-func subagenteNome() string { return subagent.PrefixoPadrao }
+// subagentName returns the prefix of the task tools (task_spawn/
+// task_status/task_result). Fixed, not derived from the model: a configurable
+// prefix only matters to someone running two managers in the SAME catalog, and
+// there the risk of ambiguous tool names outweighs the gain.
+func subagentName() string { return subagent.PrefixoPadrao }
 
-// umaLinha reduz um erro a UMA linha: aviso de servidor é linha de REPL, não
-// bloco.
-func umaLinha(err error) string {
+// oneLine reduces an error to ONE line: a server warning is a REPL line, not
+// a block.
+func oneLine(err error) string {
 	if err == nil {
-		return "(sem detalhe)"
+		return "(no detail)"
 	}
 	s := strings.TrimSpace(err.Error())
 	if i := strings.IndexAny(s, "\r\n"); i >= 0 {
 		s = s[:i]
 	}
-	const teto = 160
-	if len(s) > teto {
-		s = s[:teto] + "…"
+	const limit = 160
+	if len(s) > limit {
+		s = s[:limit] + "…"
 	}
 	return s
 }
