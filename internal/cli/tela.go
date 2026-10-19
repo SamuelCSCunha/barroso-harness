@@ -1058,6 +1058,17 @@ func tituloAtual(loja *store.Store, sess *runtime.Session) string {
 			return strings.TrimSpace(se.Title)
 		}
 	}
+	// A primeira fala vem do log, não do histórico em memória: depois de uma
+	// compactação o histórico começa no estado de trabalho, e o título virava
+	// a primeira mensagem seguinte (ex.: "...").
+	if loja != nil && sess.ID() != "" {
+		if p := strings.Join(strings.Fields(loja.PrimeiraFala(sess.ID())), " "); p != "" {
+			if r := []rune(p); len(r) > 60 {
+				p = string(r[:60]) + "…"
+			}
+			return p
+		}
+	}
 	return tituloSessao(sess.History())
 }
 

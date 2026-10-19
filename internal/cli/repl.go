@@ -519,6 +519,7 @@ func repl(io IO, cfg *config.Config) {
 				// para o modelo.
 				io.tela.Limpar()
 				reproduzirHistorico(io.tela, sess.History())
+				io.tela.Adicionar("") // respiro entre a conversa e o aviso
 			}
 			okFmt(io.Out, "session "+sess.ID()+" resumed")
 		case "/save":
