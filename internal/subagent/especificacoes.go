@@ -20,12 +20,12 @@ import (
 // resto por outro caminho (ou refina o pedido).
 const TetoResultado = 16 << 10
 
-// Especificacoes devolve as três tools de tarefas irmãs, nomeadas com o prefixo
-// do gerente:
-//
-//   - <prefixo>_spawn   {prompt}          → inicia tarefa em segundo plano
-//   - <prefixo>_status  {}                → lista id/estado/idade de todas
-//   - <prefixo>_result  {id}              → resultado da tarefa (ou estado/erro)
+// Especificacoes devolve a tool de delegação do modelo: <prefixo>_spawn
+// {prompts[]}, que dispara os sub-agentes e volta na hora. O modelo NÃO recebe
+// <prefixo>_status nem <prefixo>_result: com elas à mão ele ficava consultando
+// o status em loop em vez de seguir ou encerrar o turno. O resultado de cada
+// sub-agente chega sozinho (AvisoTerminadas); o usuário acompanha por /tasks.
+// especStatus e especResult ficam para os testes do ciclo de vida.
 //
 // cfgPai é a configuração do pai, herdada pelas tarefas (mesmo provider, modelo
 // e chave). O spawn não recebe ctx longo: quem chama a tool passa o ctx do turno
@@ -37,11 +37,7 @@ func Especificacoes(g *Gerente, cfgPai config.Config) []tools.Spec {
 	}
 	g.ConfigPai(cfgPai)
 	p := g.Prefixo()
-	return []tools.Spec{
-		especSpawn(g, p),
-		especStatus(g, p),
-		especResult(g, p),
-	}
+	return []tools.Spec{especSpawn(g, p)}
 }
 
 // ── <prefixo>_spawn ────────────────────────────────────────────────────────
@@ -52,9 +48,9 @@ func especSpawn(g *Gerente, prefixo string) tools.Spec {
 		Description: "Dispara um ou VÁRIOS sub-agentes de uma vez, em SEGUNDO PLANO, e devolve os ids na hora. " +
 			"Cada sub-agente roda autonomamente com as ferramentas built-in (terminal, arquivos), mas NÃO pode " +
 			"criar outros sub-agentes. Não há limite de quantidade nem de concorrência: todos começam juntos. " +
-			"Você NÃO precisa esperar nem consultar " + prefixo + "_status: quando cada sub-agente terminar ou falhar, " +
-			"o resultado chega automaticamente como uma mensagem nova. Depois de disparar, siga com outro trabalho " +
-			"ou encerre o turno dizendo ao usuário o que disparou e que está aguardando os retornos.",
+			"Não existe tool para consultar ou esperar: quando cada sub-agente terminar ou falhar, o resultado chega " +
+			"sozinho como uma mensagem nova, num turno novo. Depois de disparar, siga com outro trabalho ou ENCERRE " +
+			"O TURNO dizendo ao usuário o que disparou e que está aguardando os retornos.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -96,9 +92,9 @@ func especSpawn(g *Gerente, prefixo string) tools.Spec {
 				}
 				ids = append(ids, id)
 			}
-			return fmt.Sprintf("%d sub-agente(s) disparado(s): %s. Eles rodam em segundo plano; cada resultado "+
-				"chega automaticamente como mensagem nova quando terminar. Não consulte %s_status em loop.",
-				len(ids), strings.Join(ids, ", "), prefixo), nil
+			return fmt.Sprintf("%d sub-agente(s) disparado(s): %s. Eles rodam em segundo plano e cada resultado "+
+				"chega sozinho como mensagem nova quando terminar. Não espere: siga com outro trabalho ou encerre o "+
+				"turno agora avisando o usuário.", len(ids), strings.Join(ids, ", ")), nil
 		},
 	}
 }

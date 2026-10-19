@@ -161,7 +161,7 @@ func TestSpawnExecutaEResultadoVoltaSemToolsDeDelegacao(t *testing.T) {
 	g := Novo(Config{Nome: "task"})
 	g.Vincular(context.Background())
 	g.ConfigPai(cfg)
-	specs := Especificacoes(g, cfg)
+	specs := append(Especificacoes(g, cfg), especStatus(g, "task"), especResult(g, "task"))
 
 	nomos := map[string]tools.Spec{}
 	for _, s := range specs {
@@ -237,7 +237,7 @@ func TestSpawnVariosSemTetoEAvisa(t *testing.T) {
 	g.Vincular(context.Background())
 	avisos := make(chan struct{}, 16)
 	g.AoTerminar(func() { avisos <- struct{}{} })
-	specs := Especificacoes(g, cfg)
+	specs := append(Especificacoes(g, cfg), especStatus(g, "task"), especResult(g, "task"))
 	var spawn tools.Spec
 	for _, s := range specs {
 		if s.Name == "task_spawn" {
@@ -285,7 +285,7 @@ func TestCancelarTarefaEmExecucao(t *testing.T) {
 	g := Novo(Config{Nome: "task"})
 	g.Vincular(context.Background())
 	g.ConfigPai(cfg)
-	specs := Especificacoes(g, cfg)
+	specs := append(Especificacoes(g, cfg), especStatus(g, "task"), especResult(g, "task"))
 	nomos := map[string]tools.Spec{}
 	for _, s := range specs {
 		nomos[s.Name] = s
@@ -345,7 +345,7 @@ func TestResultadoIdInexistenteEErrosDeEntrada(t *testing.T) {
 	g := Novo(Config{Nome: "task"})
 	g.Vincular(context.Background())
 	g.ConfigPai(cfg)
-	specs := Especificacoes(g, cfg)
+	specs := append(Especificacoes(g, cfg), especStatus(g, "task"), especResult(g, "task"))
 	nomos := map[string]tools.Spec{}
 	for _, s := range specs {
 		nomos[s.Name] = s
@@ -407,7 +407,7 @@ func TestResultadoCortadoNoTeto(t *testing.T) {
 	g := Novo(Config{})
 	g.Vincular(context.Background())
 	g.ConfigPai(cfg)
-	specs := Especificacoes(g, cfg)
+	specs := append(Especificacoes(g, cfg), especStatus(g, "task"), especResult(g, "task"))
 	nomos := map[string]tools.Spec{}
 	for _, s := range specs {
 		nomos[s.Name] = s
@@ -443,4 +443,13 @@ func temBuiltin(v reqVista, nome string) bool {
 		}
 	}
 	return false
+}
+
+// O modelo só recebe task_spawn: sem status/result ele não tem como ficar
+// consultando em loop, e os resultados chegam pelo aviso automático.
+func TestModeloSoRecebeSpawn(t *testing.T) {
+	specs := Especificacoes(Novo(Config{Nome: "task"}), config.Config{})
+	if len(specs) != 1 || specs[0].Name != "task_spawn" {
+		t.Fatalf("tools do modelo = %v", specs)
+	}
 }
