@@ -918,7 +918,15 @@ func (r *turnoTela) ToolInicio(nome, args string) {
 	r.t.Pensar(strings.TrimSpace(nome + " " + r.argsPend))
 }
 
-func (r *turnoTela) Contexto(n int) { r.contexto = n }
+// Contexto chega a cada request do turno: o painel e o rodapé mudam na hora,
+// sem esperar o turno terminar (um turno com muitas tools leva minutos).
+func (r *turnoTela) Contexto(n int) {
+	r.contexto = n
+	r.t.mu.Lock()
+	r.t.estado.contexto = n
+	r.t.desenharTrancado()
+	r.t.mu.Unlock()
+}
 
 func (r *turnoTela) Tool(nome string, dur time.Duration, erro bool) {
 	r.t.pararSpin()

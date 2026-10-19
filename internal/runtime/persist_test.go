@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/ruanbarroso/barroso-harness/internal/config"
+	"github.com/ruanbarroso/barroso-harness/internal/dealer"
 	"github.com/ruanbarroso/barroso-harness/internal/store"
 	"github.com/ruanbarroso/barroso-harness/internal/tools"
 )
@@ -451,5 +452,24 @@ func TestSendExpoeToolsDeSessaoNoSchema(t *testing.T) {
 	_ = s.Send(context.Background(), RendererDe(&strings.Builder{}), t.TempDir(), "oi")
 	if !viuBusca || !viuRetrieve {
 		t.Fatalf("provider não viu as tools de sessão (busca=%v retrieve=%v)", viuBusca, viuRetrieve)
+	}
+}
+
+// Sessão retomada já sabe o tamanho do contexto: é o prompt_tokens do último
+// request que ficou no transcript.
+func TestUltimoContexto(t *testing.T) {
+	s := NewSession(config.Config{})
+	if s.UltimoContexto() != 0 {
+		t.Fatal("sessão vazia deveria ter contexto 0")
+	}
+	s.history = []dealer.Mensagem{
+		{Role: "user", Conteudo: "oi"},
+		{Role: "assistant", Conteudo: "a", Usage: &dealer.Usage{PromptTokens: 100}},
+		{Role: "user", Conteudo: "de novo"},
+		{Role: "assistant", Conteudo: "b", Usage: &dealer.Usage{PromptTokens: 15139}},
+		{Role: "user", Conteudo: "pergunta sem resposta ainda"},
+	}
+	if got := s.UltimoContexto(); got != 15139 {
+		t.Fatalf("UltimoContexto = %d", got)
 	}
 }

@@ -509,6 +509,7 @@ func repl(io IO, cfg *config.Config) {
 				erroFmt(io.ErrOut, "erro retomando sessão", err)
 				continue
 			}
+			ultimoContexto = sess.UltimoContexto()
 			okFmt(io.Out, "sessão "+sess.ID()+" retomada")
 		case "/save":
 			if loja == nil {

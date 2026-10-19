@@ -120,6 +120,18 @@ func (s *Session) rebuild() {
 // slice mutável interno.
 func (s *Session) History() []dealer.Mensagem { return append([]dealer.Mensagem(nil), s.history...) }
 
+// UltimoContexto devolve os prompt tokens do último request registrado no
+// transcript (0 se não houver): o tamanho do contexto de uma sessão retomada,
+// antes de qualquer turno novo.
+func (s *Session) UltimoContexto() int {
+	for i := len(s.history) - 1; i >= 0; i-- {
+		if u := s.history[i].Usage; u != nil && u.PromptTokens > 0 {
+			return u.PromptTokens
+		}
+	}
+	return 0
+}
+
 // ClearHistory limpa o transcript. Usado só quando faz sentido iniciar uma
 // nova conversa explicitamente; não é chamado ao trocar modelo.
 //
