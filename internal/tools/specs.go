@@ -109,12 +109,7 @@ func specTerminalRun() Spec {
 			}
 			defer cancel()
 
-			var cmd *exec.Cmd
-			if runtime.GOOS == "windows" {
-				cmd = exec.CommandContext(cctx, "cmd", "/C", c.Command)
-			} else {
-				cmd = exec.CommandContext(cctx, "bash", "-c", c.Command)
-			}
+			cmd := terminalCmd(cctx, c.Command)
 			cmd.Dir = dir
 			out, exeErr := cmd.CombinedOutput()
 			code := -1
