@@ -43,12 +43,15 @@ func TestNewSessionWithStoreIndexaEPersiste(t *testing.T) {
 	if !s.Persistente() {
 		t.Fatal("sessão com store deveria ser persistente")
 	}
-	// A sessão foi indexada no log, mas sem nenhum evento ainda.
-	if n, _ := loja.ContarEventos(id); n != 0 {
-		t.Fatalf("sessão nova com %d eventos", n)
+	// Sem conversa, nada vai para o log: a sessão só nasce no primeiro evento.
+	if _, err := loja.GetSession(id); err == nil {
+		t.Fatal("sessão sem eventos não deveria estar indexada")
+	}
+	if _, err := loja.StoreEvent(id, "user_message", map[string]any{"role": "user", "content": "oi"}); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := loja.GetSession(id); err != nil {
-		t.Fatalf("sessão não indexada: %v", err)
+		t.Fatalf("sessão não indexada após o primeiro evento: %v", err)
 	}
 }
 

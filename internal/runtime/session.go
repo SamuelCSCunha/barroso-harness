@@ -52,9 +52,9 @@ func NewSession(cfg config.Config) *Session {
 	return s
 }
 
-// NewSessionWithStore cria uma sessão JÁ persistente, indexando o id no log
-// (se ele ainda não existir). É o caminho do REPL, que sabe de antemão onde
-// o banco está.
+// NewSessionWithStore cria uma sessão JÁ persistente; o id só entra no log
+// com o primeiro evento. É o caminho do REPL, que sabe de antemão onde o
+// banco está.
 func NewSessionWithStore(cfg config.Config, st *store.Store, sessionID string) *Session {
 	s := &Session{config: cfg}
 	s.rebuild()
@@ -71,12 +71,9 @@ func (s *Session) Attach(st *store.Store, sessionID string) {
 	}
 	s.store = st
 	s.sessionID = sessionID
-	// Indexa sem apagar: NewSession usa INSERT OR IGNORE, então sessão antiga
-	// mantém created_at e todo o log.
-	if err := st.NewSession(sessionID); err != nil {
-		s.store = nil
-		s.sessionID = ""
-	}
+	// Não indexa aqui: a linha da sessão nasce com o primeiro evento
+	// (StoreEvent) ou com /rename. Abrir e fechar o bh sem conversar não
+	// deixa sessão vazia no banco nem na lista do /resume.
 }
 
 // ID devolve o id da sessão (vazio quando não há persistência).

@@ -287,6 +287,27 @@ func (s *Store) ListSessions(limit int) ([]Session, error) {
 	return out, nil
 }
 
+// PrimeiraFala devolve o texto da primeira mensagem do usuário na sessão
+// ("" se não houver) — o nome provisório de uma sessão sem título.
+func (s *Store) PrimeiraFala(id string) string {
+	var corpo string
+	err := s.db.QueryRow(
+		`SELECT payload_json FROM events
+		  WHERE session_id = ? AND kind = 'user_message'
+		    AND payload_json NOT LIKE '%[estado de trabalho%'
+		  ORDER BY seq LIMIT 1`, id).Scan(&corpo)
+	if err != nil {
+		return ""
+	}
+	var m struct {
+		Content string `json:"content"`
+	}
+	if json.Unmarshal([]byte(corpo), &m) != nil {
+		return ""
+	}
+	return m.Content
+}
+
 // ContarEventos devolve quantos eventos a sessão tem (0 se não existe).
 func (s *Store) ContarEventos(id string) (int, error) {
 	var n int

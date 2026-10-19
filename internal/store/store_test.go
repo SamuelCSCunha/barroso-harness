@@ -422,3 +422,16 @@ func TestTouchSessionCriaSeNaoExiste(t *testing.T) {
 		t.Fatalf("sessão fantasma não existe: %v", err)
 	}
 }
+
+// PrimeiraFala é o nome provisório da sessão sem título no /resume.
+func TestPrimeiraFala(t *testing.T) {
+	st := lojaAbre(t)
+	if got := st.PrimeiraFala("x"); got != "" {
+		t.Fatalf("sessão inexistente = %q", got)
+	}
+	_, _ = st.StoreEvent("x", "user_message", map[string]any{"role": "user", "content": "revisar o parser"})
+	_, _ = st.StoreEvent("x", "user_message", map[string]any{"role": "user", "content": "segunda"})
+	if got := st.PrimeiraFala("x"); got != "revisar o parser" {
+		t.Fatalf("primeira fala = %q", got)
+	}
+}

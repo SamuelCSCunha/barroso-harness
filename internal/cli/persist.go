@@ -29,6 +29,7 @@ const nomeBanco = "sessions.db"
 type linhaSessao struct {
 	store.Session
 	Eventos int
+	Previa  string // primeira fala do usuário, para quando não há título
 }
 
 // abrirStore abre o log. Devolve (nil, "") quando não dá — permissão, disco
@@ -104,7 +105,11 @@ func listarSessoesMonta(loja *store.Store, limite int) []linhaSessao {
 		if n == 0 {
 			continue
 		}
-		out = append(out, linhaSessao{Session: se, Eventos: n})
+		l := linhaSessao{Session: se, Eventos: n}
+		if strings.TrimSpace(se.Title) == "" {
+			l.Previa = loja.PrimeiraFala(se.ID)
+		}
+		out = append(out, l)
 	}
 	return out
 }
@@ -119,7 +124,14 @@ func listarSessaoResumo(out io.Writer, ls []linhaSessao) {
 	for i, l := range ls {
 		titulo := strings.TrimSpace(l.Title)
 		if titulo == "" {
-			titulo = dimf("(sem título)")
+			previa := strings.Join(strings.Fields(l.Previa), " ")
+			if r := []rune(previa); len(r) > 60 {
+				previa = string(r[:60]) + "…"
+			}
+			if previa == "" {
+				previa = "(sem título)"
+			}
+			titulo = dimf(previa)
 		} else {
 			titulo = negritof(titulo)
 		}
