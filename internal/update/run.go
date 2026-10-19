@@ -33,19 +33,19 @@ type Confirmar func() bool
 func Rodar(ctx context.Context, out io.Writer, versionAtual string, confirm Confirmar) error {
 	lanc, err := BuscarUltima(ctx)
 	if err != nil {
-		return fmt.Errorf("canal de atualização indisponível: %w", err)
+		return fmt.Errorf("update channel unavailable: %w", err)
 	}
 
 	cmp, err := compararVersoes(versionAtual, lanc.Version)
 	if err != nil {
-		return fmt.Errorf("comparar versões: %w", err)
+		return fmt.Errorf("compare versions: %w", err)
 	}
 	switch cmp {
 	case 0:
-		fmt.Fprintf(out, "já está na última versão (%s).\n", versionAtual)
+		fmt.Fprintf(out, "already on the latest version (%s).\n", versionAtual)
 		return nil
 	case 1:
-		fmt.Fprintf(out, "a versão instalada (%s) é mais nova que a publicada (%s); nada a fazer.\n",
+		fmt.Fprintf(out, "installed version (%s) is newer than the published one (%s); nothing to do.\n",
 			versionAtual, lanc.Version)
 		return nil
 	}
@@ -62,43 +62,43 @@ func Rodar(ctx context.Context, out io.Writer, versionAtual string, confirm Conf
 	if assetSomas, ok := lanc.AssetSomas(); ok {
 		somas, errSomas := ListarSomas(ctx, assetSomas)
 		if errSomas != nil {
-			return fmt.Errorf("não deu para ler o SHA256SUMS da release (%v); abortando por segurança", errSomas)
+			return fmt.Errorf("could not read the release SHA256SUMS (%v); aborting for safety", errSomas)
 		}
 		soma = somas[asset.Name]
 		if soma == "" {
-			return fmt.Errorf("SHA256SUMS da release %s não lista %s; abortando por segurança",
+			return fmt.Errorf("SHA256SUMS of release %s does not list %s; aborting for safety",
 				lanc.Version, asset.Name)
 		}
 	} else {
-		return errors.New("release não publicou SHA256SUMS; abortando por segurança")
+		return errors.New("release did not publish SHA256SUMS; aborting for safety")
 	}
 
 	if confirm != nil && !confirm() {
-		fmt.Fprintln(out, "atualização cancelada; instalação mantida.")
+		fmt.Fprintln(out, "update canceled; current installation kept.")
 		return nil
 	}
 
 	staging := filepath.Join(stagingRoot(), asset.Name)
 	defer removeIfExists(staging)
 
-	fmt.Fprintf(out, "baixando %s (%s, ~%d MiB)...\n", asset.Name, lanc.Version, asset.Bytes/(1<<20))
+	fmt.Fprintf(out, "downloading %s (%s, ~%d MiB)...\n", asset.Name, lanc.Version, asset.Bytes/(1<<20))
 	if _, err := Baixar(ctx, asset, soma, staging); err != nil {
 		return err
 	}
 	if err := verifyStaged(staging, lanc.Version); err != nil {
-		return fmt.Errorf("binário novo não passou no exec-check: %w", err)
+		return fmt.Errorf("new binary failed the exec check: %w", err)
 	}
 
 	resultado, err := installBinary(staging)
 	if err != nil {
 		if len(resultado.commands) > 0 {
-			fmt.Fprintln(out, "faltou permissão para trocar o binário; rode e depois refaça /update:")
+			fmt.Fprintln(out, "not enough permission to replace the binary; run the following, then retry /update:")
 			fmt.Fprintln(out, installCommands(resultado))
 			return err
 		}
 		return err
 	}
-	fmt.Fprintf(out, "instalado %s; saia e abra o bh de novo para usar a versão nova.\n", lanc.Version)
+	fmt.Fprintf(out, "installed %s; exit and reopen bh to use the new version.\n", lanc.Version)
 	return nil
 }
 

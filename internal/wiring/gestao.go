@@ -68,7 +68,7 @@ func (g *gestorMCP) conectar(s config.MCPServidor) *estadoMCP {
 	e := &estadoMCP{cfg: s}
 	servs := servidoresDe([]config.MCPServidor{s})
 	if len(servs) == 0 {
-		e.erro = "configuração incompleta: stdio exige command; http exige url"
+		e.erro = "incomplete configuration: stdio requires command; http requires url"
 		return e
 	}
 	clientes, falhas := mcp.ConectarTodos(g.ctx, servs)

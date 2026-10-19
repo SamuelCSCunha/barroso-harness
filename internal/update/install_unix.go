@@ -22,7 +22,7 @@ func executablePath() (string, error) {
 	}
 	resolved, err := filepath.EvalSymlinks(name)
 	if err != nil {
-		return "", fmt.Errorf("resolver caminho do executável: %w", err)
+		return "", fmt.Errorf("resolve executable path: %w", err)
 	}
 	return filepath.Abs(resolved)
 }
@@ -51,7 +51,7 @@ func installAt(target, staged string) (installResult, error) {
 		if isPermissionError(err) {
 			return permissionFallback(staged, target)
 		}
-		return installResult{}, fmt.Errorf("criar staging ao lado do binário: %w", err)
+		return installResult{}, fmt.Errorf("create staging next to the binary: %w", err)
 	}
 	tmpName := tmp.Name()
 	defer removeIfExists(tmpName)
@@ -100,14 +100,14 @@ func installAt(target, staged string) (installResult, error) {
 		if isPermissionError(err) {
 			return permissionFallback(staged, target)
 		}
-		return installResult{}, fmt.Errorf("guardar binário anterior: %w", err)
+		return installResult{}, fmt.Errorf("back up previous binary: %w", err)
 	}
 	if err := os.Rename(tmpName, target); err != nil {
 		_ = os.Rename(backup, target)
 		if isPermissionError(err) {
 			return permissionFallback(staged, target)
 		}
-		return installResult{}, fmt.Errorf("instalar binário novo: %w", err)
+		return installResult{}, fmt.Errorf("install new binary: %w", err)
 	}
 	return installResult{path: target}, nil
 }
@@ -158,7 +158,7 @@ func verifyStaged(staged, version string) error {
 	cmd := exec.Command(staged, "-version")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("executar binário staged: %w: %s", err, strings.TrimSpace(string(output)))
+		return fmt.Errorf("run staged binary: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return validateVersionOutput(string(output), version)
 }

@@ -37,10 +37,10 @@ func cmdUpdate(io IO) {
 	defer cancel()
 
 	err := update.Rodar(ctx, io.Out, versao, func() bool {
-		return confirmar(io, "atualizar o barroso-harness agora?")
+		return confirmar(io, "update barroso-harness now? [y/N]")
 	})
 	if err != nil {
-		erroFmt(io.ErrOut, "atualização não concluída", err)
+		erroFmt(io.ErrOut, "update failed", err)
 		return
 	}
 }

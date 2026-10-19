@@ -75,7 +75,7 @@ func RunInteractive(io IO) int {
 		}
 	}
 	if err := run(io); err != nil {
-		fmt.Fprintf(io.ErrOut, "erro: %v\n", err)
+		fmt.Fprintf(io.ErrOut, "error: %v\n", err)
 		return 1
 	}
 	return 0
@@ -95,10 +95,10 @@ func run(io IO) error {
 		return err
 	}
 	if !cfg.Pronta() {
-		fmt.Fprintln(io.Out, "Barroso Harness — primeira configuração (provider, chave e modelo; a chave fica só neste computador).")
+		fmt.Fprintln(io.Out, "Barroso Harness — first-time setup (provider, key and model; the key stays on this computer).")
 		if err := Onboarding(io, &cfg); err != nil {
-			if err == errCancelar || strings.Contains(strings.ToLower(err.Error()), "cancelado") {
-				fmt.Fprintln(io.Out, "onboarding cancelado; nada foi alterado ou salvo.")
+			if err == errCancelar || strings.Contains(strings.ToLower(err.Error()), "canceled") {
+				fmt.Fprintln(io.Out, "onboarding canceled; nothing was changed or saved.")
 				return nil
 			}
 			return err
@@ -114,10 +114,10 @@ func run(io IO) error {
 	return nil
 }
 
-var errCancelar = fmt.Errorf("cancelado")
+var errCancelar = fmt.Errorf("canceled")
 
 // errMantido: a seleção de modelo terminou sem troca (Enter vazio).
-var errMantido = fmt.Errorf("modelo mantido")
+var errMantido = fmt.Errorf("model unchanged")
 
 // ── onboarding ───────────────────────────────────────────────────────────
 
@@ -139,13 +139,13 @@ func Onboarding(io IO, cfg *config.Config) error {
 	key := ""
 	if p := cfg.Ativo(); p != nil && p.APIKey != "" {
 		key = p.APIKey
-		fmt.Fprintln(io.Out, "chave atual preservada; digite enter para mantê-la ou uma nova (input oculto).")
+		fmt.Fprintln(io.Out, "current key kept; press enter to keep it or type a new one (hidden input).")
 	}
 	if nova, err := PromptKey("api key: "); err == nil && strings.TrimSpace(nova) != "" {
 		key = strings.TrimSpace(nova)
 	}
 	if key == "" {
-		return fmt.Errorf("chave obrigatória para consultar /models e autenticar os turnos")
+		return fmt.Errorf("an API key is required to query /models and authenticate turns")
 	}
 
 	if err := configurarProvider(io, cfg, base, key); err != nil {
@@ -159,9 +159,9 @@ func Onboarding(io IO, cfg *config.Config) error {
 		}
 	}
 	if err := cfg.Save(); err != nil {
-		return fmt.Errorf("salvar config: %w", err)
+		return fmt.Errorf("save config: %w", err)
 	}
-	fmt.Fprintln(io.Out, "salvo em "+config.Dir()+"\\config.json — effort desativado por enquanto (/effort liga).")
+	fmt.Fprintln(io.Out, "saved to "+config.Dir()+"\\config.json — effort is off for now (/effort turns it on).")
 	fmt.Fprintln(io.Out, cfg.Resumo())
 	return nil
 }
@@ -182,7 +182,7 @@ func configurarProvider(io IO, cfg *config.Config, base, key string) error {
 	defer cancel()
 	ls, err := buscarModelos(ctx, base, key)
 	if err != nil {
-		return fmt.Errorf("provider recusou %s: %v (rollback — nada foi salvo)", base, err)
+		return fmt.Errorf("provider rejected %s: %v (rolled back — nothing was saved)", base, err)
 	}
 	copia := *cfg
 	copia = atualizarProvider(copia, definirNomeProvider(base), base, key)
@@ -215,7 +215,7 @@ func configurarProvider(io IO, cfg *config.Config, base, key string) error {
 type ForaDoCatalogo struct{ Modelo string }
 
 func (e *ForaDoCatalogo) Error() string {
-	return "model " + e.Modelo + " fora do catálogo deste provider; escolha outro (/model)"
+	return "model " + e.Modelo + " is not in this provider's catalog; pick another (/model)"
 }
 
 func definirNomeProvider(base string) string {
@@ -297,11 +297,11 @@ func selecionarModelo(io IO, cfg *config.Config) error {
 		return err
 	}
 	if len(ls) == 0 {
-		return fmt.Errorf("catálogo sem modelos plausíveis de chat")
+		return fmt.Errorf("catalog has no usable chat models")
 	}
 	listarModelos(io.Out, ls, cfg.Model)
 	for {
-		fmt.Fprint(io.Out, cianof("selecionar modelo > "))
+		fmt.Fprint(io.Out, cianof("select model > "))
 		linha, err := io.Reader().ReadString('\n')
 		if err != nil {
 			return errCancelar
@@ -314,7 +314,7 @@ func selecionarModelo(io IO, cfg *config.Config) error {
 			if cfg.Model != "" && catalogoTem(cfg.Model, ls) {
 				return errMantido
 			}
-			fmt.Fprintln(io.Out, "escolha um item (número ou id) — sem modelo não há turno.")
+			fmt.Fprintln(io.Out, "pick an item (number or id) — no model, no turn.")
 			continue
 		}
 		id := ""
@@ -324,7 +324,7 @@ func selecionarModelo(io IO, cfg *config.Config) error {
 			id = v
 		}
 		if id == "" {
-			fmt.Fprintf(io.Out, "%q não está no catálogo; repita.\n", v)
+			fmt.Fprintf(io.Out, "%q is not in the catalog; try again.\n", v)
 			continue
 		}
 		cfg.Model = id
@@ -364,7 +364,7 @@ func (io IO) cancelarTurno(fechar chan<- struct{}) (context.Context, context.Can
 	go func() {
 		<-signais
 		fmt.Fprintln(io.Out)
-		avisoFmt(io.Out, "cancelando a rodada — de novo para sair")
+		avisoFmt(io.Out, "canceling the turn — press again to exit")
 		cancel()
 		select {
 		case <-signais:
@@ -477,10 +477,10 @@ func repl(io IO, cfg *config.Config) {
 			if io.tela != nil {
 				io.tela.Limpar()
 			}
-			okFmt(io.Out, "história limpa; conversa nova")
+			okFmt(io.Out, "history cleared; new conversation")
 		case "/resume":
 			if loja == nil {
-				avisoFmt(io.Out, "sessão sem persistência: nada para retomar")
+				avisoFmt(io.Out, "session not persisted: nothing to resume")
 				continue
 			}
 			lista := listarSessoesMonta(loja, 10)
@@ -489,7 +489,7 @@ func repl(io IO, cfg *config.Config) {
 				continue
 			}
 			listarSessaoResumo(io.Out, lista)
-			fmt.Fprint(io.Out, verdof("❯")+" "+dimf("número ou id (enter cancela)")+" ")
+			fmt.Fprint(io.Out, verdof("❯")+" "+dimf("number or id (enter cancels)")+" ")
 			escolha, errLeitura := br.ReadString('\n')
 			if errLeitura != nil { // EOF no meio: sai limpo como no loop
 				fmt.Fprintln(io.Out)
@@ -499,21 +499,21 @@ func repl(io IO, cfg *config.Config) {
 			}
 			escolhido := resolverSessao(escolha, lista)
 			if escolhido == "" {
-				avisoFmt(io.Out, "escolha vazia ou inválida; sessão atual mantida")
+				avisoFmt(io.Out, "empty or invalid choice; keeping the current session")
 				continue
 			}
 			// Retomar = novo id ativo + transcript reconstruído do log.
 			idAtivo = escolhido
 			sess = runtime.NewSessionWithStore(*cfg, loja, idAtivo)
 			if err := sess.Resume(); err != nil {
-				erroFmt(io.ErrOut, "erro retomando sessão", err)
+				erroFmt(io.ErrOut, "error resuming session", err)
 				continue
 			}
 			ultimoContexto = sess.UltimoContexto()
-			okFmt(io.Out, "sessão "+sess.ID()+" retomada")
+			okFmt(io.Out, "session "+sess.ID()+" resumed")
 		case "/save":
 			if loja == nil {
-				avisoFmt(io.Out, "sessão sem persistência: nada para salvar")
+				avisoFmt(io.Out, "session not persisted: nothing to save")
 				continue
 			}
 			titulo := arg
@@ -521,30 +521,30 @@ func repl(io IO, cfg *config.Config) {
 				titulo = tituloPadrao(sess)
 			}
 			if err := loja.SetTitle(sess.ID(), titulo); err != nil {
-				erroFmt(io.ErrOut, "erro salvando título", err)
+				erroFmt(io.ErrOut, "error saving title", err)
 				continue
 			}
-			okFmt(io.Out, "sessão "+sess.ID()+" salva — "+strings.TrimSpace(titulo))
+			okFmt(io.Out, "session "+sess.ID()+" saved — "+strings.TrimSpace(titulo))
 		case "/rename":
 			nome := strings.Join(strings.Fields(arg), " ")
 			if nome == "" {
-				avisoFmt(io.Out, "uso: /rename novo nome da sessão")
+				avisoFmt(io.Out, "usage: /rename <new session name>")
 				continue
 			}
 			if loja == nil {
-				avisoFmt(io.Out, "sessão sem persistência: não há onde gravar o nome")
+				avisoFmt(io.Out, "session not persisted: nowhere to store the name")
 				continue
 			}
 			if err := loja.SetTitle(sess.ID(), nome); err != nil {
-				erroFmt(io.ErrOut, "erro renomeando", err)
+				erroFmt(io.ErrOut, "error renaming", err)
 				continue
 			}
-			okFmt(io.Out, "sessão renomeada: "+nome)
+			okFmt(io.Out, "session renamed: "+nome)
 		case "/help":
 			ajuda(io)
 		case "/update":
 			cmdUpdate(io)
-		case "/contexto":
+		case "/context", "/contexto": // /contexto: alias antigo, fora da ajuda
 			cmdContexto(io.Out, cfg, loja)
 		case "/skills":
 			listarSkills(io.Out, runtime.SkillsDisponiveis(cwd))
@@ -554,18 +554,18 @@ func repl(io IO, cfg *config.Config) {
 			if arg != "" {
 				// troca direta por id se ele existir no catálogo atual
 				if err := trocarModeloDireto(io, cfg, arg); err != nil {
-					erroFmt(io.ErrOut, "erro", err)
+					erroFmt(io.ErrOut, "error", err)
 					continue
 				}
 			} else if err := selecionarModelo(io, cfg); err == errMantido {
-				okFmt(io.Out, "modelo mantido: "+cfg.Model)
+				okFmt(io.Out, "model unchanged: "+cfg.Model)
 				continue
 			} else if err != nil {
-				erroFmt(io.ErrOut, "erro", err)
+				erroFmt(io.ErrOut, "error", err)
 				continue
 			} else {
 				if err := cfg.Save(); err != nil {
-					erroFmt(io.ErrOut, "erro salvando", err)
+					erroFmt(io.ErrOut, "error saving", err)
 					continue
 				}
 				sess.Configure(*cfg)
@@ -575,7 +575,7 @@ func repl(io IO, cfg *config.Config) {
 			procEffort(io, cfg, sess, arg)
 		case "/provider":
 			if err := cmdProvider(io, cfg); err != nil {
-				erroFmt(io.ErrOut, "erro", err)
+				erroFmt(io.ErrOut, "error", err)
 				continue
 			}
 			sess.Configure(*cfg)
@@ -587,7 +587,7 @@ func repl(io IO, cfg *config.Config) {
 				// comando desconhecido.
 				expandido, nome, ok := runtime.ExpandirSkill(cwd, pedido)
 				if !ok {
-					fmt.Fprintf(io.Out, "comando desconhecido: %s (/help lista; /skills lista as skills)\n", campos[0])
+					fmt.Fprintf(io.Out, "unknown command: %s (/help lists commands; /skills lists skills)\n", campos[0])
 					continue
 				}
 				okFmt(io.Out, "skill "+nome)
@@ -627,7 +627,7 @@ func repl(io IO, cfg *config.Config) {
 			}
 			cancel()
 			if errTurno != nil {
-				erroFmt(io.ErrOut, "erro", errTurno)
+				erroFmt(io.ErrOut, "error", errTurno)
 			}
 			select {
 			case <-fechar:
@@ -639,25 +639,25 @@ func repl(io IO, cfg *config.Config) {
 }
 
 func ajuda(io IO) {
-	fmt.Fprint(io.Out, cianof("comandos")+`
-  /model            lista o catálogo completo (alfabético) e troca o modelo
-  /model <id>       troca direta quando o id está no catálogo
-  /effort           mostra effort atual e níveis comuns
-  /effort <nivel>   grava e entra na próxima requisição
-  /effort -         limpa (request volta sem reasoning_effort)
-  /provider         troca base URL + chave; valida /models antes de salvar
-  /new              limpa a história da sessão (conversa nova)
-  /resume           lista as últimas sessões e retoma uma
-  /save [título]    dá título à sessão atual e grava o log
-  /rename <nome>    renomeia a sessão atual (aba do terminal e painel)
-  /update           baixa e instala a release mais nova do canal
-  /contexto         política de compactação ativa e o que cada uma já fez
-  /skills           lista as skills; /<nome> [args] executa uma
-  /tasks            lista os sub-agentes; /tasks <id> detalha; /tasks cancel <id>
-  /help             esta ajuda
-  /exit, /quit      sair
+	fmt.Fprint(io.Out, cianof("commands")+`
+  /model            list the full catalog (alphabetical) and switch model
+  /model <id>       switch directly when the id is in the catalog
+  /effort           show the current effort and common levels
+  /effort <level>   save it; applies to the next request
+  /effort -         clear it (requests go out without reasoning_effort)
+  /provider         change base URL + key; validates /models before saving
+  /new              clear the session history (new conversation)
+  /resume           list recent sessions and resume one
+  /save [title]     title the current session and save the log
+  /rename <name>    rename the current session (terminal tab and panel)
+  /update           download and install the latest release from the channel
+  /context          active compaction policy and what each one has done
+  /skills           list skills; /<name> [args] runs one
+  /tasks            list sub-agents; /tasks <id> details; /tasks cancel <id>
+  /help             this help
+  /exit, /quit      exit
 `)
-	fmt.Fprint(io.Out, dimf("texto livre vai direto ao modelo; Ctrl+C cancela a rodada em curso.")+"\n\n")
+	fmt.Fprint(io.Out, dimf("plain text goes straight to the model; Ctrl+C cancels the current turn.")+"\n\n")
 }
 
 // trocarModeloDireto resolve /model <índice|id>: aceita número da lista
@@ -682,7 +682,7 @@ func trocarModeloDireto(io IO, cfg *config.Config, entrada string) error {
 		id = entrada
 	}
 	if id == "" {
-		return fmt.Errorf("%q não está no catálogo do provider; use /model sem argumento para listar", entrada)
+		return fmt.Errorf("%q is not in the provider's catalog; run /model with no argument to list it", entrada)
 	}
 	copia := *cfg
 	copia.Model = id
@@ -700,12 +700,12 @@ func trocarModeloDireto(io IO, cfg *config.Config, entrada string) error {
 
 // procEffort processa /effort [nivel].
 func procEffort(io IO, cfg *config.Config, sess *runtime.Session, arg string) {
-	atual := "(desativado)"
+	atual := "(off)"
 	if cfg.Effort != "" {
 		atual = cfg.Effort
 	}
 	if arg == "" {
-		fmt.Fprintf(io.Out, "effort: %s · níveis: %s · `/effort -` limpa\n", atual, strings.Join(Esforcos, ", "))
+		fmt.Fprintf(io.Out, "effort: %s · levels: %s · `/effort -` clears\n", atual, strings.Join(Esforcos, ", "))
 		return
 	}
 	copia := *cfg
@@ -715,15 +715,15 @@ func procEffort(io IO, cfg *config.Config, sess *runtime.Session, arg string) {
 		copia.Effort = arg
 	}
 	if err := copia.Save(); err != nil {
-		fmt.Fprintf(io.ErrOut, "erro salvando: %v (effort atual continua %s)\n", err, atual)
+		fmt.Fprintf(io.ErrOut, "error saving: %v (effort stays %s)\n", err, atual)
 		return
 	}
 	*cfg = copia
 	sess.Configure(*cfg)
 	if cfg.Effort == "" {
-		fmt.Fprintln(io.Out, "effort limpo; a próxima requisição sai SEM reasoning_effort.")
+		fmt.Fprintln(io.Out, "effort cleared; the next request goes out WITHOUT reasoning_effort.")
 	} else {
-		fmt.Fprintf(io.Out, "effort=%s; entra na próxima requisição (provider recusa? `/effort -` limpa).\n", cfg.Effort)
+		fmt.Fprintf(io.Out, "effort=%s; applies to the next request (provider rejects it? `/effort -` clears).\n", cfg.Effort)
 	}
 }
 
@@ -737,7 +737,7 @@ func cmdProvider(io IO, cfg *config.Config) error {
 	if v := perguntar(io, "base URL", base); v != "" && v != base {
 		base = v
 	}
-	fmt.Fprintln(io.Out, "enter mantém a chave atual; input da nova é oculto.")
+	fmt.Fprintln(io.Out, "enter keeps the current key; the new key input is hidden.")
 	nova := ""
 	if v, err := PromptKey("api key: "); err == nil && strings.TrimSpace(v) != "" {
 		nova = strings.TrimSpace(v)
@@ -749,7 +749,7 @@ func cmdProvider(io IO, cfg *config.Config) error {
 		}
 	}
 	if key == "" {
-		return fmt.Errorf("chave obrigatória para validar /models")
+		return fmt.Errorf("an API key is required to validate /models")
 	}
 
 	copia := *cfg
@@ -762,9 +762,9 @@ func cmdProvider(io IO, cfg *config.Config) error {
 		return err
 	}
 	if copia.Model == "" || fc != nil {
-		fmt.Fprintln(io.Out, "provider novo não tem o model atual — escolha outro:")
+		fmt.Fprintln(io.Out, "the new provider does not have the current model — pick another:")
 		if err := selecionarModelo(io, &copia); err != nil {
-			return fmt.Errorf("provider validado; corra /provider de novo para a escolha de model (%w)", err)
+			return fmt.Errorf("provider validated; run /provider again to pick a model (%w)", err)
 		}
 	}
 	if err := copia.Save(); err != nil {

@@ -153,10 +153,10 @@ func (s *Session) Send(ctx context.Context, r Renderer, cwd, pedido string) erro
 		r = RendererDe(&strings.Builder{})
 	}
 	if strings.TrimSpace(pedido) == "" {
-		return fmt.Errorf("pedido vazio")
+		return fmt.Errorf("empty prompt")
 	}
 	if !s.config.Pronta() {
-		return fmt.Errorf("configuração incompleta (%s); execute `bh` sem argumentos para configurar", strings.Join(s.config.Faltas(), ", "))
+		return fmt.Errorf("incomplete configuration (%s); run `bh` with no arguments to set it up", strings.Join(s.config.Faltas(), ", "))
 	}
 	if ctx == nil {
 		var cancelado context.CancelFunc
@@ -204,7 +204,7 @@ func (s *Session) Send(ctx context.Context, r Renderer, cwd, pedido string) erro
 		if !av.Cabe {
 			podado := podar(working, &piso, av.TokensEntrada+av.TokensSaida-s.config.Janela)
 			if podado == nil {
-				return fmt.Errorf("guardrail: request não cabe (%s) e a poda não aliviou o suficiente", av.Veredito())
+				return fmt.Errorf("guardrail: request does not fit (%s) and pruning did not free enough", av.Veredito())
 			}
 			r.Guardrail(true)
 			s.registrar("guardrail", map[string]any{
@@ -325,7 +325,7 @@ func (s *Session) Send(ctx context.Context, r Renderer, cwd, pedido string) erro
 			})
 		}
 	}
-	return fmt.Errorf("turno excedeu 64 ciclos; teto técnico configurável (não é permissionamento)")
+	return fmt.Errorf("turn exceeded 64 cycles; configurable technical limit (not a permission check)")
 }
 
 func toolSchemas(lista []tools.Spec) []map[string]any {

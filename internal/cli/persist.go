@@ -38,7 +38,7 @@ func abrirStore(io IO) (*store.Store, string) {
 	caminho := filepath.Join(config.Dir(), nomeBanco)
 	loja, err := store.Open(caminho)
 	if err != nil {
-		avisoFmt(io.ErrOut, "sessão sem persistência: "+umaLinhaErro(err))
+		avisoFmt(io.ErrOut, "session not persisted: "+umaLinhaErro(err))
 		return nil, ""
 	}
 	return loja, novoIDSessao()
@@ -78,7 +78,7 @@ func idadeFormata(ts string) string {
 	d := time.Since(t)
 	switch {
 	case d < time.Minute:
-		return "agora"
+		return "now"
 	case d < time.Hour:
 		return fmt.Sprintf("%dmin", int(d.Minutes()))
 	case d < 24*time.Hour:
@@ -117,10 +117,10 @@ func listarSessoesMonta(loja *store.Store, limite int) []linhaSessao {
 // listarSessaoResumo imprime a lista numerada de /resume.
 func listarSessaoResumo(out io.Writer, ls []linhaSessao) {
 	if len(ls) == 0 {
-		fmt.Fprintln(out, dimf("nenhuma sessão anterior encontrada"))
+		fmt.Fprintln(out, dimf("no previous sessions found"))
 		return
 	}
-	fmt.Fprintln(out, dimf("sessões anteriores — número para retomar:"))
+	fmt.Fprintln(out, dimf("previous sessions — number to resume:"))
 	for i, l := range ls {
 		titulo := strings.TrimSpace(l.Title)
 		if titulo == "" {
@@ -129,7 +129,7 @@ func listarSessaoResumo(out io.Writer, ls []linhaSessao) {
 				previa = string(r[:60]) + "…"
 			}
 			if previa == "" {
-				previa = "(sem título)"
+				previa = "(untitled)"
 			}
 			titulo = dimf(previa)
 		} else {
@@ -140,7 +140,7 @@ func listarSessaoResumo(out io.Writer, ls []linhaSessao) {
 			cianof(l.ID),
 			titulo,
 			dimf(idadeFormata(l.UpdatedAt)),
-			dimf(fmt.Sprintf("%d eventos", l.Eventos)),
+			dimf(fmt.Sprintf("%d events", l.Eventos)),
 		)
 	}
 }
@@ -188,11 +188,11 @@ func umaLinhaErro(err error) string {
 func statusbarSessao(out io.Writer, cfg *config.Config, id string) {
 	provider := cfg.CurrentProvider
 	if provider == "" {
-		provider = "sem-provider"
+		provider = "no-provider"
 	}
 	modelo := cfg.Model
 	if modelo == "" {
-		modelo = "selecione um modelo"
+		modelo = "select a model"
 	}
 	linha := provider + " · " + modelo
 	if cfg.Effort != "" {
@@ -229,5 +229,5 @@ func tituloPadrao(sess *runtime.Session) string {
 		}
 		return t
 	}
-	return "sessão sem título"
+	return "untitled session"
 }

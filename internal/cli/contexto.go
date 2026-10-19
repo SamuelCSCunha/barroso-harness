@@ -82,14 +82,14 @@ func cmdContexto(out io.Writer, cfg *config.Config, loja *store.Store) {
 	if pol == "" {
 		pol = "agente"
 	}
-	fmt.Fprintln(out, cianof("política ativa: ")+pol+dimf(` — troque com "context_policy": "agente" | "limiar" no config.json`))
+	fmt.Fprintln(out, cianof("active policy: ")+pol+dimf(` — change it with "context_policy": "agente" | "limiar" in config.json`))
 	if loja == nil {
-		avisoFmt(out, "sessão sem persistência: não há log para agregar")
+		avisoFmt(out, "session not persisted: no log to aggregate")
 		return
 	}
 	ag := agregarContexto(loja, 200)
 	if len(ag) == 0 {
-		fmt.Fprintln(out, dimf("nenhuma compactação registrada ainda nas últimas 200 sessões"))
+		fmt.Fprintln(out, dimf("no compactions recorded yet in the last 200 sessions"))
 		return
 	}
 	for _, nome := range []string{"agente", "limiar"} {
@@ -97,13 +97,13 @@ func cmdContexto(out io.Writer, cfg *config.Config, loja *store.Store) {
 		if a == nil {
 			continue
 		}
-		linha := fmt.Sprintf("%-7s %3d sessões · %d ctx_compact · %d guardrail proativo · %d reativo",
+		linha := fmt.Sprintf("%-7s %3d sessions · %d ctx_compact · %d proactive guardrail · %d reactive",
 			nome, len(a.Sessoes), a.Agente, a.Proativa, a.Reativa)
 		if a.BytesAntes > 0 {
-			linha += fmt.Sprintf(" · histórico %d→%d KiB (%.0f%% menor)",
+			linha += fmt.Sprintf(" · history %d→%d KiB (%.0f%% smaller)",
 				a.BytesAntes>>10, a.BytesDepois>>10, 100*(1-float64(a.BytesDepois)/float64(a.BytesAntes)))
 		}
 		fmt.Fprintln(out, linha)
 	}
-	fmt.Fprintln(out, dimf("reativo = o provider recusou por contexto; é o sinal de que a política chegou tarde"))
+	fmt.Fprintln(out, dimf("reactive = the provider rejected the request size; a sign the policy acted too late"))
 }

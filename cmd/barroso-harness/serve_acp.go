@@ -21,7 +21,7 @@ func serveACP() {
 	if err != nil {
 		// Falha de config sai no stderr (log do protocolo), nunca no stdout —
 		// o fio ainda é o(os.Stdout) do Sirve.
-		os.Stderr.WriteString("erro: " + err.Error() + "\n")
+		os.Stderr.WriteString("error: " + err.Error() + "\n")
 		os.Exit(1)
 	}
 	cwd, _ := os.Getwd()
@@ -31,7 +31,7 @@ func serveACP() {
 	// Best-effort — sem banco o protocolo segue, só sem histórico.
 	loja, errBanco := store.Open(filepath.Join(config.Dir(), "sessions.db"))
 	if errBanco != nil {
-		os.Stderr.WriteString("aviso: sessão sem persistência: " + errBanco.Error() + "\n")
+		os.Stderr.WriteString("warning: session not persisted: " + errBanco.Error() + "\n")
 		loja = nil
 	}
 	defer func() {
@@ -60,7 +60,7 @@ func serveACP() {
 		}
 	}
 	if err := ag.Handle(nil, os.Stdin, os.Stdout); err != nil {
-		os.Stderr.WriteString("erro: " + err.Error() + "\n")
+		os.Stderr.WriteString("error: " + err.Error() + "\n")
 		os.Exit(1)
 	}
 	ag.Esperar()
@@ -87,7 +87,7 @@ func novaSessaoACP(cfg config.Config, loja *store.Store, cwd string, abertos *[]
 	}
 	conj, avisos := wiring.Montar(nil, cfg, sess, cwd)
 	for _, aviso := range avisos {
-		os.Stderr.WriteString("aviso: " + aviso + "\n")
+		os.Stderr.WriteString("warning: " + aviso + "\n")
 	}
 	if abertos != nil {
 		*abertos = append(*abertos, conj)
@@ -112,7 +112,7 @@ func carregarSessaoACP(cfg config.Config, loja *store.Store, cwd, id string, abe
 	}
 	conj, avisos := wiring.Montar(nil, cfg, sess, cwd)
 	for _, aviso := range avisos {
-		os.Stderr.WriteString("aviso: " + aviso + "\n")
+		os.Stderr.WriteString("warning: " + aviso + "\n")
 	}
 	if abertos != nil {
 		*abertos = append(*abertos, conj)

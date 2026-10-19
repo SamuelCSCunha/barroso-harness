@@ -27,10 +27,10 @@ func TestContextoAgregaPorPolitica(t *testing.T) {
 	cmdContexto(&out, &config.Config{}, loja)
 	s := out.String()
 	for _, quer := range []string{
-		"política ativa: agente",
-		"agente    1 sessões · 1 ctx_compact",
-		"histórico 40→10 KiB (75% menor)",
-		"limiar    1 sessões · 0 ctx_compact · 1 guardrail proativo · 1 reativo",
+		"active policy: agente",
+		"agente    1 sessions · 1 ctx_compact",
+		"history 40→10 KiB (75% smaller)",
+		"limiar    1 sessions · 0 ctx_compact · 1 proactive guardrail · 1 reactive",
 	} {
 		if !strings.Contains(s, quer) {
 			t.Errorf("saída sem %q:\n%s", quer, s)
@@ -42,7 +42,7 @@ func TestContextoSemLoja(t *testing.T) {
 	semCores(t)
 	var out bytes.Buffer
 	cmdContexto(&out, &config.Config{PoliticaContexto: "limiar"}, nil)
-	if !strings.Contains(out.String(), "política ativa: limiar") || !strings.Contains(out.String(), "sem persistência") {
+	if !strings.Contains(out.String(), "active policy: limiar") || !strings.Contains(out.String(), "not persisted") {
 		t.Fatalf("saída: %q", out.String())
 	}
 }

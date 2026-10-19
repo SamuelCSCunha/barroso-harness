@@ -205,7 +205,7 @@ func (c Config) Resumo() string {
 	}
 	parte += fmt.Sprintf(" · model %s", c.Model)
 	if c.Janela > 0 {
-		parte += fmt.Sprintf(" · janela %d (%s)", c.Janela, fonteJanela(c.JanelaSource))
+		parte += fmt.Sprintf(" · window %d (%s)", c.Janela, fonteJanela(c.JanelaSource))
 	}
 	return parte
 }
@@ -217,7 +217,7 @@ func fonteJanela(s string) string {
 	case FonteManual:
 		return FonteManual
 	default:
-		return "desconhecida"
+		return "unknown"
 	}
 }
 
@@ -234,7 +234,7 @@ func Load() (Config, error) {
 		return c, err
 	}
 	if err := json.Unmarshal(b, &c); err != nil {
-		return c, fmt.Errorf("config %s inválida: %w", path, err)
+		return c, fmt.Errorf("invalid config %s: %w", path, err)
 	}
 	migrarShapeAntigo(b, &c)
 	c.Home = Dir()

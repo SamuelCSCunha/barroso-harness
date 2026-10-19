@@ -30,7 +30,7 @@ func TestTuiTurnoGlifosEPaleta(t *testing.T) {
 
 	for _, quer := range []string{
 		glifoTool, "terminal_run", "120ms", corCorMag,
-		glifoGuard, "tokens ↑1200 ↓45", "890ms", "compactado",
+		glifoGuard, "tokens ↑1200 ↓45", "890ms", "compacted",
 	} {
 		if !strings.Contains(saida, quer) {
 			t.Fatalf("TUI sem %q na saída:\n%q", quer, saida)
@@ -45,7 +45,7 @@ func TestPuroSemEscapes(t *testing.T) {
 
 	var sb strings.Builder
 	rendererTurno(&sb).Tool("terminal_run", 120*time.Millisecond, false)
-	if !strings.Contains(sb.String(), "[tool terminal_run ok em 120ms]") {
+	if !strings.Contains(sb.String(), "[tool terminal_run ok in 120ms]") {
 		t.Fatalf("modo puro perdeu o literal do runtime_test:\n%q", sb.String())
 	}
 	if strings.Contains(sb.String(), "\033") {
@@ -70,7 +70,7 @@ func TestListaModelosCompleta(t *testing.T) {
 	var sb strings.Builder
 	listarModelos(&sb, ls, "m-050")
 	saida := sb.String()
-	for _, quer := range []string{"121 disponíveis", "  1 m-000", " 51 m-050", "120 m-119", "121 z-modelo-longo"} {
+	for _, quer := range []string{"121 available", "  1 m-000", " 51 m-050", "120 m-119", "121 z-modelo-longo"} {
 		if !strings.Contains(saida, quer) {
 			t.Fatalf("lista sem %q:\n%s", quer, saida)
 		}

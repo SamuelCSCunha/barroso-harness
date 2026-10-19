@@ -23,11 +23,11 @@ import (
 // reativa limitada. Reusa a Sessão sem histórico prévio: stateless por vez.
 func Turno(out io.Writer, cfg config.Config, cwd, pedido string) error {
 	if strings.TrimSpace(pedido) == "" {
-		return fmt.Errorf("pedido vazio: use -p \"...\"")
+		return fmt.Errorf("empty prompt: use -p \"...\"")
 	}
 	if !cfg.Pronta() {
 		return fmt.Errorf(
-			"configuração incompleta (%s) — rode `bh` sem argumentos para configurar provider/model interativamente, ou edite %s",
+			"incomplete configuration (%s) — run `bh` with no arguments to set up provider/model interactively, or edit %s",
 			strings.Join(cfg.Faltas(), ", "), filePath(cfg))
 	}
 	if err := NewSession(cfg).Send(context.Background(), RendererDe(out), cwd, pedido); err != nil {
@@ -44,11 +44,11 @@ func TurnoPersistente(out io.Writer, cfg config.Config, cwd, pedido string, st *
 		return Turno(out, cfg, cwd, pedido)
 	}
 	if strings.TrimSpace(pedido) == "" {
-		return fmt.Errorf("pedido vazio: use -p \"...\"")
+		return fmt.Errorf("empty prompt: use -p \"...\"")
 	}
 	if !cfg.Pronta() {
 		return fmt.Errorf(
-			"configuração incompleta (%s) — rode `bh` sem argumentos para configurar provider/model interativamente, ou edite %s",
+			"incomplete configuration (%s) — run `bh` with no arguments to set up provider/model interactively, or edit %s",
 			strings.Join(cfg.Faltas(), ", "), filePath(cfg))
 	}
 	return NewSessionWithStore(cfg, st, sessionID).Send(context.Background(), RendererDe(out), cwd, pedido)

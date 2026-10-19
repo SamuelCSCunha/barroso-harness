@@ -63,11 +63,11 @@ type Request struct {
 func (r Request) Veredito() string {
 	switch {
 	case r.Janela == 0:
-		return "guardrail inativo: janela do modelo desconhecida"
+		return "guardrail inactive: model context window unknown"
 	case r.Cabe:
-		return fmt.Sprintf("cabe: %d + %d reservado ≤ %d", r.TokensEntrada, r.TokensSaida, r.Janela)
+		return fmt.Sprintf("fits: %d + %d reserved ≤ %d", r.TokensEntrada, r.TokensSaida, r.Janela)
 	default:
-		return fmt.Sprintf("estoura: %d + %d reservado > %d", r.TokensEntrada, r.TokensSaida, r.Janela)
+		return fmt.Sprintf("overflows: %d + %d reserved > %d", r.TokensEntrada, r.TokensSaida, r.Janela)
 	}
 }
 

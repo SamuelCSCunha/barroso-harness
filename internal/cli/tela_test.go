@@ -52,8 +52,8 @@ func TestAbaNovaSessaoNaAbertura(t *testing.T) {
 	var sb strings.Builder
 	tl := &tela{out: &sb}
 	tl.Estado(estadoPainel{modelo: "m"})
-	if !strings.Contains(sb.String(), "\033]0;BH | Nova sessão\a") {
-		t.Fatal("aba deveria abrir como 'BH | Nova sessão'")
+	if !strings.Contains(sb.String(), "\033]0;BH | New session\a") {
+		t.Fatal("aba deveria abrir como 'BH | New session'")
 	}
 }
 

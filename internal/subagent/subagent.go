@@ -124,7 +124,7 @@ func (c *coletor) Resposta(texto string) {
 func (c *coletor) Tool(nome string, _ time.Duration, erro bool) {
 	linha := "[tool " + nome + "]"
 	if erro {
-		linha = "[tool " + nome + " erro]"
+		linha = "[tool " + nome + " error]"
 	}
 	c.g.mu.Lock()
 	defer c.g.mu.Unlock()

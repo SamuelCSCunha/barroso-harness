@@ -86,7 +86,7 @@ func Montar(ctx context.Context, cfg config.Config, sess *runtime.Session, cwd s
 		e := gestor.conectar(s)
 		gestor.registrar(e)
 		if e.erro != "" {
-			avisos = append(avisos, fmt.Sprintf("servidor MCP %q: %s", nome, e.erro))
+			avisos = append(avisos, fmt.Sprintf("MCP server %q: %s", nome, e.erro))
 		}
 	}
 	sess.Injetar(gestor.specs()...)
@@ -197,7 +197,7 @@ func subagenteNome() string { return subagent.PrefixoPadrao }
 // bloco.
 func umaLinha(err error) string {
 	if err == nil {
-		return "(sem detalhe)"
+		return "(no detail)"
 	}
 	s := strings.TrimSpace(err.Error())
 	if i := strings.IndexAny(s, "\r\n"); i >= 0 {

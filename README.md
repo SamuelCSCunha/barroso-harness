@@ -52,7 +52,7 @@ Comandos dentro da sessão:
 /update                baixa e instala a release mais nova do canal
 /skills                lista as skills; /<nome> [args] executa uma
 /tasks                 lista os sub-agentes; /tasks <id> detalha; /tasks cancel <id>
-/contexto              política de compactação ativa e o que cada uma já fez
+/context               active compaction policy and what each one has done
 /help
 /exit                  também /quit
 ```
@@ -103,9 +103,9 @@ A sessão interativa (`bh` sem argumentos, em terminal real) usa a roupa TUI:
 
 ```text
 Barroso Harness
-digite /help para os comandos · texto livre vai ao modelo
+type /help for commands · plain text goes to the model
 
-provider keys-barroso · effort high · model barroso-chat · janela 250k
+provider keys-barroso · effort high · model barroso-chat · window 250k
 > barroso-chat ·high
 ▶ terminal_run 120ms ok
   exit_code: 0
@@ -133,7 +133,7 @@ Releases são automáticas: push na `main` → webhook do `deploy.barroso.tec.br
 - `agente` (padrão): o modelo tem a tool `ctx_compact` e compacta num marco da tarefa, escrevendo o estado de trabalho que substitui o histórico anterior ao pedido atual. O guardrail por orçamento continua como rede de segurança.
 - `limiar`: sem `ctx_compact`; só o guardrail compacta, ao estourar a janela.
 
-Cada compactação vai para o `sessions.db` com a política que a produziu, e `/contexto` agrega por política (compactações do agente, guardrail proativo, guardrail **reativo** — o sinal de que a política chegou tarde — e quanto o histórico encolheu). `/resume` e `session/load` reaplicam a compactação, então a sessão retomada volta com o estado, não com a conversa já resumida.
+Cada compactação vai para o `sessions.db` com a política que a produziu, e `/context` (alias antigo `/contexto`) agrega por política (compactações do agente, guardrail proativo, guardrail **reativo** — o sinal de que a política chegou tarde — e quanto o histórico encolheu). `/resume` e `session/load` reaplicam a compactação, então a sessão retomada volta com o estado, não com a conversa já resumida.
 
 ## Busca
 

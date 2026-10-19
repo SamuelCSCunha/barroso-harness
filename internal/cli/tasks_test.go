@@ -37,7 +37,7 @@ func TestTasksVazioDiz(t *testing.T) {
 	semCores(t)
 	var out bytes.Buffer
 	cmdTasks(&out, subagent.Novo(subagent.Config{}), "")
-	if !strings.Contains(out.String(), "nenhuma tarefa") {
+	if !strings.Contains(out.String(), "no tasks") {
 		t.Fatalf("saída: %q", out.String())
 	}
 }
@@ -61,10 +61,10 @@ func TestTasksDetalhaComErro(t *testing.T) {
 	var out bytes.Buffer
 	cmdTasks(&out, g, id)
 	s := out.String()
-	if !strings.Contains(s, "pedido: investigar o bug do parser de datas") {
+	if !strings.Contains(s, "prompt: investigar o bug do parser de datas") {
 		t.Errorf("detalhe sem o pedido:\n%s", s)
 	}
-	if !strings.Contains(s, "erro: config incompleta") {
+	if !strings.Contains(s, "error: config incompleta") {
 		t.Errorf("detalhe sem o erro:\n%s", s)
 	}
 }
@@ -74,7 +74,7 @@ func TestTasksDetalheIdInexistente(t *testing.T) {
 	g, _ := gerenteComTarefa(t)
 	var out bytes.Buffer
 	cmdTasks(&out, g, "t99")
-	if !strings.Contains(out.String(), "não existe") {
+	if !strings.Contains(out.String(), "not found") {
 		t.Fatalf("saída: %q", out.String())
 	}
 }
@@ -85,12 +85,12 @@ func TestTasksCancelTerminadaAvisa(t *testing.T) {
 	g, id := gerenteComTarefa(t)
 	var out bytes.Buffer
 	cmdTasks(&out, g, "cancel "+id)
-	if !strings.Contains(out.String(), "nada a cancelar") {
+	if !strings.Contains(out.String(), "nothing to cancel") {
 		t.Fatalf("saída: %q", out.String())
 	}
 	out.Reset()
 	cmdTasks(&out, g, "cancel")
-	if !strings.Contains(out.String(), "uso: /tasks cancel") {
+	if !strings.Contains(out.String(), "usage: /tasks cancel") {
 		t.Fatalf("sem id deveria mostrar uso: %q", out.String())
 	}
 }

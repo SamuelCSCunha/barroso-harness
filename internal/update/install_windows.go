@@ -95,13 +95,13 @@ func installAt(target, staged string) (installResult, error) {
 		}
 	}
 	if err := os.Rename(target, backup); err != nil {
-		return installResult{commands: []string{powershellReplace(target, staged)}}, fmt.Errorf("renomear executável em uso: %w", err)
+		return installResult{commands: []string{powershellReplace(target, staged)}}, fmt.Errorf("rename running executable: %w", err)
 	}
 	if err := os.Rename(staged, target); err != nil {
 		if rollbackErr := os.Rename(backup, target); rollbackErr != nil {
-			return installResult{commands: []string{powershellReplace(target, staged)}}, fmt.Errorf("instalar staged falhou (%v) e rollback falhou (%w)", err, rollbackErr)
+			return installResult{commands: []string{powershellReplace(target, staged)}}, fmt.Errorf("installing staged binary failed (%v) and rollback failed (%w)", err, rollbackErr)
 		}
-		return installResult{commands: []string{powershellReplace(target, staged)}}, fmt.Errorf("instalar staged: %w", err)
+		return installResult{commands: []string{powershellReplace(target, staged)}}, fmt.Errorf("install staged binary: %w", err)
 	}
 	return installResult{path: target}, nil
 }
@@ -140,7 +140,7 @@ func verifyStaged(staged, version string) error {
 	cmd := exec.Command(staged, "-version")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("executar binário staged: %w: %s", err, strings.TrimSpace(string(output)))
+		return fmt.Errorf("run staged binary: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return validateVersionOutput(string(output), version)
 }

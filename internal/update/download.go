@@ -36,21 +36,21 @@ func AssetPlataformaNome() string {
 // do processo é quem mandou atualizar.
 func Baixar(ctx context.Context, asset Asset, soma string, staging string) (string, error) {
 	if asset.URL == "" {
-		return "", errors.New("asset sem URL")
+		return "", errors.New("asset has no URL")
 	}
 	if asset.Name != AssetPlataformaNome() &&
 		!strings.HasPrefix(asset.Name, AssetPlataformaNome()+".") {
-		return "", fmt.Errorf("asset %q não é o binário desta plataforma (%s)",
+		return "", fmt.Errorf("asset %q is not the binary for this platform (%s)",
 			asset.Name, AssetPlataformaNome())
 	}
 	if soma != "" && !éSHA256(soma) {
-		return "", fmt.Errorf("soma declarada para %s é inválida: %q", asset.Name, soma)
+		return "", fmt.Errorf("declared checksum for %s is invalid: %q", asset.Name, soma)
 	}
 
 	cliente := &http.Client{Timeout: timeoutHTTP}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, asset.URL, nil)
 	if err != nil {
-		return "", fmt.Errorf("montar download de %s: %w", asset.Name, err)
+		return "", fmt.Errorf("build download request for %s: %w", asset.Name, err)
 	}
 	// octet-stream é o que a API do GitHub quer para devolver BYTES em vez do
 	// metadata JSON do asset. O token vai no header, NUNCA na query: URL com
@@ -60,22 +60,22 @@ func Baixar(ctx context.Context, asset Asset, soma string, staging string) (stri
 
 	resp, err := cliente.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("baixar %s: %w", asset.Name, err)
+		return "", fmt.Errorf("download %s: %w", asset.Name, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("baixar %s: HTTP %s", asset.Name, resp.Status)
+		return "", fmt.Errorf("download %s: HTTP %s", asset.Name, resp.Status)
 	}
 	if ct := resp.Header.Get("Content-Type"); strings.Contains(strings.ToLower(ct), "text/html") {
-		return "", fmt.Errorf("baixar %s: canal devolveu HTML (%s) em vez do binário", asset.Name, ct)
+		return "", fmt.Errorf("download %s: channel returned HTML (%s) instead of the binary", asset.Name, ct)
 	}
 
 	if err := os.MkdirAll(filepath.Dir(staging), 0o750); err != nil {
-		return "", fmt.Errorf("criar staging: %w", err)
+		return "", fmt.Errorf("create staging: %w", err)
 	}
 	arquivo, err := os.OpenFile(staging, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o750)
 	if err != nil {
-		return "", fmt.Errorf("criar staging %s: %w", staging, err)
+		return "", fmt.Errorf("create staging %s: %w", staging, err)
 	}
 
 	gravado := false
@@ -96,28 +96,28 @@ func Baixar(ctx context.Context, asset Asset, soma string, staging string) (stri
 	// silenciosamente e a soma conferiria contra um arquivo truncado.
 	bytes, err := io.Copy(io.MultiWriter(arquivo, hasher), io.LimitReader(resp.Body, limite+1))
 	if err != nil {
-		return "", fmt.Errorf("gravar %s: %w", asset.Name, err)
+		return "", fmt.Errorf("write %s: %w", asset.Name, err)
 	}
 	if bytes > limite {
-		return "", fmt.Errorf("%s passa do teto de %d bytes", asset.Name, tetoAsset)
+		return "", fmt.Errorf("%s exceeds the %d-byte limit", asset.Name, tetoAsset)
 	}
 	if asset.Bytes > 0 && bytes != asset.Bytes {
-		return "", fmt.Errorf("tamanho de %s diverge: recebido %d, esperado %d",
+		return "", fmt.Errorf("size mismatch for %s: got %d, expected %d",
 			asset.Name, bytes, asset.Bytes)
 	}
 	obtida := hex.EncodeToString(hasher.Sum(nil))
 	if soma != "" && !strings.EqualFold(obtida, strings.ToLower(soma)) {
-		return "", fmt.Errorf("SHA256 de %s diverge: recebido %s, esperado %s",
+		return "", fmt.Errorf("SHA256 mismatch for %s: got %s, expected %s",
 			asset.Name, obtida, soma)
 	}
 	if err := arquivo.Chmod(0o750); err != nil {
-		return "", fmt.Errorf("permissão do staged: %w", err)
+		return "", fmt.Errorf("chmod staged binary: %w", err)
 	}
 	if err := arquivo.Sync(); err != nil {
-		return "", fmt.Errorf("sync do staged: %w", err)
+		return "", fmt.Errorf("sync staged binary: %w", err)
 	}
 	if err := arquivo.Close(); err != nil {
-		return "", fmt.Errorf("fechar staged: %w", err)
+		return "", fmt.Errorf("close staged binary: %w", err)
 	}
 	gravado = true
 	return staging, nil

@@ -307,12 +307,12 @@ func (t *tela) desenharTrancado() {
 	// Sem linha de título: o nome da sessão vai para a aba do terminal (OSC 0)
 	// e para o painel. O bh tem uma sessão por terminal, então a barra de abas
 	// do OpenCode não faz sentido aqui.
-	// Sessão ainda sem nome aparece como "Nova sessão", igual ao painel. O
+	// Sessão ainda sem nome aparece como "New session", igual ao painel. O
 	// título é comparado já resolvido: comparar o cru deixava a aba sem
 	// título na abertura (vazio == valor inicial de tituloAba).
 	nomeAba := t.estado.titulo
 	if strings.TrimSpace(nomeAba) == "" {
-		nomeAba = "Nova sessão"
+		nomeAba = "New session"
 	}
 	if nomeAba != t.tituloAba {
 		t.tituloAba = nomeAba
@@ -345,7 +345,7 @@ func (t *tela) desenharTrancado() {
 		linha(2+i, s)
 	}
 	if t.rolagem > 0 {
-		linha(h-6-ext, "   "+cinzaf(fmt.Sprintf("↓ %d linhas abaixo · PgDn volta", t.rolagem)))
+		linha(h-6-ext, "   "+cinzaf(fmt.Sprintf("↓ %d lines below · PgDn to return", t.rolagem)))
 	} else {
 		linha(h-6-ext, "")
 	}
@@ -374,12 +374,12 @@ func (t *tela) desenharTrancado() {
 	case t.aviso != "":
 		dirP = append(dirP, amarelof(t.aviso))
 	case t.ocupado:
-		dirP = append(dirP, negritof(cor(corTexto, "esc"))+" "+cinzaf("interrompe"))
+		dirP = append(dirP, negritof(cor(corTexto, "esc"))+" "+cinzaf("interrupt"))
 	}
 	if t.estado.contexto > 0 {
 		dirP = append(dirP, fmtContexto(t.estado.contexto, t.estado.janela))
 	}
-	dirP = append(dirP, negritof(cor(corTexto, "/help"))+" "+cinzaf("comandos"))
+	dirP = append(dirP, negritof(cor(corTexto, "/help"))+" "+cinzaf("commands"))
 	dir := strings.Join(dirP, "  ")
 	linha(h, esq+strings.Repeat(" ", max(1, larg-larguraVis(esq)-larguraVis(dir)))+dir)
 
@@ -433,19 +433,19 @@ func (t *tela) linhasPainel() []string {
 	e := t.estado
 	titulo := e.titulo
 	if titulo == "" {
-		titulo = "Nova sessão"
+		titulo = "New session"
 	}
 	var out []string
 	for _, l := range strings.Split(quebrar(titulo, larguraPain-6), "\n") {
 		out = append(out, "  "+negritof(cor(corTexto, l)))
 	}
-	out = append(out, "", "  "+negritof(cor(corTexto, "Contexto")))
+	out = append(out, "", "  "+negritof(cor(corTexto, "Context")))
 	if e.contexto > 0 {
 		out = append(out, "  "+cinzaf(milhar(e.contexto)+" tokens"))
 		if e.janela > 0 {
-			txt := fmt.Sprintf("%d%% usado", 100*e.contexto/e.janela)
+			txt := fmt.Sprintf("%d%% used", 100*e.contexto/e.janela)
 			if 100*e.contexto/e.janela == 0 {
-				txt = "<1% usado"
+				txt = "<1% used"
 			}
 			out = append(out, "  "+cinzaf(txt))
 		}
@@ -454,12 +454,12 @@ func (t *tela) linhasPainel() []string {
 	}
 	out = append(out, "", "  "+negritof(cor(corTexto, "▼ MCP")))
 	if len(e.mcps) == 0 {
-		out = append(out, "  "+cinzaf("nenhum servidor"))
+		out = append(out, "  "+cinzaf("no servers"))
 	}
 	for _, m := range e.mcps {
 		nome := cortarVis(m, larguraPain-18)
 		pad := strings.Repeat(" ", max(1, larguraPain-17-larguraVis(nome)))
-		out = append(out, "  "+verdof("•")+" "+negritof(cor(corTexto, nome))+pad+cinzaf("Conectado"))
+		out = append(out, "  "+verdof("•")+" "+negritof(cor(corTexto, nome))+pad+cinzaf("Connected"))
 	}
 	return out
 }
@@ -770,7 +770,7 @@ func runTela(io IO) int {
 					continue
 				}
 				ultimoCC = time.Now()
-				editar(func() { t.aviso = "ctrl+c de novo para sair" })
+				editar(func() { t.aviso = "press ctrl+c again to exit" })
 			case "ctrl+d":
 				enviar("/exit")
 			}
@@ -944,7 +944,7 @@ type turnoTela struct {
 	contexto int
 }
 
-func (r *turnoTela) Pensando() { r.t.Pensar("Pensando") }
+func (r *turnoTela) Pensando() { r.t.Pensar("Thinking") }
 
 func (r *turnoTela) ToolInicio(nome, args string) {
 	r.argsPend = resumoArgs(args)
@@ -998,16 +998,16 @@ func (r *turnoTela) Eco(saida string) {
 	larg := r.t.larguraConversa() - 10
 	r.t.mu.Unlock()
 	if total > 1 {
-		primeira += fmt.Sprintf("  (+%d linhas)", total-1)
+		primeira += fmt.Sprintf("  (+%d lines)", total-1)
 	}
 	r.t.Adicionar("  " + cinzaf("› "+cortarVis(primeira, larg)))
 }
 
 func (r *turnoTela) Guardrail(proativa bool) {
 	r.t.pararSpin()
-	msg := "contexto compactado pelo guardrail (o provider recusou por tamanho)"
+	msg := "context compacted by the guardrail (provider rejected the request size)"
 	if proativa {
-		msg = "contexto compactado"
+		msg = "context compacted"
 	}
 	r.t.Adicionar("  " + roxof("◆") + " " + cinzaf(msg))
 }
@@ -1028,7 +1028,7 @@ func (r *turnoTela) Tokens(_, saida int, dur time.Duration, compactou bool) {
 		partes = append(partes, fmt.Sprintf("%.1f tok/s", float64(saida)/dur.Seconds()))
 	}
 	if compactou {
-		partes = append(partes, roxof("compactado"))
+		partes = append(partes, roxof("compacted"))
 	}
 	r.t.Adicionar("")
 	r.t.Adicionar("  " + strings.Join(partes, cinzaf(" · ")))

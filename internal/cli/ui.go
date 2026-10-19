@@ -93,7 +93,7 @@ func ligarCores(io IO) {
 func banner(out io.Writer) {
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, cianof("╭─ ")+negritof(cianof("Barroso Harness")))
-	fmt.Fprintln(out, cianof("╰─ ")+dimf("digite /help para os comandos · texto livre vai ao modelo"))
+	fmt.Fprintln(out, cianof("╰─ ")+dimf("type /help for commands · plain text goes to the model"))
 	fmt.Fprintln(out)
 }
 
@@ -103,11 +103,11 @@ func banner(out io.Writer) {
 func statusbar(out io.Writer, cfg *config.Config) {
 	provider := cfg.CurrentProvider
 	if provider == "" {
-		provider = "sem-provider"
+		provider = "no-provider"
 	}
 	modelo := cfg.Model
 	if modelo == "" {
-		modelo = "selecione um modelo"
+		modelo = "select a model"
 	}
 	linha := provider + " · " + modelo
 	if cfg.Effort != "" {
@@ -142,7 +142,7 @@ func despedida(out io.Writer) {
 		// que o spinner tenha sido interrompido no meio.
 		fmt.Fprint(out, mostrarCursor)
 	}
-	fmt.Fprintln(out, dimf("╰─ até logo"))
+	fmt.Fprintln(out, dimf("╰─ bye"))
 }
 
 // erroFmt imprime erro em vermelho, uma linha, sem markup cru.
@@ -174,11 +174,11 @@ func avisoFmt(out io.Writer, msg string) {
 // completa é o que permite achar um modelo pelo olho.
 func listarModelos(out io.Writer, ls []dealer.CatalogModel, atual string) {
 	if len(ls) == 0 {
-		fmt.Fprintln(out, amarelof("catalogo vazio"))
+		fmt.Fprintln(out, amarelof("empty catalog"))
 		return
 	}
 	fmt.Fprintln(out)
-	fmt.Fprintln(out, cianof(fmt.Sprintf("Modelos  %d disponíveis", len(ls))))
+	fmt.Fprintln(out, cianof(fmt.Sprintf("Models  %d available", len(ls))))
 	fmt.Fprintln(out, dimf("────────────────────────────────────────────────────────────"))
 	largura := 0
 	for _, m := range ls {
@@ -206,9 +206,9 @@ func listarModelos(out io.Writer, ls []dealer.CatalogModel, atual string) {
 		}
 		fmt.Fprintf(out, "%s%s %s%s%s\n", marca, dimf(fmt.Sprintf("%3d", i+1)), nome, pad, extra)
 	}
-	dica := "digite o número ou o id"
+	dica := "type the number or id"
 	if atual != "" {
-		dica += " · Enter vazio mantém " + atual
+		dica += " · empty Enter keeps " + atual
 	}
 	fmt.Fprintln(out, dimf(dica))
 }
@@ -222,7 +222,7 @@ func (t tuiTurno) Resposta(texto string) { fmt.Fprintln(t.out, texto) }
 func (t tuiTurno) Tool(nome string, dur time.Duration, erro bool) {
 	estado, colore := "ok", verdof
 	if erro {
-		estado, colore = "erro", vermelhof
+		estado, colore = "error", vermelhof
 	}
 	fmt.Fprintf(t.out, "%s %s %s %s\n",
 		cianof(glifoTool), magof(nome),
@@ -239,9 +239,9 @@ func (t tuiTurno) Eco(saida string) {
 }
 
 func (t tuiTurno) Guardrail(proativa bool) {
-	msg := "provider recusou por contexto; compactação reativa"
+	msg := "provider rejected the request size; reactive compaction"
 	if proativa {
-		msg = "compactação proativa por previsão de estouro"
+		msg = "proactive compaction (predicted overflow)"
 	}
 	fmt.Fprintf(t.out, "%s %s\n", roxof(glifoGuard), dimf(msg))
 }
@@ -252,7 +252,7 @@ func (t tuiTurno) Tokens(prompt, saida int, dur time.Duration, compactou bool) {
 	}
 	linha := fmt.Sprintf("tokens ↑%d ↓%d · %s", prompt, saida, dur.Round(time.Millisecond))
 	if compactou {
-		linha += " · compactado"
+		linha += " · compacted"
 	}
 	fmt.Fprintln(t.out, dimf(linha))
 }

@@ -73,7 +73,7 @@ func (t *turnoTUI) Pensando() {
 	t.spinFim = make(chan struct{})
 	parar, fim := t.spin, t.spinFim
 	t.mu.Unlock()
-	// Cursor escondido enquanto anima: piscando ao lado de "Pensando" ele
+	// Cursor escondido enquanto anima: piscando ao lado de "Thinking" ele
 	// parece campo de digitação. Volta ao parar o spinner.
 	fmt.Fprint(t.out, esconderCursor)
 	go func() {
@@ -84,7 +84,7 @@ func (t *turnoTUI) Pensando() {
 		desde := time.Now()
 		for {
 			fmt.Fprintf(t.out, "\r  %s %s %s\033[K", azulf(quadrosSpin[i%len(quadrosSpin)]),
-				cor(italico+corTexto, "Pensando"), cinzaf(fmt.Sprintf("%.0fs", time.Since(desde).Seconds())))
+				cor(italico+corTexto, "Thinking"), cinzaf(fmt.Sprintf("%.0fs", time.Since(desde).Seconds())))
 			i++
 			select {
 			case <-parar:
@@ -157,15 +157,15 @@ func (t *turnoTUI) Eco(saida string) {
 		fmt.Fprintln(t.out, pre+cinzaf(cortarLargura(l, larguraTerminal()-6)))
 	}
 	if extra > 0 {
-		fmt.Fprintln(t.out, "    "+cinzaf(fmt.Sprintf("… +%d linhas", extra)))
+		fmt.Fprintln(t.out, "    "+cinzaf(fmt.Sprintf("… +%d lines", extra)))
 	}
 }
 
 func (t *turnoTUI) Guardrail(proativa bool) {
 	t.pararSpin()
-	msg := "contexto compactado pelo guardrail (o provider recusou por tamanho)"
+	msg := "context compacted by the guardrail (provider rejected the request size)"
 	if proativa {
-		msg = "contexto compactado"
+		msg = "context compacted"
 	}
 	fmt.Fprintf(t.out, "  %s %s\n", roxof("◆"), cinzaf(msg))
 }
@@ -191,7 +191,7 @@ func (t *turnoTUI) Tokens(prompt, saida int, dur time.Duration, compactou bool) 
 		partes = append(partes, fmtContexto(ctx, t.cfg.Janela))
 	}
 	if compactou {
-		partes = append(partes, roxof("compactado"))
+		partes = append(partes, roxof("compacted"))
 	}
 	fmt.Fprintln(t.out)
 	fmt.Fprintln(t.out, "  "+strings.Join(partes, cinzaf(" · ")))
@@ -203,7 +203,7 @@ func (t *turnoTUI) Tokens(prompt, saida int, dur time.Duration, compactou bool) 
 func cabecalhoTUI(out io.Writer, versao string) {
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "  "+cinzaf("▄▄ ▄▄")+"  "+negritof(cor(corTexto, "barroso"))+negritof(azulf(" harness")))
-	fmt.Fprintln(out, "  "+cinzaf("▀▀ ▀▀")+"  "+cinzaf("v"+strings.TrimPrefix(versao, "v")+" · /help comandos · ctrl+c interrompe"))
+	fmt.Fprintln(out, "  "+cinzaf("▀▀ ▀▀")+"  "+cinzaf("v"+strings.TrimPrefix(versao, "v")+" · /help commands · ctrl+c interrupt"))
 	fmt.Fprintln(out)
 }
 
@@ -213,7 +213,7 @@ func cabecalhoTUI(out io.Writer, versao string) {
 func statusEntrada(out io.Writer, cfg *config.Config, sessao string, mcps int, contexto int) {
 	modelo := cfg.Model
 	if modelo == "" {
-		modelo = "sem modelo"
+		modelo = "no model"
 	}
 	partes := []string{negritof(cor(corTexto, modelo)), cinzaf(cfg.CurrentProvider)}
 	if cfg.Effort != "" {

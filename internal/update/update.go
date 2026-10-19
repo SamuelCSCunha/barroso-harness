@@ -98,14 +98,14 @@ func BuscarUltima(ctx context.Context) (Lancamento, error) {
 	token := tokenDe()
 	if token == "" {
 		return Lancamento{}, errors.New(
-			"canal de atualização precisa de token: defina GITHUB_TOKEN (ou TOKEN_GITHUB) " +
-				"no ambiente — as releases do barroso-harness são privadas")
+			"update channel needs a token: set GITHUB_TOKEN (or TOKEN_GITHUB) " +
+				"in the environment — barroso-harness releases are private")
 	}
 	cliente := &http.Client{Timeout: timeoutHTTP}
 	u := originGitHub + "/repos/" + RepoSlug + "/releases?per_page=20"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return Lancamento{}, fmt.Errorf("montar consulta do canal: %w", err)
+		return Lancamento{}, fmt.Errorf("build channel request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/vnd.github+json")
@@ -113,31 +113,31 @@ func BuscarUltima(ctx context.Context) (Lancamento, error) {
 
 	resp, err := cliente.Do(req)
 	if err != nil {
-		return Lancamento{}, fmt.Errorf("consultar canal: %w", err)
+		return Lancamento{}, fmt.Errorf("query channel: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return Lancamento{}, fmt.Errorf("canal recusou o token (HTTP %s): verifique a permissão do token", resp.Status)
+		return Lancamento{}, fmt.Errorf("channel rejected the token (HTTP %s): check the token permissions", resp.Status)
 	}
 	if resp.StatusCode == http.StatusNotFound {
-		return Lancamento{}, fmt.Errorf("canal não encontrado (HTTP %s): token sem acesso a %s", resp.Status, RepoSlug)
+		return Lancamento{}, fmt.Errorf("channel not found (HTTP %s): token has no access to %s", resp.Status, RepoSlug)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return Lancamento{}, fmt.Errorf("canal respondeu HTTP %s", resp.Status)
+		return Lancamento{}, fmt.Errorf("channel responded HTTP %s", resp.Status)
 	}
 
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, tetoManifest+1))
 	if err != nil {
-		return Lancamento{}, fmt.Errorf("ler resposta do canal: %w", err)
+		return Lancamento{}, fmt.Errorf("read channel response: %w", err)
 	}
 	if len(raw) > tetoManifest {
-		return Lancamento{}, fmt.Errorf("resposta do canal passa de %d bytes", tetoManifest)
+		return Lancamento{}, fmt.Errorf("channel response exceeds %d bytes", tetoManifest)
 	}
 
 	var releases []releaseAPI
 	if err := json.Unmarshal(raw, &releases); err != nil {
-		return Lancamento{}, fmt.Errorf("resposta do canal inválida: %w", err)
+		return Lancamento{}, fmt.Errorf("invalid channel response: %w", err)
 	}
 
 	return escolherMaisNova(releases)
@@ -239,7 +239,7 @@ func escolherMaisNova(releases []releaseAPI) (Lancamento, error) {
 		}
 	}
 	if !temMelhor {
-		return Lancamento{}, errors.New("canal não tem release publicada com binário para esta plataforma")
+		return Lancamento{}, errors.New("channel has no published release with a binary for this platform")
 	}
 	return melhor, nil
 }
@@ -272,7 +272,7 @@ func (l Lancamento) AssetDaPlataforma() (Asset, error) {
 			return a, nil
 		}
 	}
-	return Asset{}, fmt.Errorf("release %s não tem binário para esta plataforma (%s)", l.Version, alvo)
+	return Asset{}, fmt.Errorf("release %s has no binary for this platform (%s)", l.Version, alvo)
 }
 
 // AssetSomas devolve o asset SHA256SUMS, se a release o publicou.
@@ -290,7 +290,7 @@ func (l Lancamento) AssetSomas() (Asset, bool) {
 // metadata futuro a mais não deve derrubar a atualização.
 func ListarSomas(ctx context.Context, asset Asset) (map[string]string, error) {
 	if asset.URL == "" {
-		return nil, errors.New("asset de somas sem URL")
+		return nil, errors.New("checksums asset has no URL")
 	}
 	cliente := &http.Client{Timeout: timeoutHTTP}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, asset.URL, nil)
@@ -301,11 +301,11 @@ func ListarSomas(ctx context.Context, asset Asset) (map[string]string, error) {
 	req.Header.Set("Accept", "application/octet-stream")
 	resp, err := cliente.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("baixar SHA256SUMS: %w", err)
+		return nil, fmt.Errorf("download SHA256SUMS: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("SHA256SUMS respondeu HTTP %s", resp.Status)
+		return nil, fmt.Errorf("SHA256SUMS responded HTTP %s", resp.Status)
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
@@ -338,7 +338,7 @@ var versaoForma = regexp.MustCompile(`^v?\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$`)
 func partirVersao(v string) (comparavel, error) {
 	v = strings.TrimSpace(v)
 	if !versaoForma.MatchString(v) {
-		return comparavel{}, fmt.Errorf("versão %q fora da forma vX.Y.Z[-sufixo]", v)
+		return comparavel{}, fmt.Errorf("version %q is not in the form vX.Y.Z[-suffix]", v)
 	}
 	var c comparavel
 	corpo := strings.TrimPrefix(v, "v")
@@ -350,7 +350,7 @@ func partirVersao(v string) (comparavel, error) {
 	for i, p := range strings.SplitN(corpo, ".", 3) {
 		n, err := strconv.Atoi(p)
 		if err != nil {
-			return comparavel{}, fmt.Errorf("versão %q tem número inválido %q", v, p)
+			return comparavel{}, fmt.Errorf("version %q has invalid number %q", v, p)
 		}
 		c.nums[i] = n
 	}
@@ -433,7 +433,7 @@ func removeIfExists(name string) {
 // seria instalado como se fosse executável.
 func validateVersionOutput(output, expected string) error {
 	if !strings.Contains(output, expected) {
-		return fmt.Errorf("binário staged respondeu %q, esperado %s",
+		return fmt.Errorf("staged binary reported %q, expected %s",
 			strings.TrimSpace(output), expected)
 	}
 	return nil

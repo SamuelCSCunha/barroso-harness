@@ -66,7 +66,7 @@ func TestTokenAusenteExplica(t *testing.T) {
 		t.Fatal("BuscarUltima sem token deveria falhar")
 	}
 	msg := err.Error()
-	for _, quer := range []string{"token", "GITHUB_TOKEN", "privadas"} {
+	for _, quer := range []string{"token", "GITHUB_TOKEN", "private"} {
 		if !strings.Contains(msg, quer) {
 			t.Errorf("mensagem de erro %q deveria mencionar %q", msg, quer)
 		}

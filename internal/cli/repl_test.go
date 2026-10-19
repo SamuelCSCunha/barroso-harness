@@ -191,7 +191,7 @@ func TestReplProviderTrocaERollbackNaFalha(t *testing.T) {
 	if string(antes) != string(depois) {
 		t.Fatal("config foi alterada apesar da falha do /provider")
 	}
-	if !strings.Contains(errIO.String(), "erro") && !strings.Contains(outIO.String(), "erro") {
+	if !strings.Contains(errIO.String(), "error") && !strings.Contains(outIO.String(), "error") {
 		t.Fatalf("falha do /provider não foi reportada: out=%q err=%q", io.Out, io.ErrOut)
 	}
 
@@ -276,7 +276,7 @@ func TestReplMensagemComumNaoEComando(t *testing.T) {
 
 	io, _, errIO := ponteIO(t, "como assim /model?\n/exit\n")
 	RunInteractive(io)
-	if strings.Contains(errIO.String(), "desconhecido") || strings.Contains(errIO.String(), "comando") {
+	if strings.Contains(errIO.String(), "unknown") || strings.Contains(errIO.String(), "command") {
 		// só garante que não quebrou: slash no meio do texto não é comando.
 		_ = io.ErrOut
 	}
@@ -293,13 +293,13 @@ func TestReplModelEnterVazioMantem(t *testing.T) {
 		t.Fatalf("repl saiu com código %d", code)
 	}
 	saida := outIO.String()
-	if !strings.Contains(saida, "Enter vazio mantém a-modelo") {
+	if !strings.Contains(saida, "empty Enter keeps a-modelo") {
 		t.Fatalf("dica do Enter vazio ausente:\n%s", saida)
 	}
-	if !strings.Contains(saida, "modelo mantido: a-modelo") {
+	if !strings.Contains(saida, "model unchanged: a-modelo") {
 		t.Fatalf("confirmação ausente:\n%s", saida)
 	}
-	if strings.Contains(saida, "sem modelo não há turno") {
+	if strings.Contains(saida, "no model, no turn") {
 		t.Fatalf("Enter vazio não deveria insistir quando há modelo:\n%s", saida)
 	}
 	cfg, err := config.Load()

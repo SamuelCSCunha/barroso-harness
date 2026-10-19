@@ -59,9 +59,9 @@ func (p *RendererPuro) Resposta(texto string) { fmt.Fprintln(p.out, texto) }
 func (p *RendererPuro) Tool(nome string, dur time.Duration, erro bool) {
 	estado := "ok"
 	if erro {
-		estado = "erro"
+		estado = "error"
 	}
-	fmt.Fprintf(p.out, "[tool %s %s em %s]\n", nome, estado, dur.Round(time.Millisecond))
+	fmt.Fprintf(p.out, "[tool %s %s in %s]\n", nome, estado, dur.Round(time.Millisecond))
 }
 
 func (p *RendererPuro) Eco(saida string) {
@@ -86,6 +86,6 @@ func (p *RendererPuro) Tokens(int, int, time.Duration, bool) {}
 
 // Textos do guardrail. Ficam aqui porque o modo puro os imprime literal.
 const (
-	guardrailProativo = "[guardrail] compactação proativa por previsão de estouro"
-	guardrailReativo  = "[guardrail] provider recusou por contexto; compactação reativa"
+	guardrailProativo = "[guardrail] proactive compaction (predicted overflow)"
+	guardrailReativo  = "[guardrail] provider rejected the request size; reactive compaction"
 )

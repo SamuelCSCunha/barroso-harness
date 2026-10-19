@@ -44,7 +44,7 @@ func TestIdadeFormata(t *testing.T) {
 		contem   string
 		querExat string
 	}{
-		{10 * time.Second, "", "agora"},
+		{10 * time.Second, "", "now"},
 		{5 * time.Minute, "min", ""},
 		{3 * time.Hour, "h", ""},
 		{48 * time.Hour, "d", ""},
@@ -177,7 +177,7 @@ func TestResumeRetomaSessaoDoLog(t *testing.T) {
 		t.Fatalf("repl saiu com %d: %s", code, io.ErrOut)
 	}
 	tela := outIO.String()
-	for _, quer := range []string{anterior, "conversa antiga", "2 eventos", "retomada"} {
+	for _, quer := range []string{anterior, "conversa antiga", "2 events", "resumed"} {
 		if !strings.Contains(tela, quer) {
 			t.Fatalf("/resume sem %q:\n%s", quer, tela)
 		}
@@ -212,7 +212,7 @@ func TestSaveGravaTitulo(t *testing.T) {
 	if code := RunInteractive(io); code != 0 {
 		t.Fatalf("código %d: %s", code, io.ErrOut)
 	}
-	if !strings.Contains(outIO.String(), "salva") {
+	if !strings.Contains(outIO.String(), "saved") {
 		t.Fatalf("/save não confirmou:\n%s", outIO.String())
 	}
 
@@ -245,7 +245,7 @@ func TestResumeSemSessoesAvisa(t *testing.T) {
 	if code := RunInteractive(io); code != 0 {
 		t.Fatalf("código %d: %s", code, io.ErrOut)
 	}
-	if !strings.Contains(outIO.String(), "nenhuma sessão") {
+	if !strings.Contains(outIO.String(), "no previous sessions") {
 		t.Fatalf("/resume vazio não avisou:\n%s", outIO.String())
 	}
 }
@@ -262,7 +262,7 @@ func TestRenameGravaNome(t *testing.T) {
 		t.Fatalf("código %d", code)
 	}
 	saida := outIO.String()
-	if !strings.Contains(saida, "uso: /rename") || !strings.Contains(saida, "sessão renomeada: refatorar o parser") {
+	if !strings.Contains(saida, "usage: /rename") || !strings.Contains(saida, "session renamed: refatorar o parser") {
 		t.Fatalf("saída:\n%s", saida)
 	}
 	loja, err := store.Open(filepath.Join(config.Dir(), "sessions.db"))
