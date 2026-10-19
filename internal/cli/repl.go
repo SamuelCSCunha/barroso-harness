@@ -18,6 +18,7 @@ import (
 	"github.com/ruanbarroso/barroso-harness/internal/config"
 	"github.com/ruanbarroso/barroso-harness/internal/dealer"
 	"github.com/ruanbarroso/barroso-harness/internal/runtime"
+	"github.com/ruanbarroso/barroso-harness/internal/subagent"
 	"github.com/ruanbarroso/barroso-harness/internal/wiring"
 	"golang.org/x/term"
 )
@@ -39,7 +40,16 @@ type IO struct {
 	// ErrOut viram linhas da conversa e cancelar recebe o Esc/Ctrl+C do turno.
 	tela     *tela
 	cancelar chan struct{}
+	// injetar põe uma linha na entrada do REPL como se fosse digitada (só na
+	// tela cheia): é por onde o aviso de sub-agente terminado acorda o REPL
+	// parado esperando o usuário.
+	injetar func(string)
 }
+
+// linhaSubagentes é a linha sintética que avisa o REPL de que sub-agentes
+// terminaram. Começa com um caractere de controle para nunca colidir com
+// algo digitado.
+const linhaSubagentes = "\x1esubagents"
 
 func (io *IO) Reader() *bufio.Reader {
 	if io.reader == nil {
@@ -412,6 +422,9 @@ func repl(io IO, cfg *config.Config) {
 	// Fechar ao sair: Fecha() do conjunto encerra subprocessos MCP; o gerente
 	// de sub-agentes é in-memory e morre com o processo.
 	defer func() { _ = conjunto.Fechar() }()
+	if g := conjunto.Gerente(); g != nil && io.injetar != nil {
+		g.AoTerminar(func() { io.injetar(linhaSubagentes) })
+	}
 
 	for {
 		// Encerramentos vindos de um turno (Ctrl+C duas vezes) saem ANTES de
@@ -452,6 +465,17 @@ func repl(io IO, cfg *config.Config) {
 			despedida(io.Out)
 			return
 		}
+		// Sub-agentes terminaram: o resultado vira um turno do modelo, sem o
+		// usuário precisar perguntar.
+		avisoSub := ""
+		if strings.TrimSpace(linha) == linhaSubagentes {
+			ts := conjunto.Gerente().Terminadas()
+			if len(ts) == 0 {
+				continue // já entregue (task_result ou aviso anterior)
+			}
+			avisoSub = subagent.AvisoTerminadas(ts, conjunto.Gerente().Ativas())
+			linha = avisoSub
+		}
 		partes := strings.SplitN(strings.TrimSpace(linha), " ", 2)
 		campos := strings.Fields(partes[0])
 		arg := ""
@@ -460,6 +484,9 @@ func repl(io IO, cfg *config.Config) {
 		}
 		if len(campos) == 0 {
 			continue
+		}
+		if avisoSub != "" {
+			campos = []string{""} // cai no turno do modelo, nunca num comando
 		}
 		switch campos[0] {
 		case "/exit", "/quit":
@@ -593,7 +620,17 @@ func repl(io IO, cfg *config.Config) {
 			statusbar(io.Out, cfg)
 		default:
 			pedido := strings.TrimSpace(linha)
-			if strings.HasPrefix(campos[0], "/") {
+			if avisoSub == "" {
+				// Resultado de sub-agente que terminou enquanto o usuário
+				// digitava vai junto com o pedido (modo sem tela cheia, ou
+				// aviso que ainda não foi lido).
+				if g := conjunto.Gerente(); g != nil {
+					if ts := g.Terminadas(); len(ts) > 0 {
+						pedido = subagent.AvisoTerminadas(ts, g.Ativas()) + "\n---\n" + pedido
+					}
+				}
+			}
+			if strings.HasPrefix(campos[0], "/") && avisoSub == "" {
 				// /<nome-de-skill> [args] executa a skill; qualquer outro / é
 				// comando desconhecido.
 				expandido, nome, ok := runtime.ExpandirSkill(cwd, pedido)
@@ -610,7 +647,12 @@ func repl(io IO, cfg *config.Config) {
 			rend := rendererTurno(io.Out)
 			var tui *turnoTUI
 			var tt *turnoTela
-			if io.tela != nil {
+			if io.tela != nil && avisoSub != "" {
+				io.tela.AvisoSubagentes(avisoSub)
+				io.tela.Ocupado(true)
+				tt = &turnoTela{t: io.tela, modelo: cfg.Model}
+				rend = tt
+			} else if io.tela != nil {
 				io.tela.Usuario(strings.TrimSpace(linha))
 				io.tela.Ocupado(true)
 				tt = &turnoTela{t: io.tela, modelo: cfg.Model}

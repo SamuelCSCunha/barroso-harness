@@ -146,6 +146,27 @@ func (t *tela) Usuario(texto string) {
 	t.mu.Unlock()
 }
 
+// AvisoSubagentes mostra, no lugar da caixa do usuário, uma linha por
+// sub-agente que terminou ("⚑ t1 completed · t2 failed").
+func (t *tela) AvisoSubagentes(texto string) {
+	t.Adicionar("")
+	t.Adicionar("  " + azulf("⚑") + " " + cinzaf(resumoAvisoSub(texto)))
+}
+
+// resumoAvisoSub tira do aviso as linhas "## t1 completed (11s)".
+func resumoAvisoSub(texto string) string {
+	var partes []string
+	for _, l := range strings.Split(texto, "\n") {
+		if strings.HasPrefix(l, "## ") {
+			partes = append(partes, strings.TrimPrefix(l, "## "))
+		}
+	}
+	if len(partes) == 0 {
+		return "sub-agents finished"
+	}
+	return "sub-agents finished: " + strings.Join(partes, " · ")
+}
+
 func (t *tela) Limpar() {
 	t.mu.Lock()
 	t.linhas, t.parcial, t.rolagem = nil, "", 0
@@ -592,7 +613,14 @@ func runTela(io IO) int {
 
 	pr, pw := ioPipe()
 	esc := escritor{t: t}
-	sub := IO{In: pr, Out: esc, ErrOut: esc, tela: t, cancelar: make(chan struct{}, 1)}
+	injetados := make(chan string, 16)
+	sub := IO{In: pr, Out: esc, ErrOut: esc, tela: t, cancelar: make(chan struct{}, 1),
+		injetar: func(s string) {
+			select {
+			case injetados <- s:
+			default: // fila cheia: já há aviso pendente, e um basta
+			}
+		}}
 	sub.Reader() // o bufio compartilhado nasce aqui, antes das cópias de IO
 
 	// A chave da API não pode ser lida com term.ReadPassword (o stdin está em
@@ -622,6 +650,8 @@ func runTela(io IO) int {
 		historico []string
 		posHist   = -1
 		ultimoCC  time.Time
+		// avisoPendente: sub-agente terminou enquanto um prompt esperava.
+		avisoPendente bool
 	)
 	// O pipe é síncrono: escrever direto travaria as teclas enquanto o REPL
 	// ainda encerra um turno interrompido. A fila mantém a ordem dos envios.
@@ -660,7 +690,25 @@ func runTela(io IO) int {
 		case c := <-codigo:
 			_ = pw.Close()
 			return c
+		case s := <-injetados:
+			// Com um prompt de comando esperando resposta (ex.: /model), a
+			// linha sintética seria lida como a resposta: segura até ele fechar.
+			t.mu.Lock()
+			esperando := t.parcial != ""
+			t.mu.Unlock()
+			if esperando {
+				avisoPendente = true
+				continue
+			}
+			saida <- s
 		case <-tick.C:
+			t.mu.Lock()
+			livre := t.parcial == ""
+			t.mu.Unlock()
+			if avisoPendente && livre {
+				avisoPendente = false
+				saida <- linhaSubagentes
+			}
 			editar(func() {
 				if t.aviso != "" && time.Since(ultimoCC) > 2*time.Second {
 					t.aviso = ""
@@ -923,7 +971,8 @@ func cwdCurto(cwd string) string {
 // tituloSessao é a primeira fala do usuário, como o OpenCode nomeia a sessão.
 func tituloSessao(h []dealer.Mensagem) string {
 	for _, m := range h {
-		if m.Role != "user" || strings.HasPrefix(m.Conteudo, "[estado de trabalho") {
+		if m.Role != "user" || strings.HasPrefix(m.Conteudo, "[estado de trabalho") ||
+			strings.HasPrefix(m.Conteudo, "[subagents]") || strings.HasPrefix(m.Conteudo, "[output limit]") {
 			continue
 		}
 		t := strings.Join(strings.Fields(m.Conteudo), " ")
@@ -1086,6 +1135,10 @@ func reproduzirHistorico(t *tela, h []dealer.Mensagem) {
 		case "user":
 			if strings.HasPrefix(m.Conteudo, "[estado de trabalho") {
 				t.Adicionar("  " + roxof("◆") + " " + cinzaf("context compacted"))
+				continue
+			}
+			if strings.HasPrefix(m.Conteudo, "[subagents]") {
+				t.AvisoSubagentes(m.Conteudo)
 				continue
 			}
 			if strings.HasPrefix(m.Conteudo, "[output limit]") {

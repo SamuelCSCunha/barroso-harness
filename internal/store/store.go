@@ -295,6 +295,7 @@ func (s *Store) PrimeiraFala(id string) string {
 		  WHERE session_id = ? AND kind = 'user_message'
 		    AND payload_json NOT LIKE '%[estado de trabalho%'
 		    AND payload_json NOT LIKE '%[output limit]%'
+		    AND payload_json NOT LIKE '%[subagents]%'
 		  ORDER BY seq LIMIT 1`, id).Scan(&corpo)
 	if err != nil {
 		return ""

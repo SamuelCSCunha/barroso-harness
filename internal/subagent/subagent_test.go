@@ -158,7 +158,7 @@ func executarTool(t *testing.T, s tools.Spec, args string) (string, error) {
 // delegação (task_spawn/task_status/task_result) no catálogo enviado.
 func TestSpawnExecutaEResultadoVoltaSemToolsDeDelegacao(t *testing.T) {
 	f, cfg := novoServidor(t, "tarefa feita", 0, true)
-	g := Novo(Config{Nome: "task", MaxConcorrentes: 2})
+	g := Novo(Config{Nome: "task"})
 	g.Vincular(context.Background())
 	g.ConfigPai(cfg)
 	specs := Especificacoes(g, cfg)
@@ -180,7 +180,7 @@ func TestSpawnExecutaEResultadoVoltaSemToolsDeDelegacao(t *testing.T) {
 	if err != nil {
 		t.Fatalf("spawn falhou: %v", err)
 	}
-	if !strings.HasPrefix(saida, "tarefa t") || !strings.Contains(saida, "use task_status para acompanhar") {
+	if !strings.Contains(saida, "disparado(s): t1") {
 		t.Fatalf("resposta do spawn inesperada: %q", saida)
 	}
 
@@ -229,13 +229,14 @@ func TestSpawnExecutaEResultadoVoltaSemToolsDeDelegacao(t *testing.T) {
 	}
 }
 
-// Test B: o teto de concorrência é respeitado — com MaxConcorrentes=2, a
-// terceira tarefa fica queued e o status enumera as três.
-func TestConcorrenciaLimitaFila(t *testing.T) {
+// Test B: sem teto — N prompts numa chamada disparam N sub-agentes, todos
+// rodando ao mesmo tempo, e o pai é avisado quando terminam.
+func TestSpawnVariosSemTetoEAvisa(t *testing.T) {
 	_, cfg := novoServidor(t, "ok", 400*time.Millisecond, false)
-	g := Novo(Config{Nome: "task", MaxConcorrentes: 2})
+	g := Novo(Config{Nome: "task"})
 	g.Vincular(context.Background())
-	g.ConfigPai(cfg)
+	avisos := make(chan struct{}, 16)
+	g.AoTerminar(func() { avisos <- struct{}{} })
 	specs := Especificacoes(g, cfg)
 	var spawn tools.Spec
 	for _, s := range specs {
@@ -243,72 +244,45 @@ func TestConcorrenciaLimitaFila(t *testing.T) {
 			spawn = s
 		}
 	}
-
-	for i := 0; i < 3; i++ {
-		if _, err := executarTool(t, spawn, fmt.Sprintf(`{"prompt":"tarefa %d"}`, i)); err != nil {
-			t.Fatalf("spawn %d falhou: %v", i, err)
+	saida, err := executarTool(t, spawn, `{"prompts":["a","b","c","d","e"]}`)
+	if err != nil || !strings.Contains(saida, "5 sub-agente(s) disparado(s): t1, t2, t3, t4, t5") {
+		t.Fatalf("spawn = %q %v", saida, err)
+	}
+	rodando := 0
+	for _, tk := range g.Fotos() {
+		if tk.Estado == Running {
+			rodando++
 		}
 	}
-
-	// Espera as duas primeiras entrarem em running (a terceira fica queued).
-	prazo := time.Now().Add(2 * time.Second)
-	for {
-		lista := g.Tarefas()
-		rodando, fila := 0, 0
-		for _, tk := range lista {
-			switch tk.Estado {
-			case Running:
-				rodando++
-			case Queued:
-				fila++
-			}
-		}
-		if len(lista) == 3 && rodando == 2 && fila == 1 {
-			break
-		}
-		if time.Now().After(prazo) {
-			t.Fatalf("esperava 2 running + 1 queued, vieram rodando=%d fila=%d (total %d)", rodando, fila, len(lista))
-		}
-		time.Sleep(2 * time.Millisecond)
+	if rodando != 5 {
+		t.Fatalf("todas deveriam rodar juntas, rodando=%d", rodando)
 	}
-
-	// O status enumera uma linha por tarefa com id, estado e idade.
-	var status tools.Spec
-	for _, s := range specs {
-		if s.Name == "task_status" {
-			status = s
+	if g.Ativas() != 5 {
+		t.Fatalf("ativas = %d", g.Ativas())
+	}
+	entregues := 0
+	prazo := time.After(5 * time.Second)
+	for entregues < 5 {
+		select {
+		case <-avisos:
+			entregues += len(g.Terminadas())
+		case <-prazo:
+			t.Fatalf("só %d entregues", entregues)
 		}
 	}
-	saida, err := executarTool(t, status, `{}`)
-	if err != nil {
-		t.Fatalf("status falhou: %v", err)
+	if len(g.Terminadas()) != 0 {
+		t.Fatal("Terminadas não pode repetir tarefa já entregue")
 	}
-	linhas := strings.Split(strings.TrimSpace(saida), "\n")
-	if len(linhas) != 3 {
-		t.Fatalf("status deveria listar 3 tarefas, veio %d:\n%s", len(linhas), saida)
-	}
-	for i, l := range linhas {
-		if !strings.HasPrefix(l, fmt.Sprintf("%d. t%d ", i+1, i+1)) {
-			t.Fatalf("linha %d sem o formato '<n>. <id> <estado> <idade>': %q", i, l)
-		}
-	}
-	if !strings.Contains(saida, "queued") || !strings.Contains(saida, "running") {
-		t.Fatalf("status deveria mostrar queued e running:\n%s", saida)
-	}
-
-	// No fim, as três completam (a fila é drenada pelo dispatcher).
-	for _, tk := range g.Tarefas() {
-		cp := esperarEstado(t, g, tk.ID, Completed, Failed)
-		if cp.Estado != Completed {
-			t.Fatalf("tarefa %s deveria completar, estado %s erro %q", tk.ID, cp.Estado, cp.Erro)
-		}
+	msg := AvisoTerminadas(g.Fotos(), 0)
+	if !strings.HasPrefix(msg, "[subagents]") || !strings.Contains(msg, "## t5 completed") || !strings.Contains(msg, "ok") {
+		t.Fatalf("aviso:\n%s", msg)
 	}
 }
 
 // Test C: cancelar uma tarefa em execução a leva a cancelled e o status mostra.
 func TestCancelarTarefaEmExecucao(t *testing.T) {
 	_, cfg := novoServidor(t, "nunca vou responder", 2*time.Second, false)
-	g := Novo(Config{Nome: "task", MaxConcorrentes: 2})
+	g := Novo(Config{Nome: "task"})
 	g.Vincular(context.Background())
 	g.ConfigPai(cfg)
 	specs := Especificacoes(g, cfg)
@@ -368,7 +342,7 @@ func TestCancelarTarefaEmExecucao(t *testing.T) {
 // id desconhecido devolve false; e prompt vazio não cria tarefa.
 func TestResultadoIdInexistenteEErrosDeEntrada(t *testing.T) {
 	_, cfg := novoServidor(t, "ok", 0, false)
-	g := Novo(Config{Nome: "task", MaxConcorrentes: 2})
+	g := Novo(Config{Nome: "task"})
 	g.Vincular(context.Background())
 	g.ConfigPai(cfg)
 	specs := Especificacoes(g, cfg)
@@ -414,7 +388,7 @@ func TestResultadoIdInexistenteEErrosDeEntrada(t *testing.T) {
 // Test E: sem config pronta a tarefa nasce failed com erro de uma linha
 // (o gerente não entra em pânico nem trava a fila).
 func TestSpawnSemConfigFalhaLimpo(t *testing.T) {
-	g := Novo(Config{MaxConcorrentes: 1})
+	g := Novo(Config{})
 	g.Vincular(context.Background())
 	id, err := g.Spawn(context.Background(), "algo")
 	if err != nil {
@@ -430,7 +404,7 @@ func TestSpawnSemConfigFalhaLimpo(t *testing.T) {
 func TestResultadoCortadoNoTeto(t *testing.T) {
 	grande := strings.Repeat("x", TetoResultado+5000)
 	_, cfg := novoServidor(t, grande, 0, false)
-	g := Novo(Config{MaxConcorrentes: 1})
+	g := Novo(Config{})
 	g.Vincular(context.Background())
 	g.ConfigPai(cfg)
 	specs := Especificacoes(g, cfg)

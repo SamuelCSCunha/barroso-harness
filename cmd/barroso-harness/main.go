@@ -15,6 +15,7 @@ import (
 	"github.com/ruanbarroso/barroso-harness/internal/config"
 	"github.com/ruanbarroso/barroso-harness/internal/runtime"
 	"github.com/ruanbarroso/barroso-harness/internal/store"
+	"github.com/ruanbarroso/barroso-harness/internal/subagent"
 	"github.com/ruanbarroso/barroso-harness/internal/wiring"
 	"golang.org/x/term"
 )
@@ -128,5 +129,34 @@ func execComWiring(out io.Writer, cfg config.Config, cwd, pedido string, loja *s
 	for _, aviso := range avisos {
 		fmt.Fprintln(os.Stderr, "warning:", aviso)
 	}
-	return sess.Send(context.Background(), runtime.RendererDe(out), cwd, pedido)
+	rend := runtime.RendererDe(out)
+	if err := sess.Send(context.Background(), rend, cwd, pedido); err != nil {
+		return err
+	}
+	// -p não tem usuário para acordar o REPL: enquanto houver sub-agente
+	// rodando, o processo espera, e cada leva que termina vira mais um turno
+	// com os resultados — senão o processo sairia matando os sub-agentes.
+	g := conjunto.Gerente()
+	if g == nil {
+		return nil
+	}
+	terminou := make(chan struct{}, 1)
+	g.AoTerminar(func() {
+		select {
+		case terminou <- struct{}{}:
+		default:
+		}
+	})
+	for {
+		if ts := g.Terminadas(); len(ts) > 0 {
+			if err := sess.Send(context.Background(), rend, cwd, subagent.AvisoTerminadas(ts, g.Ativas())); err != nil {
+				return err
+			}
+			continue
+		}
+		if g.Ativas() == 0 {
+			return nil
+		}
+		<-terminou
+	}
 }

@@ -43,13 +43,6 @@ const (
 	// task_spawn / task_status / task_result.
 	PrefixoPadrao = "task"
 
-	// MaxPadrao é o teto de sub-agentes rodando ao mesmo tempo.
-	MaxPadrao = 3
-
-	// TamanhoFila limita a profundidade da fila de queued: além disso o Spawn
-	// falha com erro explícito em vez de crescer sem limite.
-	TamanhoFila = 256
-
 	// TetoTranscript é o teto de linhas do rastro de tools por tarefa.
 	TetoTranscript = 200
 )
@@ -64,11 +57,10 @@ const (
 )
 
 // Config é a configuração do gerente. Nome é o prefixo das tools expostas ao
-// pai ("task" → task_spawn/task_status/task_result); MaxConcorrentes é o teto
-// de sub-agentes rodando ao mesmo tempo (<=0 → MaxPadrao).
+// pai ("task" → task_spawn/task_status/task_result). Não há teto de
+// concorrência nem de quantidade: toda tarefa começa a rodar no Spawn.
 type Config struct {
-	Nome            string
-	MaxConcorrentes int
+	Nome string
 }
 
 // Tarefa é uma tarefa irmã: o que foi pedido, em que estado está e o que o
@@ -139,7 +131,6 @@ func (c *coletor) Tokens(int, int, time.Duration, bool) {}
 // consulta tarefas enquanto os workers rodam em segundo plano.
 type Gerente struct {
 	nome string
-	max  int
 	cwd  string
 
 	mu      sync.Mutex
@@ -151,9 +142,10 @@ type Gerente struct {
 	cfgFilho config.Config   // config herdada por TODAS as tarefas (provider/modelo/chave)
 	pai      context.Context // contexto de vida longa; ver Vincular
 
-	fila        chan string   // ids queued aguardando vaga
-	despachando bool          // dispatcher já subiu (goroutine única)
-	vagas       chan struct{} // tokens de concorrência: capacidade = max
+	// aoTerminar é chamado (fora do lock) sempre que uma tarefa termina, falha
+	// ou é cancelada: é por ele que o pai fica sabendo sem consultar status.
+	aoTerminar func()
+	avisadas   map[string]bool // tarefas já entregues por Terminadas
 }
 
 // Novo cria um gerente de tarefas.
@@ -162,27 +154,81 @@ func Novo(cfg Config) *Gerente {
 	if nome == "" {
 		nome = PrefixoPadrao
 	}
-	max := cfg.MaxConcorrentes
-	if max <= 0 {
-		max = MaxPadrao
-	}
 	cwd, _ := os.Getwd()
 	return &Gerente{
-		nome:    nome,
-		max:     max,
-		cwd:     cwd,
-		tarefas: map[string]*Tarefa{},
-		fila:    make(chan string, TamanhoFila),
-		vagas:   make(chan struct{}, max),
-		pai:     context.Background(),
+		nome:     nome,
+		cwd:      cwd,
+		tarefas:  map[string]*Tarefa{},
+		avisadas: map[string]bool{},
+		pai:      context.Background(),
+	}
+}
+
+// AoTerminar registra quem é avisado quando uma tarefa termina (completed,
+// failed ou cancelled). O aviso não carrega a tarefa: quem recebe chama
+// Terminadas, que entrega cada tarefa terminada uma vez só — várias tarefas
+// que terminam juntas viram um aviso só para o pai.
+func (g *Gerente) AoTerminar(fn func()) {
+	g.mu.Lock()
+	g.aoTerminar = fn
+	g.mu.Unlock()
+}
+
+// Terminadas devolve cópias das tarefas que terminaram e ainda não foram
+// entregues ao pai, na ordem de criação, e as marca como entregues.
+func (g *Gerente) Terminadas() []Tarefa {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	var out []Tarefa
+	for _, id := range g.ordem {
+		t := g.tarefas[id]
+		if t == nil || g.avisadas[id] || t.TerminadaEm.IsZero() {
+			continue
+		}
+		g.avisadas[id] = true
+		cp := *t
+		cp.transcript = append([]string(nil), t.transcript...)
+		cp.cancel, cp.ctx = nil, nil
+		out = append(out, cp)
+	}
+	return out
+}
+
+// marcarEntregue: o pai já leu o resultado (task_result), então o aviso
+// automático dessa tarefa não precisa repetir o texto.
+func (g *Gerente) marcarEntregue(id string) {
+	g.mu.Lock()
+	if t := g.tarefas[id]; t != nil && !t.TerminadaEm.IsZero() {
+		g.avisadas[id] = true
+	}
+	g.mu.Unlock()
+}
+
+// Ativas conta as tarefas que ainda não terminaram.
+func (g *Gerente) Ativas() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	n := 0
+	for _, t := range g.tarefas {
+		if t.TerminadaEm.IsZero() {
+			n++
+		}
+	}
+	return n
+}
+
+// avisar chama aoTerminar fora do lock.
+func (g *Gerente) avisar() {
+	g.mu.Lock()
+	fn := g.aoTerminar
+	g.mu.Unlock()
+	if fn != nil {
+		fn()
 	}
 }
 
 // Prefixo devolve o prefixo das tools deste gerente.
 func (g *Gerente) Prefixo() string { return g.nome }
-
-// Teto devolve o máximo de sub-agentes concorrentes.
-func (g *Gerente) Teto() int { return g.max }
 
 // Cwd devolve o diretório em que as tarefas rodam por padrão.
 func (g *Gerente) Cwd() string { return g.cwd }
@@ -303,9 +349,8 @@ func (t *Tarefa) anexarTranscript(linha string) {
 
 // Spawn cria uma tarefa e a entrega ao runner. O prompt vai ao filho TAL QUAL.
 // O ctx informado (ou o vinculado, se vier nil) gera o contexto da sessão
-// filha: cancelá-lo cancela a tarefa. Acima do teto de concorrência a tarefa
-// fica queued e o dispatcher a promove quando uma vaga abrir — Spawn nunca
-// bloqueia. Retorna o id determinístico (t1, t2, …).
+// filha: cancelá-lo cancela a tarefa. Não há teto: a tarefa começa a rodar
+// na hora e Spawn nunca bloqueia. Retorna o id determinístico (t1, t2, …).
 func (g *Gerente) Spawn(ctx context.Context, pedido string) (string, error) {
 	if strings.TrimSpace(pedido) == "" {
 		return "", fmt.Errorf("prompt vazio")
@@ -328,12 +373,14 @@ func (g *Gerente) Spawn(ctx context.Context, pedido string) (string, error) {
 		g.mu.Lock()
 		t.finalizar(Cancelled, "contexto do pai já estava encerrado")
 		g.mu.Unlock()
+		g.avisar()
 		return id, nil
 	}
 	if !cfg.Pronta() {
 		g.mu.Lock()
 		t.finalizar(Failed, "config incompleta: "+strings.Join(cfg.Faltas(), ", "))
 		g.mu.Unlock()
+		g.avisar()
 		return id, nil
 	}
 
@@ -341,90 +388,22 @@ func (g *Gerente) Spawn(ctx context.Context, pedido string) (string, error) {
 	// pai — e não dentro do worker. Criá-lo sob o MESMO lock que marca running
 	// fecha a janela em que um Cancelar veria a tarefa rodando com cancel nil
 	// e recusaria o cancelamento.
+	// Sem teto de concorrência nem fila: toda tarefa começa a rodar já.
 	g.mu.Lock()
 	filhoCtx, cancel := context.WithCancel(ctx)
 	t.ctx = filhoCtx
 	t.cancel = cancel
 	cfg, cwd = g.cfgFilho, g.cwd
+	t.iniciarMarca()
+	g.rodando++
 	g.mu.Unlock()
-
-	// Vaga livre entra já; sem vaga vai para a fila e o dispatcher cuida.
-	select {
-	case g.vagas <- struct{}{}:
-		g.mu.Lock()
-		t.iniciarMarca()
-		g.rodando++
-		g.mu.Unlock()
-		go g.executar(ctx, t, cfg, cwd)
-		return id, nil
-	default:
-	}
-
-	select {
-	case g.fila <- id:
-		g.subirDispatcher()
-		return id, nil
-	default:
-		// Fila cheia: falha explícita em vez de sumir com o pedido. O ctx
-		// derivado é liberado aqui para não vazar o watch do pai.
-		cancel()
-		g.mu.Lock()
-		t.finalizar(Failed, "fila de tarefas cheia")
-		g.mu.Unlock()
-		return id, nil
-	}
-}
-
-// subirDispatcher sobe a goroutine única de promoção queued→running (lazy).
-func (g *Gerente) subirDispatcher() {
-	g.mu.Lock()
-	if g.despachando {
-		g.mu.Unlock()
-		return
-	}
-	g.despachando = true
-	g.mu.Unlock()
-	go g.despachar()
-}
-
-// despachar espera ids na fila e inicia cada um assim que houver vaga. A
-// aquisição da vaga é bloqueante de propósito: é ela que segura a fila quando
-// o teto estoura, preservando a ordem FIFO sem busy-wait. A fila nunca é
-// fechada, então a goroutine dura a vida do gerente.
-//
-// O ctx usado é o da sessão filha (criado em Spawn, derivado do ctx do pai):
-// cancelar o pai continua derrubando a fila, e Cancelar(id) segue valendo para
-// quem ainda não começou.
-func (g *Gerente) despachar() {
-	for id := range g.fila {
-		g.vagas <- struct{}{} // espera uma vaga abrir
-		g.mu.Lock()
-		t := g.tarefas[id]
-		if t == nil {
-			g.mu.Unlock()
-			<-g.vagas
-			continue
-		}
-		if t.Estado != Queued { // cancelada enquanto esperava na fila
-			g.mu.Unlock()
-			<-g.vagas
-			// O par (ctx, cancel) nunca foi usado; libera o watch do pai.
-			if t.cancel != nil {
-				t.cancel()
-			}
-			continue
-		}
-		ctx, cfg, cwd := t.ctx, g.cfgFilho, g.cwd
-		t.iniciarMarca()
-		g.rodando++
-		g.mu.Unlock()
-		go g.executar(ctx, t, cfg, cwd)
-	}
+	go g.executar(ctx, t, cfg, cwd)
+	return id, nil
 }
 
 // executar roda a sessão filha: mesmas ferramentas built-in do pai, sem as de
 // delegação (ver doc do pacote), transcript zerado e saída colhida pelo
-// coletor. Ao terminar (ou falhar, ou ser cancelada) devolve a vaga.
+// coletor. Ao terminar (ou falhar, ou ser cancelada) avisa o pai (AoTerminar).
 //
 // O par (ctx, cancel) da sessão filha já foi criado em Spawn; aqui ele é usado
 // e devolvido.
@@ -435,7 +414,7 @@ func (g *Gerente) executar(ctx context.Context, t *Tarefa, cfg config.Config, cw
 			g.rodando--
 		}
 		g.mu.Unlock()
-		<-g.vagas
+		g.avisar()
 	}()
 
 	g.mu.Lock()
@@ -443,7 +422,7 @@ func (g *Gerente) executar(ctx context.Context, t *Tarefa, cfg config.Config, cw
 	g.mu.Unlock()
 	if filhoCtx == nil {
 		// Sem sessão filha (estado inesperado): falha em vez de entrar em
-		// pânico, e devolve a vaga pelo defer acima.
+		// pânico; o defer acima avisa o pai.
 		g.mu.Lock()
 		t.finalizar(Failed, "sessão filha não inicializada")
 		g.mu.Unlock()
@@ -473,8 +452,7 @@ func (g *Gerente) executar(ctx context.Context, t *Tarefa, cfg config.Config, cw
 	g.mu.Unlock()
 }
 
-// Cancelar encerra uma tarefa. Queued vira cancelled na hora (o dispatcher a
-// ignora quando for promovê-la); running tem o cancel() da sessão chamado e o
+// Cancelar encerra uma tarefa. Queued vira cancelled na hora; running tem o cancel() da sessão chamado e o
 // worker a marca cancelled. Devolve true só quando havia o que cancelar.
 func (g *Gerente) Cancelar(id string) bool {
 	g.mu.Lock()
@@ -486,6 +464,7 @@ func (g *Gerente) Cancelar(id string) bool {
 	switch t.Estado {
 	case Queued:
 		t.finalizar(Cancelled, "cancelada antes de iniciar")
+		go g.avisar()
 		return true
 	case Running:
 		if t.cancel != nil {

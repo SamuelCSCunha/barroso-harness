@@ -49,32 +49,56 @@ func Especificacoes(g *Gerente, cfgPai config.Config) []tools.Spec {
 func especSpawn(g *Gerente, prefixo string) tools.Spec {
 	return tools.Spec{
 		Name: prefixo + "_spawn",
-		Description: "Inicia uma tarefa-irmã em SEGUNDO PLANO e devolve o id. O sub-agente roda " +
-			"autonomamente com todas as ferramentas (terminal, arquivos), mas NÃO pode criar outras tarefas. " +
-			"Use para trabalho demorado (build, varredura, teste longo) sem travar a conversa; depois " +
-			"consulte com " + prefixo + "_status e " + prefixo + "_result.",
+		Description: "Dispara um ou VÁRIOS sub-agentes de uma vez, em SEGUNDO PLANO, e devolve os ids na hora. " +
+			"Cada sub-agente roda autonomamente com as ferramentas built-in (terminal, arquivos), mas NÃO pode " +
+			"criar outros sub-agentes. Não há limite de quantidade nem de concorrência: todos começam juntos. " +
+			"Você NÃO precisa esperar nem consultar " + prefixo + "_status: quando cada sub-agente terminar ou falhar, " +
+			"o resultado chega automaticamente como uma mensagem nova. Depois de disparar, siga com outro trabalho " +
+			"ou encerre o turno dizendo ao usuário o que disparou e que está aguardando os retornos.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"prompt": map[string]any{"type": "string", "description": "instrução completa e autossuficiente para o sub-agente"},
+				"prompts": map[string]any{
+					"type":        "array",
+					"items":       map[string]any{"type": "string"},
+					"description": "uma instrução completa e autossuficiente por sub-agente; N itens = N sub-agentes em paralelo",
+				},
+				"prompt": map[string]any{"type": "string", "description": "atalho para um sub-agente só"},
 			},
-			"required": []string{"prompt"},
 		},
 		Exec: func(ctx context.Context, _ string, raw json.RawMessage) (string, error) {
 			var c struct {
-				Prompt string `json:"prompt"`
+				Prompt  string   `json:"prompt"`
+				Prompts []string `json:"prompts"`
 			}
 			if err := json.Unmarshal(raw, &c); err != nil {
 				return "", fmt.Errorf("entrada inválida: %w", err)
 			}
-			if strings.TrimSpace(c.Prompt) == "" {
-				return "", fmt.Errorf("prompt obrigatório")
+			var pedidos []string
+			if strings.TrimSpace(c.Prompt) != "" {
+				pedidos = append(pedidos, c.Prompt)
 			}
-			id, err := g.Spawn(ctx, c.Prompt)
-			if err != nil {
-				return "", err
+			for _, p := range c.Prompts {
+				if strings.TrimSpace(p) != "" {
+					pedidos = append(pedidos, p)
+				}
 			}
-			return fmt.Sprintf("tarefa %s iniciada; use %s_status para acompanhar", id, prefixo), nil
+			if len(pedidos) == 0 {
+				return "", fmt.Errorf("informe prompts (ou prompt)")
+			}
+			var ids []string
+			for _, p := range pedidos {
+				// ctx nil: a tarefa vive no contexto longo do gerente, não no
+				// do turno — o turno pode acabar e o sub-agente continua.
+				id, err := g.Spawn(nil, p)
+				if err != nil {
+					return "", err
+				}
+				ids = append(ids, id)
+			}
+			return fmt.Sprintf("%d sub-agente(s) disparado(s): %s. Eles rodam em segundo plano; cada resultado "+
+				"chega automaticamente como mensagem nova quando terminar. Não consulte %s_status em loop.",
+				len(ids), strings.Join(ids, ", "), prefixo), nil
 		},
 	}
 }
@@ -143,6 +167,7 @@ func especResult(g *Gerente, prefixo string) tools.Spec {
 			if !ok {
 				return "", fmt.Errorf("tarefa %s não encontrada", id)
 			}
+			g.marcarEntregue(id)
 			switch cp.Estado {
 			case Completed:
 				if strings.TrimSpace(cp.Resultado) == "" {
@@ -154,7 +179,7 @@ func especResult(g *Gerente, prefixo string) tools.Spec {
 			case Cancelled:
 				return fmt.Sprintf("tarefa %s cancelada%s", id, sufixo(cp.Erro)), nil
 			case Queued:
-				return fmt.Sprintf("tarefa %s na fila (aguardando vaga)", id), nil
+				return fmt.Sprintf("tarefa %s iniciando", id), nil
 			case Running:
 				return fmt.Sprintf("tarefa %s rodando", id), nil
 			default:
@@ -184,4 +209,34 @@ func sufixo(s string) string {
 		return ""
 	}
 	return ": " + s
+}
+
+// AvisoTerminadas monta a mensagem que o pai recebe quando sub-agentes
+// terminam: um bloco por tarefa com o resultado (ou o erro) e, no fim,
+// quantas ainda estão rodando. O prefixo "[subagents]" deixa a tela e o
+// título da sessão reconhecerem a mensagem como aviso, não fala do usuário.
+func AvisoTerminadas(ts []Tarefa, ativas int) string {
+	var sb strings.Builder
+	sb.WriteString("[subagents] Sub-agentes terminaram:\n")
+	for i := range ts {
+		t := &ts[i]
+		dur := t.TerminadaEm.Sub(t.Criada).Round(time.Second)
+		fmt.Fprintf(&sb, "\n## %s %s (%s)\n", t.ID, t.Estado, dur)
+		switch t.Estado {
+		case Completed:
+			if strings.TrimSpace(t.Resultado) == "" {
+				sb.WriteString("(sem texto final)\n")
+			} else {
+				sb.WriteString(cortar(t.Resultado, TetoResultado, t.ID) + "\n")
+			}
+		default:
+			sb.WriteString("erro: " + ouVazio(t.Erro) + "\n")
+		}
+	}
+	if ativas > 0 {
+		fmt.Fprintf(&sb, "\n%d sub-agente(s) ainda rodando; os resultados chegam do mesmo jeito.\n", ativas)
+	} else {
+		sb.WriteString("\nNenhum sub-agente rodando agora.\n")
+	}
+	return sb.String()
 }

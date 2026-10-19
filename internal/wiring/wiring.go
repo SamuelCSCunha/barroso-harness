@@ -99,10 +99,7 @@ func Montar(ctx context.Context, cfg config.Config, sess *runtime.Session, cwd s
 	// sessão principal. O filho não herda a delegação por construção — o
 	// runtime.Session.Send monta a lista dele de tools.SpecsBuiltins(), que
 	// não tem task_* — então não há risco de recursão a administrar.
-	gerente := subagent.Novo(subagent.Config{
-		Nome:            subagenteNome(),
-		MaxConcorrentes: subagent.MaxPadrao,
-	})
+	gerente := subagent.Novo(subagent.Config{Nome: subagenteNome()})
 	gerente.DefinirCwd(cwd)
 	// Vincular ao ctx longo ANTES do primeiro Spawn: as tarefas derivam o
 	// contexto filho daqui, e o ctx do turno morre no fim da linha.
