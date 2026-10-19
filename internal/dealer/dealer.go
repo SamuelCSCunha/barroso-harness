@@ -8,11 +8,16 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -50,6 +55,10 @@ type Mensagem struct {
 	ToolArgs string `json:"tool_args,omitempty"`
 	IsErro   bool   `json:"is_erro,omitempty"`
 	Usage    *Usage `json:"usage,omitempty"`
+	// Images are image file paths attached to a user message (pasted into the
+	// full screen as [Image N]). They are read and inlined as base64 data URLs
+	// on every request, so the model needs vision support.
+	Images []string `json:"images,omitempty"`
 }
 
 // ToolChamada is a tool call emitted by the model in a round.
@@ -139,7 +148,7 @@ type oaiCall struct {
 
 type oaiMsg struct {
 	Role       string    `json:"role"`
-	Content    *string   `json:"content,omitempty"`
+	Content    any       `json:"content,omitempty"` // *string, or []contentPart for user images
 	ToolCallID string    `json:"tool_call_id,omitempty"`
 	ToolCalls  []oaiCall `json:"tool_calls,omitempty"`
 }
@@ -149,10 +158,31 @@ func strNil(s string) *string { return &s }
 // Corpo serializes the full chat/completions request. Public so the runtime
 // can measure bytes (the bytes/tokens pair feeds calibration).
 func (c *Cliente) Corpo(system string, msgs []Mensagem, tools []map[string]any) ([]byte, error) {
+	return c.corpo(system, msgs, tools, true)
+}
+
+// CorpoEstimativa is Corpo for the context budget: each attached image is
+// replaced by a fixed-size stand-in instead of its base64 bytes. A screenshot
+// is hundreds of KB of base64, which the chars-per-token estimate would read
+// as a full context window, while providers bill an image at roughly a
+// thousand tokens.
+func (c *Cliente) CorpoEstimativa(system string, msgs []Mensagem, tools []map[string]any) ([]byte, error) {
+	return c.corpo(system, msgs, tools, false)
+}
+
+// imageEstimateStandIn stands for one image in CorpoEstimativa (~1k tokens
+// at 4 chars/token).
+var imageEstimateStandIn = strings.Repeat("A", 4<<10)
+
+func (c *Cliente) corpo(system string, msgs []Mensagem, tools []map[string]any, inline bool) ([]byte, error) {
 	list := []oaiMsg{{Role: "system", Content: strNil(system)}}
 	for _, m := range msgs {
 		switch m.Role {
 		case "user":
+			if len(m.Images) > 0 {
+				list = append(list, oaiMsg{Role: "user", Content: userParts(m.Conteudo, m.Images, inline)})
+				continue
+			}
 			list = append(list, oaiMsg{Role: "user", Content: strNil(m.Conteudo)})
 		case "assistant", "tool_call":
 			a := oaiMsg{Role: "assistant", Content: strNil(m.Conteudo)}
@@ -187,6 +217,82 @@ func (c *Cliente) Corpo(system string, msgs []Mensagem, tools []map[string]any) 
 		body["tool_choice"] = "auto"
 	}
 	return json.Marshal(body)
+}
+
+// contentPart is one element of a multimodal user content (OpenAI Chat
+// Completions): {"type":"text","text":...} or
+// {"type":"image_url","image_url":{"url":"data:..."}}.
+type contentPart struct {
+	Type     string    `json:"type"`
+	Text     string    `json:"text,omitempty"`
+	ImageURL *imageURL `json:"image_url,omitempty"`
+}
+
+type imageURL struct {
+	URL string `json:"url"`
+}
+
+// imagePlaceholder matches the [Image N] placeholders the full screen inserts.
+var imagePlaceholder = regexp.MustCompile(`\[Image (\d+)\]`)
+
+// userParts builds the content parts of a user message with images: the text
+// (plus one "[Image N: path]" line per image, so the model knows the file)
+// followed by each image as a base64 data URL. An image whose file can no
+// longer be read is dropped with a note in the text instead of failing the
+// request — a resumed session may point at a deleted attachment.
+func userParts(text string, images []string, inline bool) []contentPart {
+	// Labels follow the placeholders in the text when there is one per image;
+	// otherwise the images are numbered in order.
+	var labels []string
+	seen := map[string]bool{}
+	for _, m := range imagePlaceholder.FindAllStringSubmatch(text, -1) {
+		if !seen[m[1]] {
+			seen[m[1]] = true
+			labels = append(labels, m[1])
+		}
+	}
+	if len(labels) != len(images) {
+		labels = nil
+		for i := range images {
+			labels = append(labels, strconv.Itoa(i+1))
+		}
+	}
+	var notes []string
+	var imgs []contentPart
+	for i, path := range images {
+		if !inline {
+			notes = append(notes, fmt.Sprintf("[Image %s: %s]", labels[i], path))
+			imgs = append(imgs, contentPart{Type: "image_url", ImageURL: &imageURL{URL: "data:image/png;base64," + imageEstimateStandIn}})
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			notes = append(notes, fmt.Sprintf("[Image %s: %s (file missing, not attached)]", labels[i], path))
+			continue
+		}
+		notes = append(notes, fmt.Sprintf("[Image %s: %s]", labels[i], path))
+		url := "data:" + imageMime(path) + ";base64," + base64.StdEncoding.EncodeToString(data)
+		imgs = append(imgs, contentPart{Type: "image_url", ImageURL: &imageURL{URL: url}})
+	}
+	full := text
+	if len(notes) > 0 {
+		full = strings.TrimRight(text, "\n") + "\n\n" + strings.Join(notes, "\n")
+	}
+	return append([]contentPart{{Type: "text", Text: full}}, imgs...)
+}
+
+// imageMime guesses the image type from the extension (PNG by default: the
+// clipboard attachments are always saved as PNG).
+func imageMime(path string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".gif":
+		return "image/gif"
+	case ".webp":
+		return "image/webp"
+	}
+	return "image/png"
 }
 
 type sseChunk struct {

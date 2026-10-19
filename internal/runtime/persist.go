@@ -135,14 +135,15 @@ func eventsToMessages(st *store.Store, events []store.Event) []dealer.Mensagem {
 			continue
 		}
 		var p struct {
-			Role     string `json:"role"`
-			Content  string `json:"content"`
-			ToolID   string `json:"tool_id"`
-			ToolName string `json:"tool_name"`
-			ToolArgs string `json:"tool_args"`
-			IsErro   bool   `json:"is_erro"`
-			Blob     string `json:"blob"`
-			Preview  string `json:"preview"`
+			Role     string   `json:"role"`
+			Content  string   `json:"content"`
+			ToolID   string   `json:"tool_id"`
+			ToolName string   `json:"tool_name"`
+			ToolArgs string   `json:"tool_args"`
+			IsErro   bool     `json:"is_erro"`
+			Blob     string   `json:"blob"`
+			Preview  string   `json:"preview"`
+			Images   []string `json:"images"`
 			Usage    *struct {
 				PromptTokens int `json:"prompt_tokens"`
 				OutputTokens int `json:"output_tokens"`
@@ -158,6 +159,7 @@ func eventsToMessages(st *store.Store, events []store.Event) []dealer.Mensagem {
 			ToolName: p.ToolName,
 			ToolArgs: p.ToolArgs,
 			IsErro:   p.IsErro,
+			Images:   p.Images,
 		}
 		if p.Usage != nil {
 			m.Usage = &dealer.Usage{

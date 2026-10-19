@@ -149,6 +149,14 @@ func (s *Session) ClearHistory() {
 // success; YOLO tool execution already performed cannot be reverted, but the
 // provider history is never left malformed.
 func (s *Session) Send(ctx context.Context, r Renderer, cwd, prompt string) error {
+	return s.SendWithImages(ctx, r, cwd, prompt, nil)
+}
+
+// SendWithImages is Send with image files attached to the user message (the
+// full screen's pasted [Image N]). The paths go into the transcript and the
+// log; the dealer inlines the bytes on each request, so the model must
+// support vision.
+func (s *Session) SendWithImages(ctx context.Context, r Renderer, cwd, prompt string, images []string) error {
 	if r == nil {
 		r = RendererDe(&strings.Builder{})
 	}
@@ -169,7 +177,7 @@ func (s *Session) Send(ctx context.Context, r Renderer, cwd, prompt string) erro
 		return err
 	}
 	working := append([]dealer.Mensagem(nil), s.history...)
-	working = append(working, dealer.Mensagem{Role: "user", Conteudo: prompt})
+	working = append(working, dealer.Mensagem{Role: "user", Conteudo: prompt, Images: images})
 	floor := 0
 	// Consecutive cuts at the output limit, and the limit of the retry when the
 	// cut came back empty (the model spent everything thinking).
@@ -182,7 +190,11 @@ func (s *Session) Send(ctx context.Context, r Renderer, cwd, prompt string) erro
 
 	// The user prompt enters the log BEFORE the loop: if the turn fails midway,
 	// the log still records what was asked.
-	s.record("user_message", map[string]any{"role": "user", "content": prompt})
+	userEvent := map[string]any{"role": "user", "content": prompt}
+	if len(images) > 0 {
+		userEvent["images"] = images
+	}
+	s.record("user_message", userEvent)
 
 	for cycle := 0; cycle < 64; cycle++ {
 		// Catalog rebuilt on EVERY cycle: mcp_add, mcp_remove and skill_create
@@ -199,7 +211,8 @@ func (s *Session) Send(ctx context.Context, r Renderer, cwd, prompt string) erro
 		}
 		system += "\n## Environment\n- cwd: " + cwd + "\n- platform: use tools to find out; do not assume a shell.\n"
 
-		body, err := s.dealer.Corpo(system, working, schemas)
+		// Measured without the image bytes: see dealer.CorpoEstimativa.
+		body, err := s.dealer.CorpoEstimativa(system, working, schemas)
 		if err != nil {
 			return err
 		}

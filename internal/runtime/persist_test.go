@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -129,6 +130,33 @@ func TestSendRecordsUserMessageAndAssistant(t *testing.T) {
 	}
 	if !strings.Contains(events[1].Payload, `"content":"model answer"`) {
 		t.Fatalf("assistant payload without the text: %s", events[1].Payload)
+	}
+}
+
+// Pasted images go into the user_message payload and come back on resume.
+func TestSendWithImagesPersistsAndResumes(t *testing.T) {
+	srv := textProvider(t, "seen")
+	defer srv.Close()
+	st := testStore(t)
+	const id = "bh-20240101100000-0009"
+	img := filepath.Join(t.TempDir(), "shot.png")
+	if err := os.WriteFile(img, []byte("\x89PNGfake"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := NewSessionWithStore(fakeConfig(t, srv.URL), st, id)
+	if err := s.SendWithImages(context.Background(), RendererDe(&strings.Builder{}), t.TempDir(), "look [Image 1]", []string{img}); err != nil {
+		t.Fatalf("SendWithImages: %v", err)
+	}
+	events, err := st.ListEvents(id, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) == 0 || !strings.Contains(events[0].Payload, `"images"`) {
+		t.Fatalf("user_message without images: %+v", events)
+	}
+	h := eventsToMessages(st, events)
+	if len(h) == 0 || h[0].Role != "user" || len(h[0].Images) != 1 || h[0].Images[0] != img {
+		t.Fatalf("resumed history lost the image: %+v", h)
 	}
 }
 
