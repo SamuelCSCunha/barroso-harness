@@ -44,6 +44,12 @@ type RendererDetalhado interface {
 	Contexto(promptTokens int)
 }
 
+// RendererCorte é OPCIONAL: avisa que a resposta foi cortada pelo teto de
+// saída. desistiu=false: o turno vai continuar sozinho; true: parou.
+type RendererCorte interface {
+	Cortada(teto int, desistiu bool)
+}
+
 // RendererPuro é a implementação sem adorno.
 type RendererPuro struct{ out io.Writer }
 
@@ -69,6 +75,14 @@ func (p *RendererPuro) Eco(saida string) {
 		return
 	}
 	fmt.Fprintln(p.out, saida)
+}
+
+func (p *RendererPuro) Cortada(teto int, desistiu bool) {
+	if desistiu {
+		fmt.Fprintf(p.out, "[output limit] response cut at %d tokens; giving up\n", teto)
+		return
+	}
+	fmt.Fprintf(p.out, "[output limit] response cut at %d tokens; continuing\n", teto)
 }
 
 func (p *RendererPuro) Guardrail(proativa bool) {

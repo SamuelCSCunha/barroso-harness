@@ -171,6 +171,9 @@ func (s *Session) Send(ctx context.Context, r Renderer, cwd, pedido string) erro
 	working := append([]dealer.Mensagem(nil), s.history...)
 	working = append(working, dealer.Mensagem{Role: "user", Conteudo: pedido})
 	piso := 0
+	// Cortes seguidos pelo teto de saída, e o teto da nova tentativa quando
+	// o corte veio vazio (o modelo gastou tudo pensando).
+	cortes, tetoExtra := 0, 0
 	reativaFeita := false
 	compactou := false
 	// Soma do turno inteiro: cada ciclo de tool gasta request e resposta, e o
@@ -222,7 +225,20 @@ func (s *Session) Send(ctx context.Context, r Renderer, cwd, pedido string) erro
 		if rd, ok := r.(RendererDetalhado); ok {
 			rd.Pensando()
 		}
-		rodada, err := s.dealer.RodarContext(ctx, system, working, schemas)
+		cli := s.dealer
+		teto := cli.MaxTokens()
+		if tetoExtra > 0 {
+			teto = tetoExtra
+		}
+		if s.config.Janela > 0 {
+			// O teto não pode passar do que sobra na janela (como OpenCode e
+			// pi fazem), com piso para o modelo ainda conseguir responder.
+			teto = max(1024, min(teto, s.config.Janela-av.TokensEntrada))
+		}
+		if teto != cli.MaxTokens() {
+			cli = cli.ComTeto(teto)
+		}
+		rodada, err := cli.RodarContext(ctx, system, working, schemas)
 		if err != nil {
 			if estouraContexto(err) && s.config.Janela > 0 && !reativaFeita {
 				reativaFeita = true
@@ -251,6 +267,44 @@ func (s *Session) Send(ctx context.Context, r Renderer, cwd, pedido string) erro
 			}
 			usoSaida += rodada.Usage.OutputTokens
 		}
+		if rodada.Cortada {
+			// Resposta cortada pelo teto de saída nunca é resposta final:
+			// nenhuma harness estudada (OpenCode, Codex, Claude Code, Gemini
+			// CLI, dsh, pi, Crush, Aider) encerra o turno calada nesse caso.
+			cortes++
+			rc, _ := r.(RendererCorte)
+			if cortes > maxCortes {
+				if rc != nil {
+					rc.Cortada(teto, true)
+				}
+				r.Tokens(usoPrompt, usoSaida, time.Since(inicio), compactou)
+				return fmt.Errorf("response cut at the output limit (%d tokens) %d times in a row; send \"continue\" to resume", teto, cortes)
+			}
+			if rc != nil {
+				rc.Cortada(teto, false)
+			}
+			if strings.TrimSpace(rodada.Texto) == "" && len(rodada.Tools) == 0 {
+				// Só pensou: tenta de novo com o dobro do teto.
+				tetoExtra = teto * 2
+				continue
+			}
+			// Texto (ou tool call) pela metade: o texto fica, as tools não
+			// rodam (os argumentos podem estar cortados) e o modelo é avisado
+			// para continuar em partes menores.
+			if rodada.Texto != "" {
+				r.Resposta(rodada.Texto)
+				working = append(working, dealer.Mensagem{Role: "assistant", Conteudo: rodada.Texto, Usage: rodada.Usage})
+				s.registrar("assistant", map[string]any{"role": "assistant", "content": rodada.Texto})
+			}
+			aviso := avisoCorte
+			if len(rodada.Tools) > 0 {
+				aviso += " " + avisoCorteTools
+			}
+			working = append(working, dealer.Mensagem{Role: "user", Conteudo: aviso})
+			s.registrar("user_message", map[string]any{"role": "user", "content": aviso})
+			continue
+		}
+		cortes, tetoExtra = 0, 0
 		if len(rodada.Tools) == 0 {
 			r.Resposta(rodada.Texto)
 			r.Tokens(usoPrompt, usoSaida, time.Since(inicio), compactou)
@@ -347,3 +401,15 @@ func ferramenta(ctx context.Context, lista []tools.Spec, cwd string, call dealer
 	}
 	return "", fmt.Errorf("tool desconhecida: %q (checar o nome exato)", call.Nome)
 }
+
+// maxCortes: quantos cortes seguidos pelo teto de saída o turno tolera antes
+// de parar e avisar (OpenCode usa 3).
+const maxCortes = 3
+
+// Mensagens sintéticas de continuação depois de um corte. O prefixo
+// "[output limit]" deixa a tela reconhecê-las e não desenhá-las como fala do
+// usuário.
+const (
+	avisoCorte      = "[output limit] Your last response hit the output token limit and was cut off. Continue exactly where you stopped, without repeating what you already wrote, and break the remaining work into smaller pieces."
+	avisoCorteTools = "Tool calls in the cut response were NOT executed because their arguments may be incomplete; call them again, with smaller arguments if needed."
+)

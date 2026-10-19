@@ -28,7 +28,7 @@ type Config struct {
 	BaseURL      string `json:"base_url"`
 	Model        string `json:"model"`
 	APIKey       string `json:"-"`
-	MaxTokens    int    `json:"max_tokens"`     // teto de saída; 0 = 4096
+	MaxTokens    int    `json:"max_tokens"`     // teto de saída; 0 = padrão por effort (TetoPadrao)
 	JanelaTokens int    `json:"context_window"` // 0 = desconhecida
 	Effort       string `json:"effort"`         // vazio = omitir reasoning_effort do request
 }
@@ -64,20 +64,60 @@ type Rodada struct {
 	Tools       []ToolChamada
 	Usage       *Usage
 	FimPorTexto bool
+	// Cortada: o provider encerrou por teto de saída (finish_reason
+	// "length"). Texto e tool calls podem estar incompletos.
+	Cortada bool
 }
 
 // Cliente é instanciado por turno.
 type Cliente struct {
-	cfg Config
+	cfg  Config
+	teto int // teto deste request (ComTeto); 0 = MaxTokens()
 }
 
 func Novo(cfg Config) *Cliente { return &Cliente{cfg: cfg} }
 
+// MaxTokens é o teto de saída pedido ao provider: o max_tokens da config,
+// ou TetoPadrao para o effort.
 func (c *Cliente) MaxTokens() int {
+	if c.teto > 0 {
+		return c.teto
+	}
 	if c.cfg.MaxTokens > 0 {
 		return c.cfg.MaxTokens
 	}
-	return 4096
+	return TetoPadrao(c.cfg.Effort)
+}
+
+// ComTeto devolve uma cópia do cliente com outro teto de saída só para os
+// próximos requests dela (nova tentativa com teto maior, corte pela janela).
+func (c *Cliente) ComTeto(n int) *Cliente {
+	c2 := *c
+	c2.teto = n
+	return &c2
+}
+
+// TetoPadrao: 32k como OpenCode e Claude Code fazem para modelo sem limite
+// conhecido, mais o orçamento de raciocínio do effort — um modelo com effort
+// alto gastava os 4096 antigos inteiros pensando e não respondia nada.
+func TetoPadrao(effort string) int {
+	return max(32<<10, OrcamentoRaciocinio(effort)+(16<<10))
+}
+
+// OrcamentoRaciocinio é quanto o raciocínio consome por effort (a mesma
+// tabela do clamp do barroso-keys).
+func OrcamentoRaciocinio(effort string) int {
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "max", "xhigh":
+		return 32 << 10
+	case "high":
+		return 16 << 10
+	case "medium":
+		return 8 << 10
+	case "low", "minimal":
+		return 4 << 10
+	}
+	return 0
 }
 
 type oaiCall struct {
@@ -271,6 +311,9 @@ func lerRodada(resp *http.Response, ctx context.Context) (*Rodada, error) {
 			}
 			if d.Content != nil {
 				r.Texto += *d.Content
+			}
+			if f := ch.Choices[0].FinishReason; f != nil && *f == "length" {
+				r.Cortada = true
 			}
 		}
 		if ch.Usage != nil && r.Usage == nil {

@@ -1003,6 +1003,15 @@ func (r *turnoTela) Eco(saida string) {
 	r.t.Adicionar("  " + cinzaf("› "+cortarVis(primeira, larg)))
 }
 
+func (r *turnoTela) Cortada(teto int, desistiu bool) {
+	r.t.pararSpin()
+	msg := fmt.Sprintf("response cut at the output limit (%s tokens); continuing", milhar(teto))
+	if desistiu {
+		msg = fmt.Sprintf("response cut at the output limit (%s tokens) again; stopped", milhar(teto))
+	}
+	r.t.Adicionar("  " + amarelof("⚠") + " " + cinzaf(msg))
+}
+
 func (r *turnoTela) Guardrail(proativa bool) {
 	r.t.pararSpin()
 	msg := "context compacted by the guardrail (provider rejected the request size)"
@@ -1059,6 +1068,10 @@ func reproduzirHistorico(t *tela, h []dealer.Mensagem) {
 		case "user":
 			if strings.HasPrefix(m.Conteudo, "[estado de trabalho") {
 				t.Adicionar("  " + roxof("◆") + " " + cinzaf("context compacted"))
+				continue
+			}
+			if strings.HasPrefix(m.Conteudo, "[output limit]") {
+				t.Adicionar("  " + amarelof("⚠") + " " + cinzaf("response cut at the output limit; continued"))
 				continue
 			}
 			t.Usuario(strings.TrimSpace(m.Conteudo))

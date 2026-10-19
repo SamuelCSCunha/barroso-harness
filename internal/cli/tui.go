@@ -161,6 +161,15 @@ func (t *turnoTUI) Eco(saida string) {
 	}
 }
 
+func (t *turnoTUI) Cortada(teto int, desistiu bool) {
+	t.pararSpin()
+	msg := fmt.Sprintf("response cut at the output limit (%d tokens); continuing", teto)
+	if desistiu {
+		msg = fmt.Sprintf("response cut at the output limit (%d tokens) again; stopped", teto)
+	}
+	fmt.Fprintf(t.out, "  %s %s\n", amarelof("⚠"), cinzaf(msg))
+}
+
 func (t *turnoTUI) Guardrail(proativa bool) {
 	t.pararSpin()
 	msg := "context compacted by the guardrail (provider rejected the request size)"
