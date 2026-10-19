@@ -158,8 +158,10 @@ A gravação relê o `config.json` do disco e troca só a lista de servidores, p
 
 Num terminal de verdade, `bh` abre em tela cheia no layout do OpenCode: conversa no meio, painel lateral (título, contexto usado, servidores MCP conectados), caixa de entrada fixa embaixo e rodapé com diretório e contexto. O painel aparece com 110 colunas ou mais.
 
-Teclas: `Enter` envia · `↑`/`↓` histórico do que você digitou · `PgUp`/`PgDn` rola a conversa · `Esc` ou `Ctrl+C` interrompe a resposta em curso · `Ctrl+C` duas vezes sai · `Ctrl+U` apaga a linha · `Ctrl+L` redesenha.
+Teclas: `Enter` envia · `↑`/`↓` histórico do que você digitou · roda do mouse e `PgUp`/`PgDn` rolam a conversa · `Esc` ou `Ctrl+C` interrompe a resposta em curso · `Ctrl+C` duas vezes sai · `Ctrl+U` apaga a linha · `Ctrl+L` redesenha.
 
 O nome da sessão aparece na aba do terminal (`BH | <nome>`) e no painel: é a primeira mensagem, ou o que você definir com `/rename novo nome`.
+
+Com a roda do mouse capturada, selecionar texto para copiar é `Shift` + arrastar (Windows Terminal e a maioria dos terminais).
 
 `BH_SIMPLES=1 bh` volta ao modo de rolagem. Pipe, redirecionamento e `bh -p` nunca usam a tela cheia.

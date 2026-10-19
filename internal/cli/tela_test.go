@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"strings"
 	"testing"
 )
@@ -52,5 +53,18 @@ func TestAbaNovaSessaoNaAbertura(t *testing.T) {
 	tl.Estado(estadoPainel{modelo: "m"})
 	if !strings.Contains(sb.String(), "\033]0;BH | Nova sessão\a") {
 		t.Fatal("aba deveria abrir como 'BH | Nova sessão'")
+	}
+}
+
+// A roda do mouse chega como SGR e vira rolagem; clique é ignorado.
+func TestRodaDoMouse(t *testing.T) {
+	ch := make(chan tecla, 8)
+	lerTeclas(bufio.NewReader(strings.NewReader("\x1b[<64;10;5M\x1b[<0;3;3M\x1b[<0;3;3m\x1b[<65;10;5Ma")), ch)
+	var got []string
+	for k := range ch {
+		got = append(got, k.acao+k.texto)
+	}
+	if strings.Join(got, ",") != "rodacima,rodabaixo,a" {
+		t.Fatalf("teclas = %v", got)
 	}
 }

@@ -34,6 +34,8 @@ var ioPipe = io.Pipe
 const (
 	escAlt       = "\033[?1049h"
 	escNormal    = "\033[?1049l"
+	escMouseLiga = "\033[?1000h\033[?1006h" // roda do mouse chega como SGR (\033[<64;x;yM)
+	escMouseDesl = "\033[?1006l\033[?1000l"
 	escSyncIni   = "\033[?2026h" // pinta o quadro inteiro de uma vez (sem piscar)
 	escSyncFim   = "\033[?2026l"
 	escLimpa     = "\033[2J"
@@ -80,7 +82,7 @@ type tela struct {
 }
 
 func novaTela(out io.Writer) *tela {
-	fmt.Fprint(out, escAlt+escLimpa)
+	fmt.Fprint(out, escAlt+escMouseLiga+escLimpa)
 	return &tela{out: out}
 }
 
@@ -88,7 +90,7 @@ func (t *tela) encerrar() {
 	t.pararSpin()
 	// A aba volta ao título neutro: o shell (cmd/PowerShell) não reescreve o
 	// título sozinho, e o nome da sessão ficaria preso na aba depois do bh.
-	fmt.Fprint(t.out, escCurVisiv+escNormal+tituloAba(""))
+	fmt.Fprint(t.out, escMouseDesl+escCurVisiv+escNormal+tituloAba(""))
 }
 
 // tituloAba é a sequência OSC 0 que troca o nome da aba/janela do terminal.
@@ -501,6 +503,24 @@ func lerTeclas(r *bufio.Reader, ch chan<- tecla) {
 				ch <- tecla{acao: "cima"}
 			case 'B':
 				ch <- tecla{acao: "baixo"}
+			case '<':
+				// mouse SGR: "<botão;col;linhaM". 64/65 são a roda para cima/baixo;
+				// cliques e arrasto são ignorados.
+				var seq []byte
+				for {
+					x, err := r.ReadByte()
+					if err != nil || x == 'M' || x == 'm' {
+						break
+					}
+					seq = append(seq, x)
+				}
+				botao, _, _ := strings.Cut(string(seq), ";")
+				switch botao {
+				case "64":
+					ch <- tecla{acao: "rodacima"}
+				case "65":
+					ch <- tecla{acao: "rodabaixo"}
+				}
 			case '5', '6':
 				_, _ = r.ReadByte() // '~'
 				if f == '5' {
@@ -689,10 +709,13 @@ func runTela(io IO) int {
 						posHist, t.entrada = -1, ""
 					}
 				})
-			case "pgup", "pgdn":
+			case "pgup", "pgdn", "rodacima", "rodabaixo":
 				editar(func() {
 					passo := max(3, t.h-10)
-					if k.acao == "pgup" {
+					if strings.HasPrefix(k.acao, "roda") {
+						passo = 3
+					}
+					if k.acao == "pgup" || k.acao == "rodacima" {
 						t.rolagem += passo
 					} else {
 						t.rolagem = max(0, t.rolagem-passo)
