@@ -20,22 +20,46 @@ import (
 	"github.com/ruanbarroso/barroso-harness/internal/config"
 )
 
-// Extra palette from the redesign (the base lives in ui.go).
+// 24-bit palette copied from the OpenCode default theme (dark), so the screen
+// renders the same colours OpenCode v2 does. The base UI palette lives in
+// ui.go; colorsOn still gates every escape (NO_COLOR / TERM=dumb / pipes).
 const (
-	colorBlue   = "\033[38;5;75m"
-	colorOrange = "\033[38;5;215m"
-	colorGray   = "\033[38;5;240m"
-	colorText   = "\033[38;5;252m"
-	bgCode      = "\033[48;5;236m"
+	colorBlue   = "\033[38;2;92;156;245m"  // agent colour: categorical blue family
+	colorOrange = "\033[38;2;245;167;66m"  // text.feedback.warning.base
+	colorGray   = "\033[38;2;128;128;128m" // text.muted
+	colorText   = "\033[38;2;238;238;238m" // text.base
+	bgCode      = "\033[48;2;30;30;30m"
 	italic      = "\033[3m"
+)
+
+// Backgrounds of the OpenCode gray scale: screen base #0a0a0a, sidebar /
+// user-message / block tools #141414, prompt box (decrease(raised.base)) and
+// raised highlights #1e1e1e.
+const (
+	bgScreen = "\033[48;2;10;10;10m"
+	bgRaised = "\033[48;2;20;20;20m"
+	bgBox    = "\033[48;2;30;30;30m"
+	// bgWarning is feedback.warning #f5a742, the background of attachment
+	// tokens ([Image N]) and of interactive / secondary accents.
+	bgWarning = "\033[48;2;245;167;66m"
+	// bgSelection is the colour an in-app text drag paints over the selected
+	// cells; fgSelected is the text colour inside it (opentui's default is an
+	// inverted cell, which on the dark theme is a light block).
+	bgSelection = "\033[48;2;245;167;66m"
+	fgSelected  = "\033[38;2;10;10;10m"
 )
 
 func bluef(s string) string   { return color(colorBlue, s) }
 func orangef(s string) string { return color(colorOrange, s) }
 func grayf(s string) string   { return color(colorGray, s) }
 
-// bar is the side border of the boxes (user request, input).
-const bar = "▌"
+// bar is the side border of the boxes (user request, input): OpenCode's
+// SplitBorder vertical glyph, with the bottom cap used under the prompt.
+const (
+	bar     = "┃"
+	barCap  = "╹"
+	barEdge = "▀"
+)
 
 // ── turn ──────────────────────────────────────────────────────────────────
 
@@ -357,28 +381,18 @@ func fmtDur(d time.Duration) string {
 	return fmt.Sprintf("%.1fs", d.Seconds())
 }
 
-// fmtContexto: "9.8K (5%)" — the same format as OpenCode's corner.
+// fmtContext: "12,345 (37%)" — OpenCode's formatContextUsage, always muted.
 func fmtContext(tokens, window int) string {
-	k := fmt.Sprintf("%.1fK", float64(tokens)/1000)
-	if window <= 0 {
-		return grayf(k)
+	out := fmtTokens(tokens)
+	if window > 0 {
+		pct := 100 * tokens / window
+		if pct == 0 {
+			out += " (<1%)"
+		} else {
+			out += fmt.Sprintf(" (%d%%)", pct)
+		}
 	}
-	pct := 100 * tokens / window
-	txt := fmt.Sprintf("%s (%d%%)", k, pct)
-	if pct == 0 {
-		txt = k + " (<1%)"
-	}
-	if pct == 0 {
-		txt = k + " (<1%)"
-	}
-	switch {
-	case pct >= 80:
-		return redf(txt)
-	case pct >= 50:
-		return yellowf(txt)
-	default:
-		return grayf(txt)
-	}
+	return grayf(out)
 }
 
 func truncate(s string, max int) string {
