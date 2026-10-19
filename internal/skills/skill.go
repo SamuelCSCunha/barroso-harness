@@ -1,9 +1,9 @@
-// Package skills resolve as skills do agente a partir do disco. Uma skill é um
-// diretório contendo um SKILL.md (forma preferida, o nome do diretório batiza
-// a skill) ou um SKILL.md solto na raiz de uma fonte (aí o nome vem do
-// frontmatter). O frontmatter é o primeiro bloco delimitado por linhas `---`;
-// só linhas `key: value` simples são lidas — YAML aninhado, listas e blocos
-// não são interpretados.
+// Package skills resolves the agent's skills from disk. A skill is a directory
+// containing a SKILL.md (preferred form; the directory name names the skill)
+// or a loose SKILL.md in a source root (then the name comes from the
+// frontmatter). The frontmatter is the first block delimited by `---` lines;
+// only simple `key: value` lines are read — nested YAML, lists and blocks are
+// not interpreted.
 package skills
 
 import (
@@ -12,96 +12,96 @@ import (
 	"strings"
 )
 
-// nomeArquivo é o nome fixo do arquivo que materializa uma skill.
-const nomeArquivo = "SKILL.md"
+// fileName is the fixed name of the file that materializes a skill.
+const fileName = "SKILL.md"
 
-// Skill é uma skill já lida do disco, pronta para entrar no catálogo.
+// Skill is a skill already read from disk, ready to enter the catalog.
 type Skill struct {
-	Nome      string // frontmatter `name`; sem ele, o nome do diretório/arquivo
+	Nome      string // frontmatter `name`; without it, the directory/file name
 	Descricao string // frontmatter `description`
-	Caminho   string // caminho absoluto do SKILL.md
-	Corpo     string // o markdown DEPOIS do frontmatter, verbatim
-	Fontes    string // rótulo da fonte de onde veio ("global"|"projeto")
+	Caminho   string // absolute path of the SKILL.md
+	Corpo     string // the markdown AFTER the frontmatter, verbatim
+	Fontes    string // label of the source it came from ("global"|"projeto")
 }
 
-// analisar separa frontmatter de corpo e devolve a skill. ok=false quando o
-// corpo fica vazio — skill sem conteúdo não entra no catálogo.
-func analisar(conteudo, caminho, fonte string) (Skill, bool) {
-	nome, descricao, corpo := separarFrontmatter(conteudo)
-	if strings.TrimSpace(nome) == "" {
-		nome = nomeDoDisco(caminho)
+// parse splits frontmatter from body and returns the skill. ok=false when the
+// body is empty — a skill without content does not enter the catalog.
+func parse(content, path, source string) (Skill, bool) {
+	name, description, body := splitFrontmatter(content)
+	if strings.TrimSpace(name) == "" {
+		name = nameFromDisk(path)
 	}
 	s := Skill{
-		Nome:      nome,
-		Descricao: descricao,
-		Caminho:   caminho,
-		Corpo:     corpo,
-		Fontes:    fonte,
+		Nome:      name,
+		Descricao: description,
+		Caminho:   path,
+		Corpo:     body,
+		Fontes:    source,
 	}
-	if strings.TrimSpace(corpo) == "" {
+	if strings.TrimSpace(body) == "" {
 		return s, false
 	}
 	return s, true
 }
 
-// separarFrontmatter devolve name, description e o corpo. Sem frontmatter (ou
-// com o bloco não fechado) o arquivo inteiro é o corpo e o nome vem do disco.
-// O corpo começa na primeira linha depois do `---` de fechamento: a quebra de
-// linha que encerra o bloco é consumida, o resto é preservado verbatim.
-func separarFrontmatter(conteudo string) (nome, descricao, corpo string) {
-	linhas := strings.Split(conteudo, "\n")
+// splitFrontmatter returns name, description and the body. Without frontmatter
+// (or with an unclosed block) the whole file is the body and the name comes
+// from disk. The body starts on the first line after the closing `---`: the
+// newline ending the block is consumed, the rest is preserved verbatim.
+func splitFrontmatter(content string) (name, description, body string) {
+	lines := strings.Split(content, "\n")
 
-	abre := -1
-	for i, l := range linhas {
-		t := semCR(l)
+	open := -1
+	for i, l := range lines {
+		t := trimCR(l)
 		if t == "" {
 			continue
 		}
 		if t == "---" {
-			abre = i
+			open = i
 		}
 		break
 	}
-	if abre < 0 {
-		return "", "", conteudo
+	if open < 0 {
+		return "", "", content
 	}
 
-	fecha := -1
-	for i := abre + 1; i < len(linhas); i++ {
-		if semCR(linhas[i]) == "---" {
-			fecha = i
+	closing := -1
+	for i := open + 1; i < len(lines); i++ {
+		if trimCR(lines[i]) == "---" {
+			closing = i
 			break
 		}
 	}
-	if fecha < 0 {
-		return "", "", conteudo
+	if closing < 0 {
+		return "", "", content
 	}
 
-	for i := abre + 1; i < fecha; i++ {
-		l := strings.TrimSpace(semCR(linhas[i]))
-		chave, valor, ok := strings.Cut(l, ":")
+	for i := open + 1; i < closing; i++ {
+		l := strings.TrimSpace(trimCR(lines[i]))
+		key, value, ok := strings.Cut(l, ":")
 		if !ok {
 			continue
 		}
-		switch strings.TrimSpace(chave) {
+		switch strings.TrimSpace(key) {
 		case "name":
-			nome = desaspas(strings.TrimSpace(valor))
+			name = unquote(strings.TrimSpace(value))
 		case "description":
-			descricao = desaspas(strings.TrimSpace(valor))
+			description = unquote(strings.TrimSpace(value))
 		}
 	}
 
-	if fecha+1 < len(linhas) {
-		corpo = strings.Join(linhas[fecha+1:], "\n")
+	if closing+1 < len(lines) {
+		body = strings.Join(lines[closing+1:], "\n")
 	}
-	return nome, descricao, corpo
+	return name, description, body
 }
 
-// semCR tira o \r que sobra da quebra de linha em arquivos CRLF.
-func semCR(l string) string { return strings.TrimSuffix(l, "\r") }
+// trimCR strips the \r left over from line breaks in CRLF files.
+func trimCR(l string) string { return strings.TrimSuffix(l, "\r") }
 
-// desaspas remove aspas (duplas ou simples) envolvendo o valor inteiro.
-func desaspas(v string) string {
+// unquote removes quotes (double or single) wrapping the whole value.
+func unquote(v string) string {
 	if len(v) >= 2 {
 		if (v[0] == '"' && v[len(v)-1] == '"') || (v[0] == '\'' && v[len(v)-1] == '\'') {
 			return v[1 : len(v)-1]
@@ -110,31 +110,31 @@ func desaspas(v string) string {
 	return v
 }
 
-// nomeDoDisco deriva o nome pelo caminho: o diretório pai quando o arquivo é o
-// SKILL.md canônico (`<raiz>/<skill>/SKILL.md` → `<skill>`); senão, o nome do
-// arquivo sem extensão.
-func nomeDoDisco(caminho string) string {
-	limpo := filepath.Clean(caminho)
-	base := filepath.Base(limpo)
-	if strings.EqualFold(base, nomeArquivo) {
-		pai := filepath.Base(filepath.Dir(limpo))
-		if pai == "" || pai == "." || pai == string(filepath.Separator) {
+// nameFromDisk derives the name from the path: the parent directory when the
+// file is the canonical SKILL.md (`<root>/<skill>/SKILL.md` → `<skill>`);
+// otherwise, the file name without extension.
+func nameFromDisk(path string) string {
+	clean := filepath.Clean(path)
+	base := filepath.Base(clean)
+	if strings.EqualFold(base, fileName) {
+		parent := filepath.Base(filepath.Dir(clean))
+		if parent == "" || parent == "." || parent == string(filepath.Separator) {
 			return ""
 		}
-		return pai
+		return parent
 	}
 	return strings.TrimSuffix(base, filepath.Ext(base))
 }
 
-// acharSkillMD procura o SKILL.md dentro de dir (sem descer um nível). A
-// comparação ignora caixa, para conviver com filesystems case-insensitive.
-func acharSkillMD(dir string) (string, bool) {
+// findSkillMD looks for the SKILL.md inside dir (without descending further).
+// The comparison ignores case, to cope with case-insensitive filesystems.
+func findSkillMD(dir string) (string, bool) {
 	ents, err := os.ReadDir(dir)
 	if err != nil {
 		return "", false
 	}
 	for _, e := range ents {
-		if e.IsDir() || !strings.EqualFold(e.Name(), nomeArquivo) {
+		if e.IsDir() || !strings.EqualFold(e.Name(), fileName) {
 			continue
 		}
 		return filepath.Join(dir, e.Name()), true

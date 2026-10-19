@@ -1,8 +1,8 @@
-// serveACP liga o modo bh -acp: o processo vira um servidor ACP (JSON-RPC 2.0
-// newline-delimited sobre stdio) para um editor/cliente dirigir os turnos.
-// stdout é fio de protocolo — nada de banner/log nele; diagnóstico vai para
-// stderr. Persistência e subsistemas (MCP, sub-agentes) seguem best-effort:
-// falha de um servidor vira aviso em stderr, não derrubada do protocolo.
+// serveACP enables `bh -acp` mode: the process becomes an ACP server (JSON-RPC
+// 2.0, newline-delimited over stdio) so an editor/client can drive the turns.
+// stdout is the protocol wire — no banner/log on it; diagnostics go to stderr.
+// Persistence and subsystems (MCP, sub-agents) stay best-effort: a failing
+// server becomes a warning on stderr, not a protocol crash.
 package main
 
 import (
@@ -19,44 +19,46 @@ import (
 func serveACP() {
 	cfg, err := config.Load()
 	if err != nil {
-		// Falha de config sai no stderr (log do protocolo), nunca no stdout —
-		// o fio ainda é o(os.Stdout) do Sirve.
+		// A config failure goes to stderr (the protocol log), never to stdout —
+		// the wire is still the server's os.Stdout.
 		os.Stderr.WriteString("error: " + err.Error() + "\n")
 		os.Exit(1)
 	}
 	cwd, _ := os.Getwd()
 
-	// Log do ACP é o MESMO banco do REPL e do -p (mesma pasta, mesmo arquivo):
-	// uma sessão aberta num cliente editável é retomável no terminal depois.
-	// Best-effort — sem banco o protocolo segue, só sem histórico.
-	loja, errBanco := store.Open(filepath.Join(config.Dir(), "sessions.db"))
-	if errBanco != nil {
-		os.Stderr.WriteString("warning: session not persisted: " + errBanco.Error() + "\n")
-		loja = nil
+	// The ACP log is the SAME database as the REPL and -p (same folder, same
+	// file): a session opened in an editor client can be resumed in the
+	// terminal later. Best-effort — without a database the protocol goes on,
+	// just without history.
+	st, dbErr := store.Open(filepath.Join(config.Dir(), "sessions.db"))
+	if dbErr != nil {
+		os.Stderr.WriteString("warning: session not persisted: " + dbErr.Error() + "\n")
+		st = nil
 	}
 	defer func() {
-		if loja != nil {
-			_ = loja.Fechar()
+		if st != nil {
+			_ = st.Fechar()
 		}
 	}()
 
-	var abertos []*wiring.Conjunto
-	fabrica := func(c config.Config) (acp.Turno, string) {
-		return novaSessaoACP(c, loja, cwd, &abertos)
+	var open []*wiring.Conjunto
+	factory := func(c config.Config) (acp.Turno, string) {
+		return newACPSession(c, st, cwd, &open)
 	}
 	defer func() {
-		for _, conj := range abertos {
-			_ = conj.Fechar()
+		for _, set := range open {
+			_ = set.Fechar()
 		}
 	}()
-	ag := acp.NovoComFabrica(cfg, fabrica).ComLog(func(linha string) {
-		os.Stderr.WriteString(linha + "\n")
+	ag := acp.NovoComFabrica(cfg, factory).ComLog(func(line string) {
+		os.Stderr.WriteString(line + "\n")
 	})
-	// session/load só é anunciado quando há banco para ler: sem loja não há o
-	// que reabrir, e o agente responde loadSession=false.
-	if loja != nil {
+	// session/load is only advertised when there is a database to read: with
+	// no store there is nothing to reopen, and the agent answers
+	// loadSession=false.
+	if st != nil {
 		ag.Carregar = func(c config.Config, id string) (acp.Turno, error) {
-			return carregarSessaoACP(c, loja, cwd, id, &abertos)
+			return loadACPSession(c, st, cwd, id, &open)
 		}
 	}
 	if err := ag.Handle(nil, os.Stdin, os.Stdout); err != nil {
@@ -66,56 +68,58 @@ func serveACP() {
 	ag.Esperar()
 }
 
-// novaSessaoACP monta uma runtime.Session por session/new: persistente quando
-// há banco, com o wiring de subsistemas (MCP, sub-agentes) ligado — mesma
-// receita do REPL e do -p, para o cliente ACP não ver um catálogo pobre.
+// newACPSession builds one runtime.Session per session/new: persistent when
+// there is a database, with subsystem wiring (MCP, sub-agents) enabled — the
+// same recipe as the REPL and -p, so the ACP client does not see a poor
+// catalog.
 //
-// O id devolvido NUNCA é vazio, e isso não é detalhe: o agente ACP registra a
-// sessão no mapa sob essa chave e responde session/new com ela. Id vazio
-// registrava a sessão na chave "" e o cliente recebia sessionId vazio —
-// incapaz de endereçar session/prompt, que rejeitava com "sessão desconhecida".
+// The returned id is NEVER empty, and that is not a detail: the ACP agent
+// registers the session in its map under that key and answers session/new
+// with it. An empty id registered the session under the "" key and the client
+// received an empty sessionId — unable to address session/prompt, which
+// rejected it as an unknown session.
 //
-// O ctx do wiring é o de vida do processo: sub-agentes nascidos de um turno
-// ACP precisam sobreviver a ele.
-func novaSessaoACP(cfg config.Config, loja *store.Store, cwd string, abertos *[]*wiring.Conjunto) (acp.Turno, string) {
+// The wiring ctx is the process-lifetime one: sub-agents born from an ACP
+// turn must outlive it.
+func newACPSession(cfg config.Config, st *store.Store, cwd string, open *[]*wiring.Conjunto) (acp.Turno, string) {
 	id := runtime.NovoSessaoID()
 	var sess *runtime.Session
-	if loja != nil {
-		sess = runtime.NewSessionWithStore(cfg, loja, id)
+	if st != nil {
+		sess = runtime.NewSessionWithStore(cfg, st, id)
 	} else {
 		sess = runtime.NewSession(cfg)
 	}
-	conj, avisos := wiring.Montar(nil, cfg, sess, cwd)
-	for _, aviso := range avisos {
-		os.Stderr.WriteString("warning: " + aviso + "\n")
+	set, warnings := wiring.Montar(nil, cfg, sess, cwd)
+	for _, warning := range warnings {
+		os.Stderr.WriteString("warning: " + warning + "\n")
 	}
-	if abertos != nil {
-		*abertos = append(*abertos, conj)
+	if open != nil {
+		*open = append(*open, set)
 	}
 	return sess, id
 }
 
-// carregarSessaoACP reabre uma sessão do sessions.db para session/load: a
-// mesma sessão que o REPL lista em /resume. Id que o banco não conhece é erro
-// — criar uma sessão vazia com o id pedido faria o cliente achar que carregou
-// uma conversa que não existe.
-func carregarSessaoACP(cfg config.Config, loja *store.Store, cwd, id string, abertos *[]*wiring.Conjunto) (acp.Turno, error) {
-	if loja == nil {
+// loadACPSession reopens a session from sessions.db for session/load: the
+// same session the REPL lists in /resume. An id the database does not know is
+// an error — creating an empty session with the requested id would make the
+// client believe it loaded a conversation that does not exist.
+func loadACPSession(cfg config.Config, st *store.Store, cwd, id string, open *[]*wiring.Conjunto) (acp.Turno, error) {
+	if st == nil {
 		return nil, store.ErrSessaoInexistente
 	}
-	if _, err := loja.GetSession(id); err != nil {
+	if _, err := st.GetSession(id); err != nil {
 		return nil, err
 	}
-	sess := runtime.NewSessionWithStore(cfg, loja, id)
+	sess := runtime.NewSessionWithStore(cfg, st, id)
 	if err := sess.Resume(); err != nil {
 		return nil, err
 	}
-	conj, avisos := wiring.Montar(nil, cfg, sess, cwd)
-	for _, aviso := range avisos {
-		os.Stderr.WriteString("warning: " + aviso + "\n")
+	set, warnings := wiring.Montar(nil, cfg, sess, cwd)
+	for _, warning := range warnings {
+		os.Stderr.WriteString("warning: " + warning + "\n")
 	}
-	if abertos != nil {
-		*abertos = append(*abertos, conj)
+	if open != nil {
+		*open = append(*open, set)
 	}
 	return sess, nil
 }

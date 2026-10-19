@@ -13,419 +13,419 @@ import (
 
 // ── helpers ───────────────────────────────────────────────────────────────
 
-// escrever cria o caminho (com os pais) e grava o conteúdo.
-func escrever(t *testing.T, caminho, conteudo string) string {
+// write creates the path (with parents) and writes the content.
+func write(t *testing.T, path, content string) string {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(caminho), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(caminho, []byte(conteudo), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return caminho
+	return path
 }
 
-// skillDir monta `<raiz>/<nome>/SKILL.md` com frontmatter e corpo.
-func skillDir(t *testing.T, raiz, nome, front, corpo string) string {
+// skillDir builds `<root>/<name>/SKILL.md` with frontmatter and body.
+func skillDir(t *testing.T, root, name, front, body string) string {
 	t.Helper()
-	return escrever(t, filepath.Join(raiz, nome, nomeArquivo), front+"\n"+corpo)
+	return write(t, filepath.Join(root, name, fileName), front+"\n"+body)
 }
 
-// chamar executa a spec de `nome` e devolve a saída.
-func chamar(t *testing.T, nome string, specs []tools.Spec, args any) (string, error) {
+// call runs the spec named `name` and returns its output.
+func call(t *testing.T, name string, specs []tools.Spec, args any) (string, error) {
 	t.Helper()
 	raw, err := json.Marshal(args)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, s := range specs {
-		if s.Name == nome {
+		if s.Name == name {
 			return s.Exec(context.Background(), "", raw)
 		}
 	}
-	t.Fatalf("spec %s não encontrada", nome)
+	t.Fatalf("spec %s not found", name)
 	return "", nil
 }
 
 // ── frontmatter ───────────────────────────────────────────────────────────
 
-func TestFrontmatterComAspasESemNomeVemDoDiretorio(t *testing.T) {
-	raiz := t.TempDir()
-	corpo := "linha um\n\nlinha dois"
-	p := skillDir(t, raiz, "minha-skill",
-		"---\nname: \"Outro Nome\"\ndescription: 'Faz coisas úteis.'\n---", corpo)
+func TestFrontmatterQuotedNameWinsOverDirectory(t *testing.T) {
+	root := t.TempDir()
+	body := "line one\n\nline two"
+	p := skillDir(t, root, "my-skill",
+		"---\nname: \"Other Name\"\ndescription: 'Does useful things.'\n---", body)
 
-	s, ok, err := carregarDe(p, "projeto")
+	s, ok, err := loadFrom(p, "projeto")
 	if err != nil || !ok {
-		t.Fatalf("carregarDe: ok=%v err=%v", ok, err)
+		t.Fatalf("loadFrom: ok=%v err=%v", ok, err)
 	}
-	if s.Nome != "Outro Nome" {
-		t.Fatalf("nome do frontmatter (com aspas) devia vencer, veio %q", s.Nome)
+	if s.Nome != "Other Name" {
+		t.Fatalf("frontmatter name (quoted) should win, got %q", s.Nome)
 	}
-	if s.Descricao != "Faz coisas úteis." {
-		t.Fatalf("descrição sem aspas simples devia ser exata, veio %q", s.Descricao)
+	if s.Descricao != "Does useful things." {
+		t.Fatalf("description without single quotes should be exact, got %q", s.Descricao)
 	}
-	if s.Corpo != corpo {
-		t.Fatalf("corpo devia ser preservado verbatim, veio %q", s.Corpo)
+	if s.Corpo != body {
+		t.Fatalf("body should be preserved verbatim, got %q", s.Corpo)
 	}
 	if s.Fontes != "projeto" {
-		t.Fatalf("rótulo da fonte devia ser mantido, veio %q", s.Fontes)
+		t.Fatalf("source label should be kept, got %q", s.Fontes)
 	}
 }
 
-func TestFrontmatterSemNameDerivaDoDiretorio(t *testing.T) {
-	raiz := t.TempDir()
-	corpo := "instruções"
-	p := skillDir(t, raiz, "skill-derivada", "---\ndescription: só descrição\n---", corpo)
+func TestFrontmatterWithoutNameDerivesFromDirectory(t *testing.T) {
+	root := t.TempDir()
+	body := "instructions"
+	p := skillDir(t, root, "derived-skill", "---\ndescription: description only\n---", body)
 
-	s, ok, err := carregarDe(p, "projeto")
+	s, ok, err := loadFrom(p, "projeto")
 	if err != nil || !ok {
-		t.Fatalf("carregarDe: ok=%v err=%v", ok, err)
+		t.Fatalf("loadFrom: ok=%v err=%v", ok, err)
 	}
-	if s.Nome != "skill-derivada" {
-		t.Fatalf("sem name, o nome do diretório devia valer, veio %q", s.Nome)
+	if s.Nome != "derived-skill" {
+		t.Fatalf("without name, the directory name should apply, got %q", s.Nome)
 	}
-	if s.Descricao != "só descrição" {
-		t.Fatalf("descrição devia vir do frontmatter, veio %q", s.Descricao)
+	if s.Descricao != "description only" {
+		t.Fatalf("description should come from the frontmatter, got %q", s.Descricao)
 	}
-	if s.Corpo != corpo {
-		t.Fatalf("corpo devia ser preservado, veio %q", s.Corpo)
+	if s.Corpo != body {
+		t.Fatalf("body should be preserved, got %q", s.Corpo)
 	}
 }
 
-func TestSemFrontmatterArquivoInteiroECorpo(t *testing.T) {
-	raiz := t.TempDir()
-	// arquivo sem bloco `---` nenhum: conteúdo gravado cru
-	texto := "- passo um\n- passo dois"
-	p := escrever(t, filepath.Join(raiz, "sem-front", nomeArquivo), texto)
+func TestNoFrontmatterWholeFileIsBody(t *testing.T) {
+	root := t.TempDir()
+	// file without any `---` block: content written raw
+	text := "- step one\n- step two"
+	p := write(t, filepath.Join(root, "no-front", fileName), text)
 
-	s, ok, err := carregarDe(p, "projeto")
+	s, ok, err := loadFrom(p, "projeto")
 	if err != nil || !ok {
-		t.Fatalf("carregarDe: ok=%v err=%v", ok, err)
+		t.Fatalf("loadFrom: ok=%v err=%v", ok, err)
 	}
-	if s.Nome != "sem-front" {
-		t.Fatalf("nome devia vir do diretório, veio %q", s.Nome)
+	if s.Nome != "no-front" {
+		t.Fatalf("name should come from the directory, got %q", s.Nome)
 	}
 	if s.Descricao != "" {
-		t.Fatalf("sem frontmatter não há descrição, veio %q", s.Descricao)
+		t.Fatalf("without frontmatter there is no description, got %q", s.Descricao)
 	}
-	if s.Corpo != texto {
-		t.Fatalf("sem frontmatter o arquivo inteiro é o corpo, veio %q", s.Corpo)
+	if s.Corpo != text {
+		t.Fatalf("without frontmatter the whole file is the body, got %q", s.Corpo)
 	}
 }
 
-func TestBlocoFrontmatterNaoFechadoECorpoInteiro(t *testing.T) {
-	raiz := t.TempDir()
-	texto := "name: mentira\n\nainda corpo"
-	p := escrever(t, filepath.Join(raiz, "nao-fechado", nomeArquivo), "---\n"+texto)
+func TestUnclosedFrontmatterBlockIsWholeBody(t *testing.T) {
+	root := t.TempDir()
+	text := "name: lie\n\nstill body"
+	p := write(t, filepath.Join(root, "unclosed", fileName), "---\n"+text)
 
-	s, ok, err := carregarDe(p, "projeto")
+	s, ok, err := loadFrom(p, "projeto")
 	if err != nil || !ok {
-		t.Fatalf("carregarDe: ok=%v err=%v", ok, err)
+		t.Fatalf("loadFrom: ok=%v err=%v", ok, err)
 	}
-	if s.Nome != "nao-fechado" || s.Descricao != "" {
-		t.Fatalf("bloco não fechado não é frontmatter, veio %+v", s)
+	if s.Nome != "unclosed" || s.Descricao != "" {
+		t.Fatalf("an unclosed block is not frontmatter, got %+v", s)
 	}
-	if s.Corpo != "---\n"+texto {
-		t.Fatalf("bloco não fechado devia ficar no corpo, veio %q", s.Corpo)
+	if s.Corpo != "---\n"+text {
+		t.Fatalf("an unclosed block should stay in the body, got %q", s.Corpo)
 	}
 }
 
-func TestCorpoVazioNaoEntra(t *testing.T) {
-	raiz := t.TempDir()
-	p := skillDir(t, raiz, "vazia", "---\nname: vazia\n---", "\n  \n")
+func TestEmptyBodyIsSkipped(t *testing.T) {
+	root := t.TempDir()
+	p := skillDir(t, root, "empty", "---\nname: empty\n---", "\n  \n")
 
-	_, ok, err := carregarDe(p, "projeto")
+	_, ok, err := loadFrom(p, "projeto")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if ok {
-		t.Fatal("skill de corpo vazio não devia ser aceita")
+		t.Fatal("a skill with an empty body should not be accepted")
 	}
 
-	// e some do catálogo, sem erro
-	fora, err := Descobrir([]Fonte{{Raiz: raiz, Rotulo: "projeto"}})
+	// and it disappears from the catalog, without error
+	out, err := Descobrir([]Fonte{{Raiz: root, Rotulo: "projeto"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(fora) != 0 {
-		t.Fatalf("skill vazia não devia aparecer, vieram %d", len(fora))
+	if len(out) != 0 {
+		t.Fatalf("empty skill should not appear, got %d", len(out))
 	}
 }
 
-// ── descoberta e precedência ──────────────────────────────────────────────
+// ── discovery and precedence ──────────────────────────────────────────────
 
-func TestPrecedenciaDedupDuasFontes(t *testing.T) {
+func TestPrecedenceDedupTwoSources(t *testing.T) {
 	proj := t.TempDir()
 	glob := t.TempDir()
 
-	// mesmo nome nas duas fontes: a primeira (projeto) ganha
-	skillDir(t, proj, "dup", "---\nname: dup\ndescription: do projeto\n---", "corpo do projeto")
-	skillDir(t, glob, "dup", "---\nname: dup\ndescription: do global\n---", "corpo do global")
-	// nomes exclusivos de cada lado
-	skillDir(t, proj, "so-projeto", "---\nname: so-projeto\n---", "só no projeto")
-	skillDir(t, glob, "so-global", "---\nname: so-global\n---", "só no global")
+	// same name in both sources: the first (projeto) wins
+	skillDir(t, proj, "dup", "---\nname: dup\ndescription: from project\n---", "project body")
+	skillDir(t, glob, "dup", "---\nname: dup\ndescription: from global\n---", "global body")
+	// names unique to each side
+	skillDir(t, proj, "project-only", "---\nname: project-only\n---", "only in project")
+	skillDir(t, glob, "global-only", "---\nname: global-only\n---", "only in global")
 
-	fora, err := Descobrir([]Fonte{
+	out, err := Descobrir([]Fonte{
 		{Raiz: proj, Rotulo: "projeto"},
 		{Raiz: glob, Rotulo: "global"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(fora) != 3 {
-		t.Fatalf("esperava 3 skills depois do dedupe, vieram %d", len(fora))
+	if len(out) != 3 {
+		t.Fatalf("expected 3 skills after dedupe, got %d", len(out))
 	}
 
-	porNome := map[string]Skill{}
-	for _, s := range fora {
-		porNome[s.Nome] = s
+	byName := map[string]Skill{}
+	for _, s := range out {
+		byName[s.Nome] = s
 	}
-	if d := porNome["dup"]; d.Fontes != "projeto" || !strings.Contains(d.Corpo, "do projeto") {
-		t.Fatalf("a fonte de maior precedência devia vencer o dedupe, veio %+v", d)
+	if d := byName["dup"]; d.Fontes != "projeto" || !strings.Contains(d.Corpo, "project body") {
+		t.Fatalf("the highest-precedence source should win the dedupe, got %+v", d)
 	}
-	if porNome["so-projeto"].Fontes != "projeto" {
-		t.Fatalf("rótulo errado: %+v", porNome["so-projeto"])
+	if byName["project-only"].Fontes != "projeto" {
+		t.Fatalf("wrong label: %+v", byName["project-only"])
 	}
-	if porNome["so-global"].Fontes != "global" {
-		t.Fatalf("rótulo errado: %+v", porNome["so-global"])
+	if byName["global-only"].Fontes != "global" {
+		t.Fatalf("wrong label: %+v", byName["global-only"])
 	}
 }
 
-func TestDescobrirIgnoraOcultosEOrdenaPorNome(t *testing.T) {
-	raiz := t.TempDir()
-	skillDir(t, raiz, "zeta", "---\nname: zeta\n---", "corpo z")
-	skillDir(t, raiz, "alpha", "---\nname: alpha\n---", "corpo a")
-	skillDir(t, raiz, "Beta", "---\nname: Beta\n---", "corpo b")
-	// ocultos não entram
-	skillDir(t, raiz, ".escondida", "---\nname: escondida\n---", "corpo oculto")
+func TestDiscoverIgnoresHiddenAndSortsByName(t *testing.T) {
+	root := t.TempDir()
+	skillDir(t, root, "zeta", "---\nname: zeta\n---", "body z")
+	skillDir(t, root, "alpha", "---\nname: alpha\n---", "body a")
+	skillDir(t, root, "Beta", "---\nname: Beta\n---", "body b")
+	// hidden ones are skipped
+	skillDir(t, root, ".hidden", "---\nname: hidden\n---", "hidden body")
 
-	fora, err := Descobrir([]Fonte{{Raiz: raiz, Rotulo: "projeto"}})
+	out, err := Descobrir([]Fonte{{Raiz: root, Rotulo: "projeto"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(fora) != 3 {
-		t.Fatalf("diretório oculto devia ser ignorado, vieram %d: %+v", len(fora), fora)
+	if len(out) != 3 {
+		t.Fatalf("hidden directory should be ignored, got %d: %+v", len(out), out)
 	}
-	ordem := []string{fora[0].Nome, fora[1].Nome, fora[2].Nome}
-	quer := []string{"alpha", "Beta", "zeta"}
-	for i := range quer {
-		if ordem[i] != quer[i] {
-			t.Fatalf("ordem case-insensitive devia ser %v, veio %v", quer, ordem)
+	order := []string{out[0].Nome, out[1].Nome, out[2].Nome}
+	want := []string{"alpha", "Beta", "zeta"}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("case-insensitive order should be %v, got %v", want, order)
 		}
 	}
 }
 
-func TestDescobrirSkillSoltaNaRaiz(t *testing.T) {
-	raiz := t.TempDir()
-	escrever(t, filepath.Join(raiz, nomeArquivo), "---\nname: solta\ndescription: na raiz\n---\ncorpo da raiz")
+func TestDiscoverLooseSkillInRoot(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, fileName), "---\nname: loose\ndescription: in root\n---\nroot body")
 
-	fora, err := Descobrir([]Fonte{{Raiz: raiz, Rotulo: "projeto"}})
+	out, err := Descobrir([]Fonte{{Raiz: root, Rotulo: "projeto"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(fora) != 1 || fora[0].Nome != "solta" || fora[0].Corpo != "corpo da raiz" {
-		t.Fatalf("SKILL.md solto na raiz devia entrar com nome do frontmatter, veio %+v", fora)
+	if len(out) != 1 || out[0].Nome != "loose" || out[0].Corpo != "root body" {
+		t.Fatalf("loose SKILL.md in root should be included with the frontmatter name, got %+v", out)
 	}
 }
 
-func TestDescobrirDiretoriosVaziosSemErro(t *testing.T) {
-	dir := t.TempDir() // existe, vazio
+func TestDiscoverEmptyDirectoriesNoError(t *testing.T) {
+	dir := t.TempDir() // exists, empty
 	if err := os.MkdirAll(filepath.Join(dir, "skills"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	fora, err := Descobrir([]Fonte{{Raiz: filepath.Join(dir, "skills"), Rotulo: "projeto"}})
+	out, err := Descobrir([]Fonte{{Raiz: filepath.Join(dir, "skills"), Rotulo: "projeto"}})
 	if err != nil {
-		t.Fatalf("fonte vazia não é erro: %v", err)
+		t.Fatalf("an empty source is not an error: %v", err)
 	}
-	if len(fora) != 0 {
-		t.Fatalf("nenhuma skill devia surgir, vieram %d", len(fora))
+	if len(out) != 0 {
+		t.Fatalf("no skill should appear, got %d", len(out))
 	}
 }
 
-func TestDescobrirFonteInexistenteNaoErra(t *testing.T) {
-	ausente := filepath.Join(t.TempDir(), "nao-existe")
-	fora, err := Descobrir([]Fonte{{Raiz: ausente, Rotulo: "projeto"}})
+func TestDiscoverMissingSourceNoError(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	out, err := Descobrir([]Fonte{{Raiz: missing, Rotulo: "projeto"}})
 	if err != nil {
-		t.Fatalf("fonte inexistente devia ser tolerada: %v", err)
+		t.Fatalf("a missing source should be tolerated: %v", err)
 	}
-	if len(fora) != 0 {
-		t.Fatalf("nada devia ser encontrado, vieram %d", len(fora))
+	if len(out) != 0 {
+		t.Fatalf("nothing should be found, got %d", len(out))
 	}
 }
 
-func TestDescobrirTodasFontesIlegiveisErra(t *testing.T) {
+func TestDiscoverAllSourcesUnreadableErrors(t *testing.T) {
 	base := t.TempDir()
-	// arquivo no lugar de diretório: ReadDir falha
-	arquivo := escrever(t, filepath.Join(base, "arquivo.txt"), "x")
-	_, err := Descobrir([]Fonte{{Raiz: arquivo, Rotulo: "projeto"}})
+	// a file in place of a directory: ReadDir fails
+	file := write(t, filepath.Join(base, "file.txt"), "x")
+	_, err := Descobrir([]Fonte{{Raiz: file, Rotulo: "projeto"}})
 	if err == nil {
-		t.Fatal("nenhuma fonte legível devia devolver erro")
+		t.Fatal("no readable source should return an error")
 	}
-	if !strings.Contains(err.Error(), "nenhuma fonte") {
-		t.Fatalf("mensagem de erro inesperada: %v", err)
+	if !strings.Contains(err.Error(), "no skills source") {
+		t.Fatalf("unexpected error message: %v", err)
 	}
 
-	// uma fonte legível basta para não errar
-	vazia := filepath.Join(base, "vazia")
-	if err := os.MkdirAll(vazia, 0o755); err != nil {
+	// one readable source is enough to not fail
+	empty := filepath.Join(base, "empty")
+	if err := os.MkdirAll(empty, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Descobrir([]Fonte{{Raiz: arquivo, Rotulo: "projeto"}, {Raiz: vazia, Rotulo: "projeto"}}); err != nil {
-		t.Fatalf("com uma fonte legível não devia errar: %v", err)
+	if _, err := Descobrir([]Fonte{{Raiz: file, Rotulo: "projeto"}, {Raiz: empty, Rotulo: "projeto"}}); err != nil {
+		t.Fatalf("with one readable source it should not fail: %v", err)
 	}
 }
 
 // ── FontesPadrao ──────────────────────────────────────────────────────────
 
-func TestFontesPadraoComposicao(t *testing.T) {
-	home := filepath.Join(string(filepath.Separator), "home", "eu")
-	cwd := filepath.Join(string(filepath.Separator), "home", "eu", "proj")
+func TestDefaultSourcesComposition(t *testing.T) {
+	home := filepath.Join(string(filepath.Separator), "home", "me")
+	cwd := filepath.Join(string(filepath.Separator), "home", "me", "proj")
 
-	fontes := FontesPadrao(home, cwd)
-	if len(fontes) != 3 {
-		t.Fatalf("esperava 3 fontes, vieram %d: %+v", len(fontes), fontes)
+	sources := FontesPadrao(home, cwd)
+	if len(sources) != 3 {
+		t.Fatalf("expected 3 sources, got %d: %+v", len(sources), sources)
 	}
 
-	quer := []Fonte{
+	want := []Fonte{
 		{Raiz: filepath.Join(cwd, ".barroso", "skills"), Rotulo: "projeto"},
 		{Raiz: filepath.Join(cwd, "skills"), Rotulo: "projeto"},
 		{Raiz: filepath.Join(home, ".barroso-harness", "skills"), Rotulo: "global"},
 	}
-	for i, f := range quer {
-		if fontes[i] != f {
-			t.Fatalf("fonte %d devia ser %+v, veio %+v", i, f, fontes[i])
+	for i, f := range want {
+		if sources[i] != f {
+			t.Fatalf("source %d should be %+v, got %+v", i, f, sources[i])
 		}
 	}
 }
 
-func TestFontesPadraoStringsVazias(t *testing.T) {
+func TestDefaultSourcesEmptyStrings(t *testing.T) {
 	if f := FontesPadrao("", ""); len(f) != 0 {
-		t.Fatalf("sem home e sem cwd não há fonte, vieram %d", len(f))
+		t.Fatalf("without home and cwd there is no source, got %d", len(f))
 	}
-	if f := FontesPadrao("", filepath.Join("so", "cwd")); len(f) != 2 {
-		t.Fatalf("sem home sobram só as de projeto, vieram %d", len(f))
+	if f := FontesPadrao("", filepath.Join("only", "cwd")); len(f) != 2 {
+		t.Fatalf("without home only the project ones remain, got %d", len(f))
 	}
-	if f := FontesPadrao(filepath.Join("so", "home"), ""); len(f) != 1 || f[0].Rotulo != "global" {
-		t.Fatalf("sem cwd sobra só a global, vieram %+v", f)
+	if f := FontesPadrao(filepath.Join("only", "home"), ""); len(f) != 1 || f[0].Rotulo != "global" {
+		t.Fatalf("without cwd only the global one remains, got %+v", f)
 	}
 }
 
 // ── tools ─────────────────────────────────────────────────────────────────
 
-func TestSkillsListCatalogaNumerado(t *testing.T) {
-	raiz := t.TempDir()
-	skillDir(t, raiz, "beta", "---\nname: beta\ndescription: faz b\n---", "corpo b")
-	skillDir(t, raiz, "alpha", "---\nname: alpha\ndescription: faz a\n---", "corpo a")
+func TestSkillsListNumberedCatalog(t *testing.T) {
+	root := t.TempDir()
+	skillDir(t, root, "beta", "---\nname: beta\ndescription: does b\n---", "body b")
+	skillDir(t, root, "alpha", "---\nname: alpha\ndescription: does a\n---", "body a")
 
-	fora, err := Descobrir([]Fonte{{Raiz: raiz, Rotulo: "projeto"}})
+	list, err := Descobrir([]Fonte{{Raiz: root, Rotulo: "projeto"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	specs := Especificacoes(fora)
+	specs := Especificacoes(list)
 	if len(specs) != 2 {
-		t.Fatalf("eram esperadas 2 specs, vieram %d", len(specs))
+		t.Fatalf("expected 2 specs, got %d", len(specs))
 	}
 	if specs[0].Name != "skills_list" || specs[1].Name != "skill_read" {
-		t.Fatalf("specs fora de ordem: %s, %s", specs[0].Name, specs[1].Name)
+		t.Fatalf("specs out of order: %s, %s", specs[0].Name, specs[1].Name)
 	}
 
-	out, err := chamar(t, "skills_list", specs, map[string]any{})
+	out, err := call(t, "skills_list", specs, map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, nome := range []string{"alpha", "beta"} {
-		if !strings.Contains(out, nome) {
-			t.Fatalf("catálogo não trouxe %s:\n%s", nome, out)
+	for _, name := range []string{"alpha", "beta"} {
+		if !strings.Contains(out, name) {
+			t.Fatalf("catalog did not include %s:\n%s", name, out)
 		}
 	}
-	// numerado e ordenado
+	// numbered and sorted
 	if !strings.Contains(out, "1. alpha") || !strings.Contains(out, "2. beta") {
-		t.Fatalf("catálogo devia sair numerado e ordenado:\n%s", out)
+		t.Fatalf("catalog should be numbered and sorted:\n%s", out)
 	}
 	if !strings.Contains(out, "skill_read") {
-		t.Fatalf("catálogo devia mandar chamar skill_read:\n%s", out)
+		t.Fatalf("catalog should point to skill_read:\n%s", out)
 	}
 }
 
-func TestSkillsListVazio(t *testing.T) {
-	out, err := chamar(t, "skills_list", Especificacoes(nil), map[string]any{})
+func TestSkillsListEmpty(t *testing.T) {
+	out, err := call(t, "skills_list", Especificacoes(nil), map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "nenhuma skill") {
-		t.Fatalf("catálogo vazio devia dizer isso, veio %q", out)
+	if !strings.Contains(out, "no skills") {
+		t.Fatalf("empty catalog should say so, got %q", out)
 	}
 }
 
-func TestSkillReadDevolveCorpoExato(t *testing.T) {
-	raiz := t.TempDir()
-	corpo := "# Título\n\nPasso 1\nPasso 2\n"
-	skillDir(t, raiz, "exata", "---\nname: exata\ndescription: d\n---", corpo)
+func TestSkillReadReturnsExactBody(t *testing.T) {
+	root := t.TempDir()
+	body := "# Title\n\nStep 1\nStep 2\n"
+	skillDir(t, root, "exact", "---\nname: exact\ndescription: d\n---", body)
 
-	fora, err := Descobrir([]Fonte{{Raiz: raiz, Rotulo: "projeto"}})
+	list, err := Descobrir([]Fonte{{Raiz: root, Rotulo: "projeto"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	specs := Especificacoes(fora)
-	out, err := chamar(t, "skill_read", specs, map[string]any{"name": "exata"})
+	specs := Especificacoes(list)
+	out, err := call(t, "skill_read", specs, map[string]any{"name": "exact"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasSuffix(out, corpo) {
-		t.Fatalf("corpo exato devia fechar a saída:\nesperado no fim: %q\nveio: %q", corpo, out)
+	if !strings.HasSuffix(out, body) {
+		t.Fatalf("the exact body should end the output:\nexpected at end: %q\ngot: %q", body, out)
 	}
-	if !strings.HasPrefix(out, "# exata\n\n") {
-		t.Fatalf("saída devia abrir com o nome da skill, veio %q", out)
+	if !strings.HasPrefix(out, "# exact\n\n") {
+		t.Fatalf("output should start with the skill name, got %q", out)
 	}
 }
 
-func TestSkillReadNomeDesconhecidoErraEmUmaLinha(t *testing.T) {
-	raiz := t.TempDir()
-	skillDir(t, raiz, "unica", "---\nname: unica\n---", "corpo")
+func TestSkillReadUnknownNameErrorsInOneLine(t *testing.T) {
+	root := t.TempDir()
+	skillDir(t, root, "single", "---\nname: single\n---", "body")
 
-	fora, err := Descobrir([]Fonte{{Raiz: raiz, Rotulo: "projeto"}})
+	list, err := Descobrir([]Fonte{{Raiz: root, Rotulo: "projeto"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	specs := Especificacoes(fora)
+	specs := Especificacoes(list)
 
-	out, err := chamar(t, "skill_read", specs, map[string]any{"name": "nao-existe"})
+	out, err := call(t, "skill_read", specs, map[string]any{"name": "does-not-exist"})
 	if err == nil {
-		t.Fatalf("nome desconhecido devia errar, saiu %q", out)
+		t.Fatalf("unknown name should fail, got %q", out)
 	}
 	msg := err.Error()
 	if strings.Contains(msg, "\n") {
-		t.Fatalf("erro devia ser de uma linha, veio %q", msg)
+		t.Fatalf("error should be one line, got %q", msg)
 	}
-	if msg != "skill nao-existe não encontrada; use skills_list" {
-		t.Fatalf("mensagem inesperada: %q", msg)
+	if msg != "skill does-not-exist not found; use skills_list" {
+		t.Fatalf("unexpected message: %q", msg)
 	}
 
-	// nome vazio cai no mesmo one-liner
-	if _, err := chamar(t, "skill_read", specs, map[string]any{"name": "  "}); err == nil ||
+	// an empty name hits the same one-liner
+	if _, err := call(t, "skill_read", specs, map[string]any{"name": "  "}); err == nil ||
 		strings.Contains(err.Error(), "\n") {
-		t.Fatalf("nome vazio devia errar em uma linha, veio %v", err)
+		t.Fatalf("empty name should fail in one line, got %v", err)
 	}
 }
 
-func TestSkillReadCortaCorpoGrande(t *testing.T) {
-	raiz := t.TempDir()
-	corpo := strings.Repeat("x", tetoCorpo+4096)
-	skillDir(t, raiz, "grande", "---\nname: grande\n---", corpo)
+func TestSkillReadTruncatesLargeBody(t *testing.T) {
+	root := t.TempDir()
+	body := strings.Repeat("x", bodyCap+4096)
+	skillDir(t, root, "large", "---\nname: large\n---", body)
 
-	fora, err := Descobrir([]Fonte{{Raiz: raiz, Rotulo: "projeto"}})
+	list, err := Descobrir([]Fonte{{Raiz: root, Rotulo: "projeto"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := chamar(t, "skill_read", Especificacoes(fora), map[string]any{"name": "grande"})
+	out, err := call(t, "skill_read", Especificacoes(list), map[string]any{"name": "large"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "corpo cortado") {
-		t.Fatalf("corpo acima do teto devia sair cortado com marcador:\n%s", out[:200])
+	if !strings.Contains(out, "body truncated") {
+		t.Fatalf("a body above the cap should be truncated with a marker:\n%s", out[:200])
 	}
-	if len(out) >= len("# grande\n\n")+len(corpo) {
-		t.Fatalf("saída deveria ser menor que o corpo íntegro (%d vs %d)", len(out), len(corpo))
+	if len(out) >= len("# large\n\n")+len(body) {
+		t.Fatalf("output should be smaller than the full body (%d vs %d)", len(out), len(body))
 	}
 }

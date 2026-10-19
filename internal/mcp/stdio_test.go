@@ -13,44 +13,45 @@ import (
 	"time"
 )
 
-// ── subprocesso falso de MCP por stdio ───────────────────────────────────
+// ── fake stdio MCP subprocess ────────────────────────────────────────────
 
-// envHelper é a variável que liga o modo "servidor MCP falso" do subprocesso.
-// O teste seta esta env no filho; sem ela, o binário de teste roda normalmente.
+// envHelper is the variable that enables the subprocess's "fake MCP server"
+// mode. The test sets it on the child; without it the test binary runs
+// normally.
 const envHelper = "BARROSO_MCP_TEST_HELPER"
 
-// envMudo liga o modo "servidor que nunca responde" do subprocesso (usado no
-// teste de handshake que estoura no tempo limite).
-const envMudo = "BARROSO_MCP_TEST_MUDO"
+// envSilent enables the subprocess's "server that never replies" mode (used
+// by the handshake test that times out).
+const envSilent = "BARROSO_MCP_TEST_SILENT"
 
-// TestHelperProcess NÃO é um teste de verdade: é o processo servidor que os
-// testes de stdio lançam. Roda fora do fluxo normal do `go test` (o binário
-// pai só o invoca com -test.run=TestHelperProcess), então o guard por env
-// evita que ele execute quando o pacote é testado no modo comum.
+// TestHelperProcess is NOT a real test: it is the server process the stdio
+// tests launch. It runs outside the normal `go test` flow (the parent binary
+// only invokes it with -test.run=TestHelperProcess), so the env guard keeps
+// it from running when the package is tested normally.
 //
-// Fala MCP por newline-delimited JSON em stdin/stdout — o mesmo formato que
-// um servidor MCP de verdade usa. Não usa Content-Length: isso é do LSP, e MCP
-// stdio deliberadamente adotou newline.
+// It speaks MCP as newline-delimited JSON on stdin/stdout — the same format a
+// real MCP server uses. No Content-Length: that belongs to LSP, and MCP
+// stdio deliberately adopted newlines.
 func TestHelperProcess(t *testing.T) {
 	if os.Getenv(envHelper) == "" {
-		t.Skip("helper do teste de stdio; só roda como subprocesso")
+		t.Skip("stdio test helper; only runs as a subprocess")
 	}
 
-	// Modo "mudo": o processo lê o que entra e NUNCA responde. Serve para
-	// exercitar o caminho de handshake que estoura no tempo limite — o cliente
-	// tem de desistir sozinho e ainda assim limpar o subprocesso.
-	if os.Getenv(envMudo) != "" {
-		drenar := bufio.NewScanner(os.Stdin)
-		for drenar.Scan() {
+	// "Silent" mode: the process reads its input and NEVER replies. It
+	// exercises the handshake path that times out — the client has to give up
+	// on its own and still clean up the subprocess.
+	if os.Getenv(envSilent) != "" {
+		drain := bufio.NewScanner(os.Stdin)
+		for drain.Scan() {
 		}
 		return
 	}
 
-	// Notificações emitidas ANTES da primeira resposta: o cliente tem de
-	// correlacionar por id e simplesmente ignorá-las.
-	emitirNotificacao("notifications/progress", map[string]any{
+	// Notifications emitted BEFORE the first response: the client has to
+	// correlate by id and simply ignore them.
+	emitNotification("notifications/progress", map[string]any{
 		"progressToken": "fake",
-		"message":       "acordando",
+		"message":       "waking up",
 	})
 
 	in := bufio.NewScanner(os.Stdin)
@@ -58,35 +59,35 @@ func TestHelperProcess(t *testing.T) {
 	defer out.Flush()
 
 	for in.Scan() {
-		linha := strings.TrimSpace(in.Text())
-		if linha == "" {
+		line := strings.TrimSpace(in.Text())
+		if line == "" {
 			continue
 		}
-		var m mensagem
-		if json.Unmarshal([]byte(linha), &m) != nil {
+		var m message
+		if json.Unmarshal([]byte(line), &m) != nil {
 			continue
 		}
 
 		switch m.Method {
 		case "initialize":
-			responder(out, idDe(m.ID), map[string]any{
+			reply(out, idOf(m.ID), map[string]any{
 				"protocolVersion": "2025-06-18",
 				"capabilities":    map[string]any{"tools": map[string]any{}},
 				"serverInfo":      map[string]any{"name": "fake-stdio", "version": "9"},
 			})
 
 		case "notifications/initialized":
-			// Notificação: nada a responder.
+			// Notification: nothing to reply.
 
 		case "tools/list":
-			// Ruído antes da resposta: linha não-JSON e uma notificação.
-			fmt.Fprintln(out, "ruido nao-json do servidor")
-			emitirNotificacao("notifications/message", map[string]any{"level": "info"})
-			responder(out, idDe(m.ID), map[string]any{
+			// Noise before the response: a non-JSON line and a notification.
+			fmt.Fprintln(out, "non-json noise from the server")
+			emitNotification("notifications/message", map[string]any{"level": "info"})
+			reply(out, idOf(m.ID), map[string]any{
 				"tools": []any{
 					map[string]any{
-						"name":        "eco",
-						"description": "Devolve o texto recebido",
+						"name":        "echo",
+						"description": "Returns the received text",
 						"inputSchema": map[string]any{
 							"type": "object",
 							"properties": map[string]any{
@@ -96,13 +97,13 @@ func TestHelperProcess(t *testing.T) {
 						},
 					},
 					map[string]any{
-						"name":        "falha",
-						"description": "Sempre reporta erro",
+						"name":        "fail",
+						"description": "Always reports an error",
 						"inputSchema": map[string]any{"type": "object"},
 					},
 					map[string]any{
-						"name":        "sem-schema",
-						"description": "Sem inputSchema nenhum",
+						"name":        "no-schema",
+						"description": "No inputSchema at all",
 					},
 				},
 			})
@@ -111,48 +112,47 @@ func TestHelperProcess(t *testing.T) {
 			var p paramsToolsCall
 			_ = json.Unmarshal(m.Params, &p)
 			switch p.Name {
-			case "eco":
+			case "echo":
 				msg := ""
 				if v, ok := p.Arguments["msg"].(string); ok {
 					msg = v
 				}
-				responder(out, idDe(m.ID), map[string]any{
+				reply(out, idOf(m.ID), map[string]any{
 					"content": []any{
-						map[string]any{"type": "text", "text": "eco: " + msg},
+						map[string]any{"type": "text", "text": "echo: " + msg},
 					},
 				})
-			case "falha":
-				responder(out, idDe(m.ID), map[string]any{
+			case "fail":
+				reply(out, idOf(m.ID), map[string]any{
 					"isError": true,
 					"content": []any{
-						map[string]any{"type": "text", "text": "deu errado de propósito"},
+						map[string]any{"type": "text", "text": "failed on purpose"},
 					},
 				})
 			default:
-				responderErro(out, idDe(m.ID), -32602, "ferramenta desconhecida: "+p.Name)
+				replyError(out, idOf(m.ID), -32602, "unknown tool: "+p.Name)
 			}
 
 		default:
-			responderErro(out, idDe(m.ID), -32601, "método desconhecido: "+m.Method)
+			replyError(out, idOf(m.ID), -32601, "unknown method: "+m.Method)
 		}
 	}
 }
 
-// idDe ecoa o id cru (string ou número) de volta, como manda o JSON-RPC.
-// idDe ecoa o id cru do request (número ou string), como o JSON-RPC exige:
-// a resposta carrega o id do request, não um inventado.
-func idDe(cru json.RawMessage) any {
-	return json.RawMessage(cru)
+// idOf echoes the request's raw id (number or string) back, as JSON-RPC
+// requires: the response carries the request id, not an invented one.
+func idOf(raw json.RawMessage) any {
+	return json.RawMessage(raw)
 }
 
-func responder(w *bufio.Writer, id any, resultado any) {
-	b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "result": resultado})
-	// newline é o delimitador de mensagem do MCP stdio.
+func reply(w *bufio.Writer, id any, result any) {
+	b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "result": result})
+	// newline is the MCP stdio message delimiter.
 	fmt.Fprintf(w, "%s\n", b)
 	_ = w.Flush()
 }
 
-func responderErro(w *bufio.Writer, id any, code int, msg string) {
+func replyError(w *bufio.Writer, id any, code int, msg string) {
 	b, _ := json.Marshal(map[string]any{
 		"jsonrpc": "2.0",
 		"id":      id,
@@ -162,18 +162,18 @@ func responderErro(w *bufio.Writer, id any, code int, msg string) {
 	_ = w.Flush()
 }
 
-// emitirNotificacao escreve uma notificação (sem id) — o cliente deve ignorar.
-func emitirNotificacao(metodo string, params any) {
-	b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": metodo, "params": params})
+// emitNotification writes a notification (no id) — the client must ignore it.
+func emitNotification(method string, params any) {
+	b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": method, "params": params})
 	fmt.Printf("%s\n", b)
 }
 
-// servidorStdioFalso monta o Servidor que aponta para este mesmo binário de
-// teste, no modo helper. O env do filho carrega envHelper — e um marcador que
-// o helper usa para saber que está no clima de teste.
-func servidorStdioFalso(nome string) Servidor {
+// fakeStdioServer builds the Servidor that points at this same test binary,
+// in helper mode. The child env carries envHelper — plus a marker the helper
+// uses to know it is running under test.
+func fakeStdioServer(name string) Servidor {
 	return Servidor{
-		Nome:    nome,
+		Nome:    name,
 		Tipo:    "stdio",
 		Command: os.Args[0],
 		Args:    []string{"-test.run=TestHelperProcess"},
@@ -185,11 +185,11 @@ func servidorStdioFalso(nome string) Servidor {
 	}
 }
 
-// ── testes do transporte stdio ───────────────────────────────────────────
+// ── stdio transport tests ────────────────────────────────────────────────
 
-// Handshake completo: initialize (com notificações antes), tools/list.
-func TestStdioHandshakeELista(t *testing.T) {
-	c, err := Novo(servidorStdioFalso("fake-stdio"))
+// Full handshake: initialize (with notifications before it), tools/list.
+func TestStdioHandshakeAndList(t *testing.T) {
+	c, err := Novo(fakeStdioServer("fake-stdio"))
 	if err != nil {
 		t.Fatalf("Novo: %v", err)
 	}
@@ -200,40 +200,40 @@ func TestStdioHandshakeELista(t *testing.T) {
 	defer c.Fecha()
 
 	if c.Transporto() != "stdio" {
-		t.Errorf("Transporto() = %q, queria stdio", c.Transporto())
+		t.Errorf("Transporto() = %q, want stdio", c.Transporto())
 	}
 	info := c.InfoServidor()
 	if info.ServerInfo.Name != "fake-stdio" {
-		t.Errorf("ServerInfo.Name = %q; queria fake-stdio", info.ServerInfo.Name)
+		t.Errorf("ServerInfo.Name = %q; want fake-stdio", info.ServerInfo.Name)
 	}
 
-	especificacoes, err := c.Ferramentas(ctx)
+	specs, err := c.Ferramentas(ctx)
 	if err != nil {
 		t.Fatalf("Ferramentas (stdio): %v", err)
 	}
-	if len(especificacoes) != 3 {
-		t.Fatalf("Ferramentas devolveu %d; queria 3", len(especificacoes))
+	if len(specs) != 3 {
+		t.Fatalf("Ferramentas returned %d; want 3", len(specs))
 	}
-	nomes := map[string]bool{}
-	for _, e := range especificacoes {
-		nomes[e.Name] = true
+	names := map[string]bool{}
+	for _, s := range specs {
+		names[s.Name] = true
 	}
-	for _, q := range []string{"eco", "falha", "sem-schema"} {
-		if !nomes[q] {
-			t.Errorf("ferramenta %q ausente do catálogo", q)
+	for _, w := range []string{"echo", "fail", "no-schema"} {
+		if !names[w] {
+			t.Errorf("tool %q missing from the catalog", w)
 		}
 	}
-	// A que não tinha schema recebeu o objeto livre.
-	for _, e := range especificacoes {
-		if e.Name == "sem-schema" && e.Schema["type"] != "object" {
-			t.Errorf("sem-schema.Schema = %#v", e.Schema)
+	// The one without a schema got the free object.
+	for _, s := range specs {
+		if s.Name == "no-schema" && s.Schema["type"] != "object" {
+			t.Errorf("no-schema.Schema = %#v", s.Schema)
 		}
 	}
 }
 
-// tools/call pelo caminho da Spec (o que o runtime realmente executa).
-func TestStdioChamarEcoaArgumentos(t *testing.T) {
-	c, err := Novo(servidorStdioFalso("fake-stdio"))
+// tools/call through the Spec path (what the runtime actually executes).
+func TestStdioCallEchoesArguments(t *testing.T) {
+	c, err := Novo(fakeStdioServer("fake-stdio"))
 	if err != nil {
 		t.Fatalf("Novo: %v", err)
 	}
@@ -243,27 +243,27 @@ func TestStdioChamarEcoaArgumentos(t *testing.T) {
 	}
 	defer c.Fecha()
 
-	out, err := c.Chamar(ctx, "eco", `{"msg":"olá stdio"}`)
+	out, err := c.Chamar(ctx, "echo", `{"msg":"héllo stdio"}`)
 	if err != nil {
 		t.Fatalf("Chamar: %v", err)
 	}
-	if out != "eco: olá stdio" {
-		t.Errorf("Chamar = %q; queria %q", out, "eco: olá stdio")
+	if out != "echo: héllo stdio" {
+		t.Errorf("Chamar = %q; want %q", out, "echo: héllo stdio")
 	}
 
-	// Argumentos vazios viram {} e o servidor responde "eco: ".
-	out, err = c.Chamar(ctx, "eco", "")
+	// Empty arguments become {} and the server replies "echo: ".
+	out, err = c.Chamar(ctx, "echo", "")
 	if err != nil {
-		t.Fatalf("Chamar com args vazios: %v", err)
+		t.Fatalf("Chamar with empty args: %v", err)
 	}
-	if out != "eco: " {
-		t.Errorf("Chamar vazio = %q", out)
+	if out != "echo: " {
+		t.Errorf("empty Chamar = %q", out)
 	}
 }
 
-// isError do servidor vira erro Go carregando a mensagem dele.
+// A server isError becomes a Go error carrying its message.
 func TestStdioIsError(t *testing.T) {
-	c, err := Novo(servidorStdioFalso("fake-stdio"))
+	c, err := Novo(fakeStdioServer("fake-stdio"))
 	if err != nil {
 		t.Fatalf("Novo: %v", err)
 	}
@@ -273,21 +273,21 @@ func TestStdioIsError(t *testing.T) {
 	}
 	defer c.Fecha()
 
-	out, err := c.Chamar(ctx, "falha", "{}")
+	out, err := c.Chamar(ctx, "fail", "{}")
 	if err == nil {
-		t.Fatalf("Chamar deveria devolver erro")
+		t.Fatalf("Chamar should return an error")
 	}
-	if !strings.Contains(err.Error(), "deu errado de propósito") {
-		t.Errorf("erro = %q; queria a mensagem do servidor", err.Error())
+	if !strings.Contains(err.Error(), "failed on purpose") {
+		t.Errorf("error = %q; want the server's message", err.Error())
 	}
-	if !strings.Contains(out, "deu errado de propósito") {
-		t.Errorf("saída = %q", out)
+	if !strings.Contains(out, "failed on purpose") {
+		t.Errorf("output = %q", out)
 	}
 }
 
-// Erro JSON-RPC (diferente de isError) também vira erro Go.
-func TestStdioErroJSONRPC(t *testing.T) {
-	c, err := Novo(servidorStdioFalso("fake-stdio"))
+// A JSON-RPC error (different from isError) also becomes a Go error.
+func TestStdioJSONRPCError(t *testing.T) {
+	c, err := Novo(fakeStdioServer("fake-stdio"))
 	if err != nil {
 		t.Fatalf("Novo: %v", err)
 	}
@@ -297,18 +297,18 @@ func TestStdioErroJSONRPC(t *testing.T) {
 	}
 	defer c.Fecha()
 
-	_, err = c.Chamar(ctx, "nao-existe", "{}")
+	_, err = c.Chamar(ctx, "does-not-exist", "{}")
 	if err == nil {
-		t.Fatalf("Chamar em ferramenta inexistente deveria falhar")
+		t.Fatalf("Chamar on a nonexistent tool should fail")
 	}
-	if !strings.Contains(err.Error(), "ferramenta desconhecida") {
-		t.Errorf("erro = %q", err.Error())
+	if !strings.Contains(err.Error(), "unknown tool") {
+		t.Errorf("error = %q", err.Error())
 	}
 }
 
-// Várias chamadas em sequência: cada uma com id próprio, resposta casada.
-func TestStdioChamadasSequenciais(t *testing.T) {
-	c, err := Novo(servidorStdioFalso("fake-stdio"))
+// Several calls in sequence: each with its own id, response matched.
+func TestStdioSequentialCalls(t *testing.T) {
+	c, err := Novo(fakeStdioServer("fake-stdio"))
 	if err != nil {
 		t.Fatalf("Novo: %v", err)
 	}
@@ -319,20 +319,20 @@ func TestStdioChamadasSequenciais(t *testing.T) {
 	defer c.Fecha()
 
 	for i := 0; i < 6; i++ {
-		querido := fmt.Sprintf("eco: msg-%d", i)
-		out, err := c.Chamar(ctx, "eco", fmt.Sprintf(`{"msg":"msg-%d"}`, i))
+		want := fmt.Sprintf("echo: msg-%d", i)
+		out, err := c.Chamar(ctx, "echo", fmt.Sprintf(`{"msg":"msg-%d"}`, i))
 		if err != nil {
-			t.Fatalf("chamada %d: %v", i, err)
+			t.Fatalf("call %d: %v", i, err)
 		}
-		if out != querido {
-			t.Errorf("chamada %d = %q; queria %q", i, out, querido)
+		if out != want {
+			t.Errorf("call %d = %q; want %q", i, out, want)
 		}
 	}
 }
 
-// Chamadas em paralelo: ids distintos precisam correlacionar sem trocar.
-func TestStdioChamadasConcorrentes(t *testing.T) {
-	c, err := Novo(servidorStdioFalso("fake-stdio"))
+// Parallel calls: distinct ids must correlate without getting swapped.
+func TestStdioConcurrentCalls(t *testing.T) {
+	c, err := Novo(fakeStdioServer("fake-stdio"))
 	if err != nil {
 		t.Fatalf("Novo: %v", err)
 	}
@@ -343,33 +343,33 @@ func TestStdioChamadasConcorrentes(t *testing.T) {
 	defer c.Fecha()
 
 	const n = 12
-	erros := make(chan error, n)
+	errs := make(chan error, n)
 	for i := 0; i < n; i++ {
 		go func(i int) {
-			querido := fmt.Sprintf("eco: par-%d", i)
-			out, err := c.Chamar(ctx, "eco", fmt.Sprintf(`{"msg":"par-%d"}`, i))
+			want := fmt.Sprintf("echo: par-%d", i)
+			out, err := c.Chamar(ctx, "echo", fmt.Sprintf(`{"msg":"par-%d"}`, i))
 			if err != nil {
-				erros <- fmt.Errorf("par-%d: %w", i, err)
+				errs <- fmt.Errorf("par-%d: %w", i, err)
 				return
 			}
-			if out != querido {
-				erros <- fmt.Errorf("par-%d: resposta trocada: %q", i, out)
+			if out != want {
+				errs <- fmt.Errorf("par-%d: swapped response: %q", i, out)
 				return
 			}
-			erros <- nil
+			errs <- nil
 		}(i)
 	}
 	for i := 0; i < n; i++ {
-		if err := <-erros; err != nil {
+		if err := <-errs; err != nil {
 			t.Errorf("%v", err)
 		}
 	}
 }
 
-// Fecha encerra o subprocesso: EOF no stdin faz o helper sair; o Wait
-// acontece dentro do prazo (5 s), sem depender do Kill.
-func TestStdioFechaTerminaSubprocesso(t *testing.T) {
-	c, err := Novo(servidorStdioFalso("fake-stdio"))
+// Fecha ends the subprocess: EOF on stdin makes the helper exit; Wait
+// happens within the grace period (5 s), without relying on Kill.
+func TestStdioFechaEndsSubprocess(t *testing.T) {
+	c, err := Novo(fakeStdioServer("fake-stdio"))
 	if err != nil {
 		t.Fatalf("Novo: %v", err)
 	}
@@ -378,75 +378,75 @@ func TestStdioFechaTerminaSubprocesso(t *testing.T) {
 	}
 
 	pid := c.cmd.Process.Pid
-	inicio := time.Now()
+	start := time.Now()
 	if err := c.Fecha(); err != nil {
 		t.Errorf("Fecha: %v", err)
 	}
-	if decorrido := time.Since(inicio); decorrido > prazoMataSub+3*time.Second {
-		t.Errorf("Fecha demorou %v; queria sair pelo EOF, não pelo Kill", decorrido)
+	if elapsed := time.Since(start); elapsed > killGracePeriod+3*time.Second {
+		t.Errorf("Fecha took %v; want it to exit via EOF, not Kill", elapsed)
 	}
 
-	// Fecha duas vezes é no-op.
+	// Closing twice is a no-op.
 	if err := c.Fecha(); err != nil {
-		t.Errorf("Fecha repetido: %v", err)
+		t.Errorf("repeated Fecha: %v", err)
 	}
 
-	// O processo não existe mais.
-	if err := sinalVivo(pid); err == nil {
-		t.Errorf("subprocesso %d ainda vivo depois do Fecha", pid)
+	// The process no longer exists.
+	if err := processAlive(pid); err == nil {
+		t.Errorf("subprocess %d still alive after Fecha", pid)
 	}
 
-	// Chamar depois de fechar devolve erro, não trava nem panic.
-	_, err = c.Chamar(context.Background(), "eco", "{}")
+	// Chamar after closing returns an error; it neither hangs nor panics.
+	_, err = c.Chamar(context.Background(), "echo", "{}")
 	if err == nil {
-		t.Errorf("Chamar depois do Fecha deveria falhar")
+		t.Errorf("Chamar after Fecha should fail")
 	}
 }
 
-// Comando inexistente: erro de UMA linha, sem subprocesso para limpar.
-func TestStdioComandoInexistente(t *testing.T) {
+// Nonexistent command: ONE-line error, no subprocess to clean up.
+func TestStdioNonexistentCommand(t *testing.T) {
 	c, err := Novo(Servidor{
-		Nome: "fantasma",
+		Nome: "ghost",
 		Tipo: "stdio",
-		// Caminho absoluto que não existe: falha no Start, não no PATH.
-		Command: filepath.Join(t.TempDir(), "nao-existe-abc123"),
+		// Absolute path that does not exist: fails at Start, not in PATH lookup.
+		Command: filepath.Join(t.TempDir(), "does-not-exist-abc123"),
 		Timeout: 5,
 	})
 	if err != nil {
 		t.Fatalf("Novo: %v", err)
 	}
 	if err := c.Abre(context.Background()); err == nil {
-		t.Fatalf("Abre deveria falhar com comando inexistente")
+		t.Fatalf("Abre should fail with a nonexistent command")
 	} else if strings.Contains(err.Error(), "\n") {
-		t.Errorf("erro multi-linha: %q", err.Error())
+		t.Errorf("multi-line error: %q", err.Error())
 	}
 }
 
-// Contexto já cancelado: Abre devolve o erro do ctx antes de subir processo.
-func TestStdioContextoCancelado(t *testing.T) {
-	c, err := Novo(servidorStdioFalso("fake-stdio"))
+// Context already cancelled: Abre returns the ctx error before starting a process.
+func TestStdioCancelledContext(t *testing.T) {
+	c, err := Novo(fakeStdioServer("fake-stdio"))
 	if err != nil {
 		t.Fatalf("Novo: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if err := c.Abre(ctx); err == nil {
-		t.Errorf("Abre com ctx cancelado deveria falhar")
+		t.Errorf("Abre with a cancelled ctx should fail")
 	}
 }
 
-// Handshake falho: o subprocesso tem de ser limpo (sem zumbi).
-func TestStdioHandshakeFalhoLimpaSubprocesso(t *testing.T) {
-	// Subprocesso que não fala MCP: lê uma linha e sai sem responder nada.
+// Failed handshake: the subprocess must be cleaned up (no zombie).
+func TestStdioFailedHandshakeCleansUpSubprocess(t *testing.T) {
+	// Subprocess that does not speak MCP: reads its input and never replies.
 	c, err := Novo(Servidor{
-		Nome:    "mudo",
+		Nome:    "silent",
 		Tipo:    "stdio",
 		Command: os.Args[0],
 		Args:    []string{"-test.run=TestHelperProcess"},
 		Env: map[string]string{
 			envHelper:                "1",
 			"GO_WANT_HELPER_PROCESS": "1",
-			"BARROSO_MCP_TEST_MUDO":  "1",
+			envSilent:                "1",
 		},
 		Timeout: 3,
 	})
@@ -456,20 +456,20 @@ func TestStdioHandshakeFalhoLimpaSubprocesso(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	if err := c.Abre(ctx); err == nil {
-		t.Fatalf("Abre deveria falhar com servidor mudo")
+		t.Fatalf("Abre should fail with a silent server")
 	}
-	// Depois do Abre falhar, não pode sobrar processo: Fecha no caminho de
-	// erro do handshake garante isso.
-	if err := sinalVivo(c.cmd.Process.Pid); err == nil {
-		t.Errorf("subprocesso zumbi depois do handshake falho")
+	// After Abre fails no process may remain: Fecha on the handshake error
+	// path guarantees that.
+	if err := processAlive(c.cmd.Process.Pid); err == nil {
+		t.Errorf("zombie subprocess after failed handshake")
 	}
 }
 
-// sinalVivo checa se o pid existe. Em Windows não há sinal 0: usa OpenProcess
-// via tasklist, que é portável o bastante para o teste.
-func sinalVivo(pid int) error {
+// processAlive checks whether the pid exists. Windows has no signal 0, so it
+// uses tasklist, which is portable enough for the test.
+func processAlive(pid int) error {
 	if pid <= 0 {
-		return fmt.Errorf("pid inválido")
+		return fmt.Errorf("invalid pid")
 	}
 	cmd := exec.Command("tasklist", "/FI", fmt.Sprintf("PID eq %d", pid), "/NH")
 	out, err := cmd.Output()
@@ -479,5 +479,5 @@ func sinalVivo(pid int) error {
 	if strings.Contains(string(out), fmt.Sprintf("%d", pid)) {
 		return nil
 	}
-	return fmt.Errorf("sem processo %d", pid)
+	return fmt.Errorf("no process %d", pid)
 }

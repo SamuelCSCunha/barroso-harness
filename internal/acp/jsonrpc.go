@@ -1,15 +1,14 @@
-// Framing e tipos de JSON-RPC 2.0 sobre transporte de bytes newline-delimited.
-// O agente fala por stdio, então cada mensagem é UMA linha JSON terminada em
-// "\n": nenhum Content-Length header, nenhum framing adicional. Um
-// bufio.Scanner com teto de 8 MiB impede que uma linha gigante (ou um cliente
-// malcomportado) estoure a memória do processo; passar do teto encerra o
-// scanner com ErrTooLong e o laço de serviço morre com erro honesto, não com
-// pânico.
+// JSON-RPC 2.0 framing and types over a newline-delimited byte transport.
+// The agent speaks over stdio, so each message is ONE JSON line terminated by
+// "\n": no Content-Length header, no extra framing. A bufio.Scanner capped at
+// 8 MiB keeps a giant line (or a misbehaving client) from blowing up the
+// process memory; exceeding the cap ends the scanner with ErrTooLong and the
+// serve loop dies with an honest error, not a panic.
 //
-// Regras de identificador: o id é preservado como json.RawMessage, então um
-// request com id numérico recebe resposta com id numérico e um com id string
-// recebe id string. Notificação é o que não tem id (id ausente ou null) — e
-// notificação NUNCA ganha resposta.
+// Identifier rules: the id is kept as json.RawMessage, so a request with a
+// numeric id gets a response with a numeric id and one with a string id gets a
+// string id. A notification is whatever has no id (missing or null) — and a
+// notification NEVER gets a response.
 package acp
 
 import (
@@ -19,26 +18,25 @@ import (
 	"io"
 )
 
-// MaxLinha é o teto de uma mensagem JSON-RPC em bytes (8 MiB). Documentos
-// grandes de sessão (transcripts, resultados de tool) cabem; uma linha sem
-// fim não.
+// MaxLinha is the cap on a JSON-RPC message in bytes (8 MiB). Large session
+// documents (transcripts, tool results) fit; an endless line does not.
 const MaxLinha = 8 << 20
 
-// Versão do protocolo JSON-RPC aceita neste transporte.
-const versaoJSONRPC = "2.0"
+// JSON-RPC protocol version accepted on this transport.
+const jsonRPCVersion = "2.0"
 
-// Códigos de erro JSON-RPC 2.0 + a faixa customizada do agente.
+// JSON-RPC 2.0 error codes + the agent's custom range.
 const (
-	CodParse        = -32700 // reservado; framing inteiro por linha, quase inerte
+	CodParse        = -32700 // reserved; whole-line framing, nearly inert
 	CodInvalido     = -32600 // invalid request
 	CodMetodo       = -32601 // method not found
 	CodParams       = -32602 // invalid params
 	CodInterno      = -32603 // internal error
-	CodTurnoRodando = -32001 // agente: já existe um turno em voo nesta sessão
-	CodErroAgente   = -32000 // agente: falha do turno / cancelamento
+	CodTurnoRodando = -32001 // agent: a turn is already in flight in this session
+	CodErroAgente   = -32000 // agent: turn failure / cancellation
 )
 
-// Request é uma mensagem com id: exige resposta.
+// Request is a message with an id: it requires a response.
 type Request struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id"`
@@ -46,21 +44,21 @@ type Request struct {
 	Params  json.RawMessage `json:"params"`
 }
 
-// TemID distingue request de notificação. id ausente ou `null` = notificação.
+// TemID tells a request from a notification. Missing or `null` id = notification.
 func (r Request) TemID() bool {
 	id := bytes.TrimSpace(r.ID)
 	return len(id) > 0 && !bytes.Equal(id, []byte("null"))
 }
 
-// Notification é uma mensagem sem id (mão única, sem resposta).
+// Notification is a message without an id (one-way, no response).
 type Notification struct {
 	JSONRPC string `json:"jsonrpc"`
 	Method  string `json:"method"`
 	Params  any    `json:"params"`
 }
 
-// Response é a resposta a um Request. Result e Error são mutuamente
-// exclusivos; Error não-nulo silencia Result.
+// Response is the reply to a Request. Result and Error are mutually
+// exclusive; a non-nil Error silences Result.
 type Response struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id"`
@@ -68,7 +66,7 @@ type Response struct {
 	Error   *Erro           `json:"error,omitempty"`
 }
 
-// Erro é o objeto error do JSON-RPC. Data é livre e some quando vazio.
+// Erro is the JSON-RPC error object. Data is free-form and omitted when empty.
 type Erro struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
@@ -77,30 +75,30 @@ type Erro struct {
 
 func (e *Erro) Error() string {
 	if e == nil {
-		return "<erro json-rpc nil>"
+		return "<nil json-rpc error>"
 	}
 	return e.Message
 }
 
-// NovaResposta empacota um resultado de sucesso preservando o id cru.
+// NovaResposta wraps a success result, preserving the raw id.
 func NovaResposta(id json.RawMessage, result any) Response {
-	return Response{JSONRPC: versaoJSONRPC, ID: id, Result: result}
+	return Response{JSONRPC: jsonRPCVersion, ID: id, Result: result}
 }
 
-// NovoErro empacota uma falha preservando o id cru.
+// NovoErro wraps a failure, preserving the raw id.
 func NovoErro(id json.RawMessage, code int, msg string) Response {
-	return Response{JSONRPC: versaoJSONRPC, ID: id, Error: &Erro{Code: code, Message: msg}}
+	return Response{JSONRPC: jsonRPCVersion, ID: id, Error: &Erro{Code: code, Message: msg}}
 }
 
-// NovaNotificacao empacota uma notificação de mão única.
+// NovaNotificacao wraps a one-way notification.
 func NovaNotificacao(method string, params any) Notification {
-	return Notification{JSONRPC: versaoJSONRPC, Method: method, Params: params}
+	return Notification{JSONRPC: jsonRPCVersion, Method: method, Params: params}
 }
 
-// escrever serializa v, acrescenta o "\n" do framing e escreve TUDO numa única
-// chamada de Write — duas escritas separadas poderiam intercalar com a linha
-// de outro goroutine e produzir JSON partido no fio.
-func escrever(w io.Writer, v any) error {
+// writeJSON serializes v, appends the framing "\n" and writes EVERYTHING in a
+// single Write call — two separate writes could interleave with another
+// goroutine's line and produce broken JSON on the wire.
+func writeJSON(w io.Writer, v any) error {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -110,16 +108,16 @@ func escrever(w io.Writer, v any) error {
 	return err
 }
 
-// EscreverLinha é a fronteira testável de escrever: serializa e emite uma
-// linha JSON com "\n" final, com flush se o writerBuffer tiver.
+// EscreverLinha is the testable boundary of writeJSON: it serializes and emits
+// one JSON line ending in "\n", flushing if the writer is buffered.
 func EscreverLinha(w io.Writer, v any) error {
-	if err := escrever(w, v); err != nil {
+	if err := writeJSON(w, v); err != nil {
 		return err
 	}
 	return flush(w)
 }
 
-// flush é seguro para writers sem flush (os.Stdout não bufferiza).
+// flush is safe for writers without Flush (os.Stdout is unbuffered).
 func flush(w io.Writer) error {
 	if f, ok := w.(interface{ Flush() error }); ok {
 		return f.Flush()
@@ -127,26 +125,26 @@ func flush(w io.Writer) error {
 	return nil
 }
 
-// WriteError responde um request com falha. Mantida exportada porque main.go
-// (e outros hosts de protocolo) precisam responder fora do laço do agente.
+// WriteError answers a request with a failure. Kept exported because main.go
+// (and other protocol hosts) need to respond outside the agent loop.
 func WriteError(w io.Writer, id json.RawMessage, code int, msg string) error {
 	return EscreverLinha(w, NovoErro(id, code, msg))
 }
 
-// DecodificarLinha converte uma linha em Request. Linha vazia (só espaços)
-// devolve ok=false sem erro: branco não é mensagem.
-func DecodificarLinha(linha []byte) (Request, bool, error) {
-	if len(bytes.TrimSpace(linha)) == 0 {
+// DecodificarLinha turns a line into a Request. An empty (whitespace-only)
+// line returns ok=false with no error: blank is not a message.
+func DecodificarLinha(line []byte) (Request, bool, error) {
+	if len(bytes.TrimSpace(line)) == 0 {
 		return Request{}, false, nil
 	}
 	var r Request
-	if err := json.Unmarshal(linha, &r); err != nil {
+	if err := json.Unmarshal(line, &r); err != nil {
 		return Request{}, false, err
 	}
 	return r, true, nil
 }
 
-// NovoScanner devolve o scanner de linhas da conexão, já com o teto aplicado.
+// NovoScanner returns the connection's line scanner with the cap already applied.
 func NovoScanner(r io.Reader) *bufio.Scanner {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), MaxLinha)

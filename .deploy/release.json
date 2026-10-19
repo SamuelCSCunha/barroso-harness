@@ -2,7 +2,7 @@
   "base_version": "v0.1.0",
   "suffix": "bh",
   "title": "Barroso Harness",
-  "notes": "Barroso Harness — harness de agentes em Go: CLI, Chat Completions compatível com OpenAI, BARROSO.md como instrução de sistema, terminal/arquivos/skills/MCP/web, subagentes sem recursão e gestão de contexto por orçamento medido. Instalação e receitas: https://harness.barroso.tec.br",
+  "notes": "Barroso Harness — an agent harness in Go: CLI, OpenAI-compatible Chat Completions, BARROSO.md as the system instruction, terminal/files/skills/MCP/web, non-recursive sub-agents and context management by measured budget. Installation and recipes: https://harness.barroso.tec.br",
   "version_var": "main.Versao",
   "vet": true,
   "targets": [

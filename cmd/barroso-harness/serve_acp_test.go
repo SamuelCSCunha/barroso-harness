@@ -1,11 +1,11 @@
-// Testes da fábrica de sessões do modo ACP.
+// Tests for the ACP mode session factory.
 //
-// O bug que estes testes cravam: a fábrica devolvia "" como id da sessão. O
-// agente ACP registrava a sessão no mapa sob essa chave e respondia
-// session/new com sessionId vazio — e session/prompt, que exige o id,
-// rejeitava tudo com "sessão desconhecida". Nenhum teste pegou porque o
-// defeito estava no chamador (cmd/), não no pacote internal/acp, cuja própria
-// fábrica de produção gera id correto.
+// The bug these tests pin down: the factory returned "" as the session id. The
+// ACP agent registered the session in its map under that key and answered
+// session/new with an empty sessionId — and session/prompt, which requires
+// the id, rejected everything as an unknown session. No test caught it
+// because the defect was in the caller (cmd/), not in the internal/acp
+// package, whose own production factory generates a correct id.
 package main
 
 import (
@@ -19,114 +19,114 @@ import (
 	"github.com/ruanbarroso/barroso-harness/internal/wiring"
 )
 
-// novaFabricaACPDeTeste devolve (fabrica, loja) com o banco num diretório
-// temporário. A loja fica aberta de propósito: fechar antes do fim do teste
-// perderia o log.
-func novaFabricaACPDeTeste(t *testing.T) (func(config.Config) (acp.Turno, string), *store.Store) {
+// newTestACPFactory returns (factory, store) with the database in a temporary
+// directory. The store is left open on purpose: closing it before the test
+// ends would lose the log.
+func newTestACPFactory(t *testing.T) (func(config.Config) (acp.Turno, string), *store.Store) {
 	t.Helper()
-	loja, err := store.Open(filepath.Join(t.TempDir(), "sessions.db"))
+	st, err := store.Open(filepath.Join(t.TempDir(), "sessions.db"))
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
-	t.Cleanup(func() { _ = loja.Fechar() })
-	var abertos []*wiring.Conjunto
+	t.Cleanup(func() { _ = st.Fechar() })
+	var open []*wiring.Conjunto
 	return func(c config.Config) (acp.Turno, string) {
-		return novaSessaoACP(c, loja, t.TempDir(), &abertos)
-	}, loja
+		return newACPSession(c, st, t.TempDir(), &open)
+	}, st
 }
 
-// A regressão que importa: o id tem de sair preenchido.
-func TestNovaSessaoACPDevolveIdNaoVazio(t *testing.T) {
-	fabrica, _ := novaFabricaACPDeTeste(t)
-	turno, id := fabrica(config.Config{})
-	if turno == nil {
-		t.Fatal("turno não pode ser nil")
+// The regression that matters: the id must come back filled in.
+func TestNewACPSessionReturnsNonEmptyID(t *testing.T) {
+	factory, _ := newTestACPFactory(t)
+	turn, id := factory(config.Config{})
+	if turn == nil {
+		t.Fatal("turn must not be nil")
 	}
 	if id == "" {
-		t.Fatal("id da sessão ACP veio vazio: session/new responderia sessionId vazio e session/prompt rejeitaria com \"sessão desconhecida\"")
+		t.Fatal("ACP session id came back empty: session/new would answer an empty sessionId and session/prompt would reject it as an unknown session")
 	}
 }
 
-// Duas sessões não podem dividir id: a segunda sobrescreveria a primeira no
-// mapa do agente, e o cliente veria o histórico da outra conversa.
-func TestNovaSessaoACPDevolveIdsDistintos(t *testing.T) {
-	fabrica, _ := novaFabricaACPDeTeste(t)
-	_, a := fabrica(config.Config{})
-	_, b := fabrica(config.Config{})
+// Two sessions must not share an id: the second would overwrite the first in
+// the agent's map, and the client would see the other conversation's history.
+func TestNewACPSessionReturnsDistinctIDs(t *testing.T) {
+	factory, _ := newTestACPFactory(t)
+	_, a := factory(config.Config{})
+	_, b := factory(config.Config{})
 	if a == b {
-		t.Fatalf("duas sessões ACP dividiram o id %q", a)
+		t.Fatalf("two ACP sessions shared the id %q", a)
 	}
 }
 
-// A configuração passada tem de chegar à sessão: o agente ACP captura a config
-// em session/new e a fábrica é quem a entrega ao runtime.
-func TestNovaSessaoACPPropagaConfig(t *testing.T) {
-	fabrica, _ := novaFabricaACPDeTeste(t)
-	cfg := config.Config{Model: "modelo-de-teste", Effort: "high"}
-	turno, _ := fabrica(cfg)
-	sess, ok := turno.(*runtime.Session)
+// The given config must reach the session: the ACP agent captures the config
+// on session/new and the factory is what hands it to the runtime.
+func TestNewACPSessionPropagatesConfig(t *testing.T) {
+	factory, _ := newTestACPFactory(t)
+	cfg := config.Config{Model: "test-model", Effort: "high"}
+	turn, _ := factory(cfg)
+	sess, ok := turn.(*runtime.Session)
 	if !ok {
-		t.Fatalf("turno deveria ser *runtime.Session, veio %T", turno)
+		t.Fatalf("turn should be *runtime.Session, got %T", turn)
 	}
-	if got := sess.Config().Model; got != "modelo-de-teste" {
-		t.Fatalf("modelo na sessão = %q, queria \"modelo-de-teste\"", got)
+	if got := sess.Config().Model; got != "test-model" {
+		t.Fatalf("session model = %q, want \"test-model\"", got)
 	}
 }
 
-// Com banco aberto, a sessão é persistente: é isso que permite retomar no
-// terminal uma conversa começada num cliente ACP.
-func TestNovaSessaoACPPersisteQuandoHaLoja(t *testing.T) {
-	fabrica, loja := novaFabricaACPDeTeste(t)
-	turno, id := fabrica(config.Config{})
-	sess := turno.(*runtime.Session)
+// With an open database the session is persistent: that is what allows
+// resuming in the terminal a conversation started in an ACP client.
+func TestNewACPSessionPersistsWhenStoreAvailable(t *testing.T) {
+	factory, st := newTestACPFactory(t)
+	turn, id := factory(config.Config{})
+	sess := turn.(*runtime.Session)
 	if !sess.Persistente() {
-		t.Fatal("sessão ACP deveria ser persistente com loja disponível")
+		t.Fatal("ACP session should be persistent with a store available")
 	}
 	if sess.ID() != id {
-		t.Fatalf("id da sessão = %q, id devolvido pela fábrica = %q", sess.ID(), id)
+		t.Fatalf("session id = %q, id returned by factory = %q", sess.ID(), id)
 	}
-	// A sessão tem de estar indexada no banco, não só amarrada em memória.
-	if err := loja.NewSession(id); err != nil {
-		t.Fatalf("NewSession(%q) após fabrica: %v", id, err)
+	// The session must be indexed in the database, not just bound in memory.
+	if err := st.NewSession(id); err != nil {
+		t.Fatalf("NewSession(%q) after factory: %v", id, err)
 	}
 }
 
-// Sem banco, a fábrica ainda devolve id válido e o turno funciona — queda de
-// persistência é degradação, não falha.
-func TestNovaSessaoACPFuncionaSemLoja(t *testing.T) {
-	fabrica, _ := novaFabricaACPDeTeste(t)
-	var abertos []*wiring.Conjunto
-	turno, id := novaSessaoACP(config.Config{}, nil, t.TempDir(), &abertos)
-	if turno == nil {
-		t.Fatal("turno não pode ser nil sem loja")
+// Without a database the factory still returns a valid id and the turn works
+// — losing persistence is a degradation, not a failure.
+func TestNewACPSessionWorksWithoutStore(t *testing.T) {
+	factory, _ := newTestACPFactory(t)
+	var open []*wiring.Conjunto
+	turn, id := newACPSession(config.Config{}, nil, t.TempDir(), &open)
+	if turn == nil {
+		t.Fatal("turn must not be nil without a store")
 	}
 	if id == "" {
-		t.Fatal("id vazio sem loja: a ausência do banco não pode derrubar o id")
+		t.Fatal("empty id without a store: a missing database must not break the id")
 	}
-	_ = fabrica
-	if turno.(*runtime.Session).Persistente() {
-		t.Fatal("sem loja a sessão não deveria reportar persistência")
+	_ = factory
+	if turn.(*runtime.Session).Persistente() {
+		t.Fatal("without a store the session should not report persistence")
 	}
 }
 
-// session/load: sessão gravada volta com o transcript; id desconhecido é erro
-// (não pode virar sessão vazia com o id pedido).
-func TestCarregarSessaoACPReabreDoBanco(t *testing.T) {
-	fabrica, loja := novaFabricaACPDeTeste(t)
-	_, id := fabrica(config.Config{})
-	if _, err := loja.StoreEvent(id, "user_message", map[string]any{"role": "user", "content": "olá de antes"}); err != nil {
+// session/load: a stored session comes back with its transcript; an unknown
+// id is an error (it must not become an empty session with the requested id).
+func TestLoadACPSessionReopensFromDatabase(t *testing.T) {
+	factory, st := newTestACPFactory(t)
+	_, id := factory(config.Config{})
+	if _, err := st.StoreEvent(id, "user_message", map[string]any{"role": "user", "content": "hello from before"}); err != nil {
 		t.Fatalf("StoreEvent: %v", err)
 	}
-	var abertos []*wiring.Conjunto
-	turno, err := carregarSessaoACP(config.Config{}, loja, t.TempDir(), id, &abertos)
+	var open []*wiring.Conjunto
+	turn, err := loadACPSession(config.Config{}, st, t.TempDir(), id, &open)
 	if err != nil {
-		t.Fatalf("carregarSessaoACP: %v", err)
+		t.Fatalf("loadACPSession: %v", err)
 	}
-	h := turno.(*runtime.Session).History()
-	if len(h) != 1 || h[0].Conteudo != "olá de antes" {
-		t.Fatalf("histórico não reconstruído: %+v", h)
+	h := turn.(*runtime.Session).History()
+	if len(h) != 1 || h[0].Conteudo != "hello from before" {
+		t.Fatalf("history not rebuilt: %+v", h)
 	}
-	if _, err := carregarSessaoACP(config.Config{}, loja, t.TempDir(), "bh-nao-existe", &abertos); err == nil {
-		t.Fatal("id desconhecido deveria dar erro")
+	if _, err := loadACPSession(config.Config{}, st, t.TempDir(), "bh-does-not-exist", &open); err == nil {
+		t.Fatal("unknown id should return an error")
 	}
 }

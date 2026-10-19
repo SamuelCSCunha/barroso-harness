@@ -1,6 +1,6 @@
-// Barroso Harness — executável único, multiplataforma, provider-neutral.
-// -p executa um turno não interativo com config já salva; sem argumentos
-// inicia onboarding/REPL interativo.
+// Barroso Harness — single executable, cross-platform, provider-neutral.
+// -p runs one non-interactive turn with the already saved config; with no
+// arguments it starts the interactive onboarding/REPL.
 package main
 
 import (
@@ -20,29 +20,29 @@ import (
 	"golang.org/x/term"
 )
 
-// Versao é sobrescrita no link pelo deployer (-X main.Versao=vX.Y.Z-bh.N).
+// Versao is overridden at link time by the deployer (-X main.Versao=vX.Y.Z-bh.N).
 var Versao = "dev"
 
 func main() {
-	// O REPL precisa da versão para o /update comparar o instalado com o
-	// publicado. O -X do deployer alcança ESTA variável, não a do pacote cli,
-	// então o main repassa — sem isso o /update sempre se veria como "dev" e
-	// trataria qualquer release como novidade.
+	// The REPL needs the version so /update can compare the installed build
+	// with the published one. The deployer's -X reaches THIS variable, not the
+	// cli package's, so main forwards it — otherwise /update would always see
+	// itself as "dev" and treat any release as new.
 	cli.Versao = Versao
 
 	var (
-		pedido = flag.String("p", "", "single-turn prompt (print mode)")
-		idInit = flag.Bool("init", false, "create the data directory in ~/.barroso-harness without overwriting files")
-		idACP  = flag.Bool("acp", false, "serve the ACP protocol (JSON-RPC 2.0) over stdio for an editor/client")
-		idVer  = flag.Bool("version", false, "print the version")
+		prompt      = flag.String("p", "", "single-turn prompt (print mode)")
+		initFlag    = flag.Bool("init", false, "create the data directory in ~/.barroso-harness without overwriting files")
+		acpFlag     = flag.Bool("acp", false, "serve the ACP protocol (JSON-RPC 2.0) over stdio for an editor/client")
+		versionFlag = flag.Bool("version", false, "print the version")
 	)
 	flag.Parse()
 
-	if *idVer {
+	if *versionFlag {
 		fmt.Println("barroso-harness " + Versao)
 		return
 	}
-	if *idInit {
+	if *initFlag {
 		if err := config.Init(); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
@@ -50,32 +50,32 @@ func main() {
 		fmt.Println("data directory created at", config.Dir())
 		return
 	}
-	if flag.NArg() > 0 && *pedido == "" {
+	if flag.NArg() > 0 && *prompt == "" {
 		fmt.Fprintln(os.Stderr, "usage: bh [-p \"prompt\"] [-acp] [-init] [-version]")
 		os.Exit(2)
 	}
-	if *idACP {
+	if *acpFlag {
 		serveACP()
 		return
 	}
-	if *pedido == "" {
+	if *prompt == "" {
 		os.Exit(cli.RunInteractive(cli.IO{In: os.Stdin, Out: os.Stdout, ErrOut: os.Stderr}))
 	}
-	idSessao := ""
-	if err := Executar(os.Stdout, *pedido, &idSessao); err != nil {
+	sessionID := ""
+	if err := Executar(os.Stdout, *prompt, &sessionID); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
-	// O id só vale a pena anunciar quando alguém está olhando: em pipe, a
-	// receita do outro lado receberia uma linha extra no meio da saída.
-	if idSessao != "" && éTerminal(os.Stderr) {
-		fmt.Fprintf(os.Stderr, "session: %s\n", idSessao)
+	// The id is only worth announcing when someone is watching: in a pipe, the
+	// consumer on the other side would get an extra line mid-output.
+	if sessionID != "" && isTerminal(os.Stderr) {
+		fmt.Fprintf(os.Stderr, "session: %s\n", sessionID)
 	}
 }
 
-// éTerminal diz se o writer é um terminal de verdade (x/term). Buffers, pipes
-// e redireções não são — e a linha `sessão:` é para humanos.
-func éTerminal(w io.Writer) bool {
+// isTerminal reports whether the writer is a real terminal (x/term). Buffers,
+// pipes and redirections are not — and the `session:` line is for humans.
+func isTerminal(w io.Writer) bool {
 	f, ok := w.(*os.File)
 	if !ok {
 		return false
@@ -83,11 +83,11 @@ func éTerminal(w io.Writer) bool {
 	return term.IsTerminal(int(f.Fd()))
 }
 
-// Executar roda um turno. Persistir o log é best-effort: se o banco não abrir,
-// o turno acontece igual e idSessao volta vazia (sem linha `sessão:`).
-// O wiring de subsistemas (MCP, sub-agentes) também é best-effort: falha de um
-// servidor não derruba o turno; o aviso vai para stderr.
-func Executar(out io.Writer, pedido string, idSessao *string) error {
+// Executar runs one turn. Persisting the log is best-effort: if the database
+// does not open, the turn still happens and sessionID comes back empty (no
+// `session:` line). Subsystem wiring (MCP, sub-agents) is best-effort too: a
+// failing server does not abort the turn; the warning goes to stderr.
+func Executar(out io.Writer, prompt string, sessionID *string) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -96,72 +96,72 @@ func Executar(out io.Writer, pedido string, idSessao *string) error {
 	if err != nil {
 		return err
 	}
-	loja, err := store.Open(filepath.Join(config.Dir(), "sessions.db"))
-	if err != nil || loja == nil {
-		return execComWiring(out, cfg, cwd, pedido, nil, "")
+	st, err := store.Open(filepath.Join(config.Dir(), "sessions.db"))
+	if err != nil || st == nil {
+		return runWithWiring(out, cfg, cwd, prompt, nil, "")
 	}
 	id := runtime.NovoSessaoID()
-	if idSessao != nil {
-		*idSessao = id
+	if sessionID != nil {
+		*sessionID = id
 	}
-	err = execComWiring(out, cfg, cwd, pedido, loja, id)
-	if fecho := loja.Fechar(); err == nil {
-		err = fecho
+	err = runWithWiring(out, cfg, cwd, prompt, st, id)
+	if closeErr := st.Fechar(); err == nil {
+		err = closeErr
 	}
 	return err
 }
 
-// execComWiring monta a sessão (persistente quando há store), conecta os
-// subsistemas com dono de processo e roda o turno. É a receita única dos dois
-// caminhos de -p: o id difere, o resto é igual.
-func execComWiring(out io.Writer, cfg config.Config, cwd, pedido string, loja *store.Store, id string) error {
+// runWithWiring builds the session (persistent when there is a store), wires
+// the process-owned subsystems and runs the turn. It is the single recipe for
+// both -p paths: the id differs, everything else is the same.
+func runWithWiring(out io.Writer, cfg config.Config, cwd, prompt string, st *store.Store, id string) error {
 	var sess *runtime.Session
-	if loja != nil {
-		sess = runtime.NewSessionWithStore(cfg, loja, id)
+	if st != nil {
+		sess = runtime.NewSessionWithStore(cfg, st, id)
 	} else {
 		sess = runtime.NewSession(cfg)
 	}
-	// ctx de vida do processo: sub-agentes sobrevivem ao turno que os criou.
+	// Process-lifetime ctx: sub-agents outlive the turn that created them.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	conjunto, avisos := wiring.Montar(ctx, cfg, sess, cwd)
-	defer func() { _ = conjunto.Fechar() }()
-	for _, aviso := range avisos {
-		fmt.Fprintln(os.Stderr, "warning:", aviso)
+	set, warnings := wiring.Montar(ctx, cfg, sess, cwd)
+	defer func() { _ = set.Fechar() }()
+	for _, warning := range warnings {
+		fmt.Fprintln(os.Stderr, "warning:", warning)
 	}
 	rend := runtime.RendererDe(out)
-	if err := sess.Send(context.Background(), rend, cwd, pedido); err != nil {
+	if err := sess.Send(context.Background(), rend, cwd, prompt); err != nil {
 		return err
 	}
-	// -p não tem usuário para acordar o REPL: enquanto houver sub-agente
-	// rodando, o processo espera, e cada leva que termina vira mais um turno
-	// com os resultados — senão o processo sairia matando os sub-agentes.
-	g := conjunto.Gerente()
-	if g == nil {
+	// -p has no user to wake the REPL: while a sub-agent is running, the
+	// process waits, and each batch that finishes becomes another turn with
+	// the results — otherwise the process would exit, killing the sub-agents.
+	m := set.Gerente()
+	if m == nil {
 		return nil
 	}
-	terminou := make(chan struct{}, 1)
-	g.AoTerminar(func() {
+	done := make(chan struct{}, 1)
+	m.AoTerminar(func() {
 		select {
-		case terminou <- struct{}{}:
+		case done <- struct{}{}:
 		default:
 		}
 	})
 	for {
-		if ts := g.Terminadas(); len(ts) > 0 {
-			// ctx próprio por turno: o limite de um disparo por turno compara
-			// o ctx, e context.Background() seria o mesmo em todos.
-			turno, fim := context.WithCancel(context.Background())
-			err := sess.Send(turno, rend, cwd, subagent.AvisoTerminadas(ts, g.Ativas()))
-			fim()
+		if fs := m.Terminadas(); len(fs) > 0 {
+			// A dedicated ctx per turn: the one-trigger-per-turn limit compares
+			// the ctx, and context.Background() would be the same for all.
+			turn, end := context.WithCancel(context.Background())
+			err := sess.Send(turn, rend, cwd, subagent.AvisoTerminadas(fs, m.Ativas()))
+			end()
 			if err != nil {
 				return err
 			}
 			continue
 		}
-		if g.Ativas() == 0 {
+		if m.Ativas() == 0 {
 			return nil
 		}
-		<-terminou
+		<-done
 	}
 }
