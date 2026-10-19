@@ -108,16 +108,21 @@ func TestCutWithTextContinues(t *testing.T) {
 	}
 }
 
-// Too many consecutive cuts: stop with an error instead of ending silently.
-func TestCutGivesUpAtLimit(t *testing.T) {
-	srv, seen := cutProvider(t, []step{{"", false, "length"}})
-	var sb strings.Builder
-	err := Turno(&sb, config.Config{BaseURL: srv.URL, Model: "m", APIKey: "k"}, t.TempDir(), "hi")
-	if err == nil || !strings.Contains(err.Error(), "output limit") {
-		t.Fatalf("error = %v", err)
+// Consecutive cuts never end the turn: it keeps going until the model
+// answers.
+func TestCutNeverGivesUp(t *testing.T) {
+	steps := []step{}
+	for i := 0; i < 6; i++ {
+		steps = append(steps, step{"", false, "length"})
 	}
-	if n := len(*seen); n != maxCuts+1 {
-		t.Fatalf("requests = %d", n)
+	steps = append(steps, step{"done", false, "stop"})
+	srv, seen := cutProvider(t, steps)
+	var sb strings.Builder
+	if err := Turno(&sb, config.Config{BaseURL: srv.URL, Model: "m", APIKey: "k"}, t.TempDir(), "hi"); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(*seen); n != 7 || !strings.Contains(sb.String(), "done") {
+		t.Fatalf("requests = %d output=%q", n, sb.String())
 	}
 }
 

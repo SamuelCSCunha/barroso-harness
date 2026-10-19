@@ -173,7 +173,7 @@ func (s *Session) Send(ctx context.Context, r Renderer, cwd, prompt string) erro
 	floor := 0
 	// Consecutive cuts at the output limit, and the limit of the retry when the
 	// cut came back empty (the model spent everything thinking).
-	cuts, extraLimit := 0, 0
+	extraLimit := 0
 	reactiveDone := false
 	compacted := false
 	// Whole-turn totals: each tool cycle spends request and response, and the
@@ -184,7 +184,12 @@ func (s *Session) Send(ctx context.Context, r Renderer, cwd, prompt string) erro
 	// the log still records what was asked.
 	s.record("user_message", map[string]any{"role": "user", "content": prompt})
 
-	for cycle := 0; cycle < 64; cycle++ {
+	// No cycle limit: the turn runs until the model answers with text or the
+	// user interrupts it (Esc / Ctrl+C cancels ctx).
+	for cycle := 0; ; cycle++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		// Catalog rebuilt on EVERY cycle: mcp_add, mcp_remove and skill_create
 		// change the tools mid-turn, and the next round must already see them.
 		// Built only once, a freshly connected tool stayed invisible until the
@@ -276,15 +281,9 @@ func (s *Session) Send(ctx context.Context, r Renderer, cwd, prompt string) erro
 			// A response cut at the output limit is never a final answer: no
 			// harness studied (OpenCode, Codex, Claude Code, Gemini CLI, dsh, pi,
 			// Crush, Aider) silently ends the turn in that case.
-			cuts++
+			// No give-up count: the turn keeps continuing until the model
+			// finishes or the user interrupts.
 			rc, _ := r.(RendererCorte)
-			if cuts > maxCuts {
-				if rc != nil {
-					rc.Cortada(limit, true)
-				}
-				r.Tokens(promptUsage, outputUsage, time.Since(start), compacted)
-				return fmt.Errorf("response cut at the output limit (%d tokens) %d times in a row; send \"continue\" to resume", limit, cuts)
-			}
 			if rc != nil {
 				rc.Cortada(limit, false)
 			}
@@ -309,7 +308,7 @@ func (s *Session) Send(ctx context.Context, r Renderer, cwd, prompt string) erro
 			s.record("user_message", map[string]any{"role": "user", "content": notice})
 			continue
 		}
-		cuts, extraLimit = 0, 0
+		extraLimit = 0
 		if len(round.Tools) == 0 {
 			r.Resposta(round.Texto)
 			r.Tokens(promptUsage, outputUsage, time.Since(start), compacted)
@@ -383,7 +382,6 @@ func (s *Session) Send(ctx context.Context, r Renderer, cwd, prompt string) erro
 			})
 		}
 	}
-	return fmt.Errorf("turn exceeded 64 cycles; configurable technical limit (not a permission check)")
 }
 
 func toolSchemas(list []tools.Spec) []map[string]any {
@@ -405,10 +403,6 @@ func runTool(ctx context.Context, list []tools.Spec, cwd string, call dealer.Too
 	}
 	return "", fmt.Errorf("unknown tool: %q (check the exact name)", call.Nome)
 }
-
-// maxCuts: how many consecutive cuts at the output limit the turn tolerates
-// before stopping and reporting (OpenCode uses 3).
-const maxCuts = 3
 
 // Synthetic continuation messages after a cut. The "[output limit]" prefix
 // lets the screen recognize them and not draw them as user speech.

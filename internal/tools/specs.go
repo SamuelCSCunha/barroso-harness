@@ -15,9 +15,8 @@ import (
 )
 
 const (
-	outputCap      = 64 << 10                               // output cap per tool call
-	defaultTimeout = 120 * time.Second                      // terminal_run
-	prunedTail     = "(content compacted by the guardrail)" // reserved for runtime
+	outputCap  = 64 << 10                               // output cap per tool call
+	prunedTail = "(content compacted by the guardrail)" // reserved for runtime
 )
 
 // SpecsBuiltins returns the full catalog. Order is stable across platforms.
@@ -70,13 +69,14 @@ func specTerminalRun() Spec {
 	return Spec{
 		Name: "terminal_run",
 		Description: "Runs a command in the local machine's terminal (YOLO mode, no approval prompt). " +
-			"Returns merged stdout+stderr with exit_code. Default timeout 120 s (timeout_secs overrides).",
+			"Returns merged stdout+stderr with exit_code. No timeout by default: the command runs until it ends " +
+			"(the user can interrupt the turn); pass timeout_secs only if you want one.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"command":      map[string]any{"type": "string", "description": "command to run"},
 				"workdir":      map[string]any{"type": "string", "description": "working directory (default: the agent's cwd)"},
-				"timeout_secs": map[string]any{"type": "integer", "description": "timeout in seconds; default 120"},
+				"timeout_secs": map[string]any{"type": "integer", "description": "optional timeout in seconds; default none"},
 			},
 			"required": []string{"command"},
 		},
@@ -97,11 +97,10 @@ func specTerminalRun() Spec {
 			if c.Workdir != "" {
 				dir = resolvePath(cwd, c.Workdir)
 			}
-			timeout := defaultTimeout
+			cctx, cancel := context.WithCancel(ctx)
 			if c.Timeout > 0 {
-				timeout = time.Duration(c.Timeout) * time.Second
+				cctx, cancel = context.WithTimeout(ctx, time.Duration(c.Timeout)*time.Second)
 			}
-			cctx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 
 			var cmd *exec.Cmd
