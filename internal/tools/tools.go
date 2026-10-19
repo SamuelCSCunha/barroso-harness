@@ -1,5 +1,5 @@
-// Package tools — contrato das ferramentas built-in. Este arquivo guarda os
-// tipos e as helpers; as specs vivem em specs.go.
+// Package tools — contract of the built-in tools. This file holds the types
+// and helpers; the specs live in specs.go.
 package tools
 
 import (
@@ -7,14 +7,14 @@ import (
 	"encoding/json"
 )
 
-// Call é uma chamada recebida (não usado no slice 0; entra com sessão).
+// Call is a received call (unused in slice 0; arrives with sessions).
 type Call struct {
 	ID   string          `json:"id"`
 	Name string          `json:"name"`
 	Raw  json.RawMessage `json:"arguments"`
 }
 
-// Result de uma execução.
+// Result of an execution.
 type Result struct {
 	CallID  string `json:"call_id"`
 	Name    string `json:"name"`
@@ -22,7 +22,7 @@ type Result struct {
 	IsError bool   `json:"is_error"`
 }
 
-// Spec descreve uma ferramenta: contrato exposto ao provider + executor.
+// Spec describes a tool: the contract exposed to the provider + executor.
 type Spec struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description"`

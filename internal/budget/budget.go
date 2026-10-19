@@ -1,62 +1,62 @@
-// Package budget calcula o guardrail da janela e estimadorchars/token
-// calibrável. Nada aqui decide o momento semântico — isso é política do
-// runtime/agente; o budget só diz se o próximo request cabe fisicamente.
+// Package budget computes the context-window guardrail and a calibratable
+// chars/token estimator. Nothing here decides the semantic moment — that is
+// runtime/agent policy; budget only says whether the next request physically fits.
 package budget
 
 import "fmt"
 
 const (
-	// ReservaSaida: espaço que o modelo precisa ter disponível para
-	// responder (o clamp de max_tokens varia por provider).
+	// ReservaSaida: room the model needs available to respond (the
+	// max_tokens clamp varies per provider).
 	ReservaSaida = 16 << 10
-	// ReservaOperacional: overhead estimado do formato (tool schemas,
-	// estrutura das mensagens, tokens invisíveis do provider).
+	// ReservaOperacional: estimated format overhead (tool schemas, message
+	// structure, provider-invisible tokens).
 	ReservaOperacional = 8 << 10
 )
 
-// Window refere-se à janela do modelo (tokens). 0 = desconhecida: sem janela
-// publicada, o guardrail fica inativo e a política age apenas depois de
-// erro real do provider.
+// Window is the model's context window (tokens). 0 = unknown: with no
+// published window the guardrail stays inactive and the policy only acts
+// after a real provider error.
 type Window struct {
 	Tokens int
 }
 
-// Estimador estimate tokens ~ len/charsPorToken, calibrável por modelo a
-// partir dos pares (bytes enviados, prompt_tokens reportados).
+// Estimador estimates tokens ~ len/charsPerToken, calibratable per model from
+// (bytes sent, reported prompt_tokens) pairs.
 type Estimador struct {
 	CharsPorToken float64
 }
 
-func (e Estimador) Tokens(texto string) int {
+func (e Estimador) Tokens(text string) int {
 	cpt := e.CharsPorToken
 	if cpt <= 0 {
-		cpt = 4 // conservador para texto latino
+		cpt = 4 // conservative for Latin-script text
 	}
-	return int(float64(len(texto)) / cpt)
+	return int(float64(len(text)) / cpt)
 }
 
-// Calibrar recebe o segundo par (bytes enviados, tokens reais) e move o
-// fator em direção à verdade medida. Amostras absurdas são descartadas.
-func (e *Estimador) Calibrar(bytes int, tokensReais int) {
-	if bytes <= 0 || tokensReais <= 0 {
+// Calibrar takes a (bytes sent, actual tokens) pair and moves the factor
+// toward the measured truth. Absurd samples are discarded.
+func (e *Estimador) Calibrar(bytes int, actualTokens int) {
+	if bytes <= 0 || actualTokens <= 0 {
 		return
 	}
-	novo := float64(bytes) / float64(tokensReais)
-	if novo < 1.5 || novo > 12 {
+	sample := float64(bytes) / float64(actualTokens)
+	if sample < 1.5 || sample > 12 {
 		return
 	}
 	if e.CharsPorToken <= 0 {
-		e.CharsPorToken = novo
+		e.CharsPorToken = sample
 	} else {
-		e.CharsPorToken = 0.7*e.CharsPorToken + 0.3*novo
+		e.CharsPorToken = 0.7*e.CharsPorToken + 0.3*sample
 	}
 }
 
-// Request é a previsão do próximo request físico.
+// Request is the forecast of the next physical request.
 type Request struct {
 	TokensEntrada int
 	TokensSaida   int
-	Janela        int // 0 = desconhecida
+	Janela        int // 0 = unknown
 	Cabe          bool
 }
 
@@ -71,17 +71,17 @@ func (r Request) Veredito() string {
 	}
 }
 
-// Avaliar decide (na estimativa) se o prompt cabe na janela.
-func Avaliar(prompt string, janela int, est Estimador) Request {
+// Avaliar decides (by estimate) whether the prompt fits in the window.
+func Avaliar(prompt string, window int, est Estimador) Request {
 	e := est.Tokens(prompt)
 	if e < ReservaOperacional {
 		e = ReservaOperacional
 	}
-	r := Request{TokensEntrada: e, TokensSaida: ReservaSaida, Janela: janela}
-	if janela == 0 {
+	r := Request{TokensEntrada: e, TokensSaida: ReservaSaida, Janela: window}
+	if window == 0 {
 		r.Cabe = true
 		return r
 	}
-	r.Cabe = e+r.TokensSaida <= janela
+	r.Cabe = e+r.TokensSaida <= window
 	return r
 }

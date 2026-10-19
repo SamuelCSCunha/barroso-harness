@@ -13,8 +13,8 @@ import (
 	"github.com/ruanbarroso/barroso-harness/internal/runtime"
 )
 
-// servidorMCPFake responde initialize, notifications e tools/list com uma tool "eco".
-func servidorMCPFake(t *testing.T) string {
+// fakeMCPServer answers initialize, notifications and tools/list with an "eco" tool.
+func fakeMCPServer(t *testing.T) string {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		var req struct {
@@ -42,54 +42,54 @@ func servidorMCPFake(t *testing.T) string {
 	return srv.URL
 }
 
-func ferramenta(t *testing.T, s *runtime.Session, nome string) bool {
+func hasTool(t *testing.T, s *runtime.Session, name string) bool {
 	for _, sp := range s.Catalogo(t.TempDir()) {
-		if sp.Name == nome {
+		if sp.Name == name {
 			return true
 		}
 	}
 	return false
 }
 
-func TestGestorMCPAddListRemove(t *testing.T) {
+func TestMCPManagerAddListRemove(t *testing.T) {
 	sess := runtime.NewSession(config.Config{})
-	g := novoGestorMCP(context.Background(), sess)
-	var gravado []config.MCPServidor
-	g.salvar = func(l []config.MCPServidor) error { gravado = l; return nil }
-	sess.Injetar(g.specs()...)
+	m := newMCPManager(context.Background(), sess)
+	var saved []config.MCPServidor
+	m.save = func(l []config.MCPServidor) error { saved = l; return nil }
+	sess.Injetar(m.specs()...)
 	sp := map[string]func(string) (string, error){}
-	for _, s := range g.specs() {
+	for _, s := range m.specs() {
 		s := s
 		sp[s.Name] = func(a string) (string, error) { return s.Exec(context.Background(), "", json.RawMessage(a)) }
 	}
 
-	out, err := sp["mcp_add"](`{"name":"fake","type":"http","url":"` + servidorMCPFake(t) + `"}`)
-	if err != nil || !strings.Contains(out, "1 tools disponíveis: eco") {
+	out, err := sp["mcp_add"](`{"name":"fake","type":"http","url":"` + fakeMCPServer(t) + `"}`)
+	if err != nil || !strings.Contains(out, "1 tools available: eco") {
 		t.Fatalf("mcp_add: %q %v", out, err)
 	}
-	if len(gravado) != 1 || gravado[0].Nome != "fake" {
-		t.Fatalf("não persistiu: %+v", gravado)
+	if len(saved) != 1 || saved[0].Nome != "fake" {
+		t.Fatalf("did not persist: %+v", saved)
 	}
-	if !ferramenta(t, sess, "eco") {
-		t.Fatal("tool do servidor deveria estar no catálogo")
+	if !hasTool(t, sess, "eco") {
+		t.Fatal("the server's tool should be in the catalog")
 	}
-	if out, _ := sp["mcp_list"](`{}`); !strings.Contains(out, "fake [http]") || !strings.Contains(out, "conectado") {
+	if out, _ := sp["mcp_list"](`{}`); !strings.Contains(out, "fake [http]") || !strings.Contains(out, "connected") {
 		t.Fatalf("mcp_list: %q", out)
 	}
-	if out, err := sp["mcp_remove"](`{"name":"fake"}`); err != nil || !strings.Contains(out, "1 tools saíram") {
+	if out, err := sp["mcp_remove"](`{"name":"fake"}`); err != nil || !strings.Contains(out, "1 tools left") {
 		t.Fatalf("mcp_remove: %q %v", out, err)
 	}
-	if ferramenta(t, sess, "eco") || len(gravado) != 0 {
-		t.Fatal("remove deveria tirar a tool e a config")
+	if hasTool(t, sess, "eco") || len(saved) != 0 {
+		t.Fatal("remove should drop the tool and the config")
 	}
 }
 
-func TestGestorMCPAddQueNaoConectaFicaVisivel(t *testing.T) {
+func TestMCPManagerAddThatDoesNotConnectStaysVisible(t *testing.T) {
 	sess := runtime.NewSession(config.Config{})
-	g := novoGestorMCP(context.Background(), sess)
-	g.salvar = func([]config.MCPServidor) error { return nil }
+	m := newMCPManager(context.Background(), sess)
+	m.save = func([]config.MCPServidor) error { return nil }
 	var add, list func(string) (string, error)
-	for _, s := range g.specs() {
+	for _, s := range m.specs() {
 		s := s
 		f := func(a string) (string, error) { return s.Exec(context.Background(), "", json.RawMessage(a)) }
 		switch s.Name {
@@ -99,14 +99,14 @@ func TestGestorMCPAddQueNaoConectaFicaVisivel(t *testing.T) {
 			list = f
 		}
 	}
-	out, err := add(`{"name":"morto","type":"http","url":"http://127.0.0.1:1/mcp"}`)
-	if err != nil || !strings.Contains(out, "NÃO conectou") {
-		t.Fatalf("add sem servidor: %q %v", out, err)
+	out, err := add(`{"name":"dead","type":"http","url":"http://127.0.0.1:1/mcp"}`)
+	if err != nil || !strings.Contains(out, "did NOT connect") {
+		t.Fatalf("add without server: %q %v", out, err)
 	}
-	if out, _ := list(`{}`); !strings.Contains(out, "morto") || !strings.Contains(out, "NÃO conectado") {
+	if out, _ := list(`{}`); !strings.Contains(out, "dead") || !strings.Contains(out, "NOT connected") {
 		t.Fatalf("list: %q", out)
 	}
 	if _, err := add(`{"name":"x","type":"stdio"}`); err == nil {
-		t.Fatal("stdio sem command deveria ser recusado")
+		t.Fatal("stdio without command should be rejected")
 	}
 }

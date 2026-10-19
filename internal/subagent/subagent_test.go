@@ -1,6 +1,6 @@
-// Package subagent — testes end-to-end com provider fake (SSE), no mesmo
-// formato de runtime_test.go: pedaços com choices[].delta.content, chunk final
-// com finish_reason e usage, e "data: [DONE]".
+// Package subagent — end-to-end tests with a fake provider (SSE), in the same
+// format as runtime_test.go: chunks with choices[].delta.content, a final chunk
+// with finish_reason and usage, and "data: [DONE]".
 package subagent
 
 import (
@@ -18,11 +18,11 @@ import (
 	"github.com/ruanbarroso/barroso-harness/internal/tools"
 )
 
-// ── provider fake ──────────────────────────────────────────────────────────
+// ── fake provider ──────────────────────────────────────────────────────────
 
-// reqVista é o que o fake precisa enxergar do request: as tools oferecidas e a
-// quantidade de mensagens (para saber se é a primeira rodada do sub-agente).
-type reqVista struct {
+// reqView is what the fake needs to see of the request: the offered tools and
+// the number of messages (to know whether it is the sub-agent's first round).
+type reqView struct {
 	Tools []struct {
 		Function struct {
 			Name string `json:"name"`
@@ -33,30 +33,30 @@ type reqVista struct {
 	} `json:"messages"`
 }
 
-// fakeProvider atende /chat/completions com um roteiro. resposta(o) devolve o
-// texto da rodada; enquanto houver pedido de tool sem resultado de tool ainda,
-// ele pede uma tool built-in de verdade (list_dir) para exercitar o loop.
+// fakeProvider serves /chat/completions from a script. It returns text for
+// the round; while a tool request has no tool result yet, it asks for a real
+// built-in tool (list_dir) to exercise the loop.
 type fakeProvider struct {
-	mu        sync.Mutex
-	chamadas  int
-	vistas    []reqVista
-	texto     string
-	atraso    time.Duration
-	pedirTool bool // se true, a 1ª rodada pede list_dir antes de responder
+	mu          sync.Mutex
+	calls       int
+	views       []reqView
+	text        string
+	delay       time.Duration
+	requestTool bool // if true, round 1 asks for list_dir before answering
 }
 
 func (f *fakeProvider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	var vista reqVista
-	_ = json.NewDecoder(r.Body).Decode(&vista)
+	var view reqView
+	_ = json.NewDecoder(r.Body).Decode(&view)
 	f.mu.Lock()
-	f.chamadas++
-	f.vistas = append(f.vistas, vista)
-	n := f.chamadas
-	texto, atraso, pedirTool := f.texto, f.atraso, f.pedirTool
+	f.calls++
+	f.views = append(f.views, view)
+	n := f.calls
+	text, delay, requestTool := f.text, f.delay, f.requestTool
 	f.mu.Unlock()
 
 	w.Header().Set("Content-Type", "text/event-stream")
-	emitir := func(p any) {
+	emit := func(p any) {
 		b, _ := json.Marshal(p)
 		_, _ = w.Write([]byte("data: " + string(b) + "\n\n"))
 		if fl, ok := w.(http.Flusher); ok {
@@ -64,16 +64,16 @@ func (f *fakeProvider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	temResultadoTool := false
-	for _, m := range vista.Messages {
+	hasToolResult := false
+	for _, m := range view.Messages {
 		if m.Role == "tool" {
-			temResultadoTool = true
+			hasToolResult = true
 		}
 	}
 
-	// Rodada 1 pede uma built-in; rodada 2 (já com tool_result) responde texto.
-	if pedirTool && n == 1 && !temResultadoTool {
-		emitir(map[string]any{"choices": []map[string]any{{
+	// Round 1 asks for a built-in; round 2 (already with tool_result) answers text.
+	if requestTool && n == 1 && !hasToolResult {
+		emit(map[string]any{"choices": []map[string]any{{
 			"delta": map[string]any{"tool_calls": []map[string]any{{
 				"index": 0, "id": "call_1", "type": "function",
 				"function": map[string]any{
@@ -83,31 +83,31 @@ func (f *fakeProvider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}}},
 		}}})
 	} else {
-		if atraso > 0 {
-			time.Sleep(atraso)
+		if delay > 0 {
+			time.Sleep(delay)
 		}
-		for _, p := range []string{texto} {
-			emitir(map[string]any{"choices": []map[string]any{{
+		for _, p := range []string{text} {
+			emit(map[string]any{"choices": []map[string]any{{
 				"delta": map[string]any{"content": p},
 			}}})
 		}
 	}
-	emitir(map[string]any{
+	emit(map[string]any{
 		"choices": []map[string]any{{"delta": map[string]any{}, "finish_reason": "stop"}},
 		"usage":   map[string]any{"prompt_tokens": 42, "completion_tokens": 7},
 	})
 	_, _ = w.Write([]byte("data: [DONE]\n\n"))
 }
 
-func (f *fakeProvider) Vistas() []reqVista {
+func (f *fakeProvider) Views() []reqView {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]reqVista(nil), f.vistas...)
+	return append([]reqView(nil), f.views...)
 }
 
-func novoServidor(t *testing.T, texto string, atraso time.Duration, pedirTool bool) (*fakeProvider, config.Config) {
+func newServer(t *testing.T, text string, delay time.Duration, requestTool bool) (*fakeProvider, config.Config) {
 	t.Helper()
-	f := &fakeProvider{texto: texto, atraso: atraso, pedirTool: pedirTool}
+	f := &fakeProvider{text: text, delay: delay, requestTool: requestTool}
 	srv := httptest.NewServer(f)
 	t.Cleanup(srv.Close)
 	cfg := config.Config{
@@ -122,17 +122,17 @@ func novoServidor(t *testing.T, texto string, atraso time.Duration, pedirTool bo
 	return f, cfg
 }
 
-// esperarEstado consulta até que a tarefa chegue a um estado terminal (ou o
-// prazo estoure). Evita sleep fixo — a suíte precisa ser rápida e estável.
-func esperarEstado(t *testing.T, g *Gerente, id string, aceita ...string) Tarefa {
+// waitState polls until the task reaches a terminal state (or the deadline
+// expires). Avoids fixed sleeps — the suite must be fast and stable.
+func waitState(t *testing.T, g *Gerente, id string, accepted ...string) Tarefa {
 	t.Helper()
-	prazo := time.Now().Add(5 * time.Second)
-	for time.Now().Before(prazo) {
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
 		cp, ok := g.snapshot(id)
 		if !ok {
-			t.Fatalf("tarefa %s não existe", id)
+			t.Fatalf("task %s does not exist", id)
 		}
-		for _, a := range aceita {
+		for _, a := range accepted {
 			if cp.Estado == a {
 				return cp
 			}
@@ -140,48 +140,48 @@ func esperarEstado(t *testing.T, g *Gerente, id string, aceita ...string) Tarefa
 		time.Sleep(2 * time.Millisecond)
 	}
 	cp, _ := g.snapshot(id)
-	t.Fatalf("tarefa %s não chegou a %v (estado atual: %s, erro: %s)", id, aceita, cp.Estado, cp.Erro)
+	t.Fatalf("task %s did not reach %v (current state: %s, error: %s)", id, accepted, cp.Estado, cp.Erro)
 	return Tarefa{}
 }
 
-// executarTool roda uma spec do catálogo com o argumento JSON dado.
-func executarTool(t *testing.T, s tools.Spec, args string) (string, error) {
+// runTool runs a catalog spec with the given JSON argument.
+func runTool(t *testing.T, s tools.Spec, args string) (string, error) {
 	t.Helper()
 	cwd := t.TempDir()
 	return s.Exec(context.Background(), cwd, []byte(args))
 }
 
-// ── Testes ─────────────────────────────────────────────────────────────────
+// ── Tests ──────────────────────────────────────────────────────────────────
 
-// Test A: o sub-agente roda o loop completo (tool + texto), o resultado volta
-// pelo task_result e — invariante central — o provider NUNCA vê uma tool de
-// delegação (task_spawn/task_status/task_result) no catálogo enviado.
-func TestSpawnExecutaEResultadoVoltaSemToolsDeDelegacao(t *testing.T) {
-	f, cfg := novoServidor(t, "tarefa feita", 0, true)
+// Test A: the sub-agent runs the full loop (tool + text), the result comes
+// back through task_result and — central invariant — the provider NEVER sees a
+// delegation tool (task_spawn/task_status/task_result) in the catalog sent.
+func TestSpawnRunsAndResultReturnsWithoutDelegationTools(t *testing.T) {
+	f, cfg := newServer(t, "task done", 0, true)
 	g := Novo(Config{Nome: "task"})
 	g.Vincular(context.Background())
 	g.ConfigPai(cfg)
-	specs := append(Especificacoes(g, cfg), especStatus(g, "task"), especResult(g, "task"))
+	specs := append(Especificacoes(g, cfg), statusSpec(g, "task"), resultSpec(g, "task"))
 
-	nomos := map[string]tools.Spec{}
+	byName := map[string]tools.Spec{}
 	for _, s := range specs {
-		nomos[s.Name] = s
+		byName[s.Name] = s
 	}
-	if len(nomos) != 3 {
-		t.Fatalf("esperava 3 tools, vieram %d", len(specs))
+	if len(byName) != 3 {
+		t.Fatalf("expected 3 tools, got %d", len(specs))
 	}
-	for _, nome := range []string{"task_spawn", "task_status", "task_result"} {
-		if _, ok := nomos[nome]; !ok {
-			t.Fatalf("tool %q ausente do catálogo: %v", nome, chaves(nomos))
+	for _, name := range []string{"task_spawn", "task_status", "task_result"} {
+		if _, ok := byName[name]; !ok {
+			t.Fatalf("tool %q missing from the catalog: %v", name, keys(byName))
 		}
 	}
 
-	saida, err := executarTool(t, nomos["task_spawn"], `{"prompt":"liste o diretório e responda"}`)
+	out, err := runTool(t, byName["task_spawn"], `{"prompt":"list the directory and answer"}`)
 	if err != nil {
-		t.Fatalf("spawn falhou: %v", err)
+		t.Fatalf("spawn failed: %v", err)
 	}
-	if !strings.Contains(saida, "disparado(s): t1") {
-		t.Fatalf("resposta do spawn inesperada: %q", saida)
+	if !strings.Contains(out, "launched: t1") {
+		t.Fatalf("unexpected spawn response: %q", out)
 	}
 
 	var id string
@@ -189,246 +189,246 @@ func TestSpawnExecutaEResultadoVoltaSemToolsDeDelegacao(t *testing.T) {
 		id = tk.ID
 	}
 	if id != "t1" {
-		t.Fatalf("id determinístico deveria ser t1, veio %q", id)
+		t.Fatalf("deterministic id should be t1, got %q", id)
 	}
 
-	cp := esperarEstado(t, g, id, Completed, Failed)
+	cp := waitState(t, g, id, Completed, Failed)
 	if cp.Estado != Completed {
-		t.Fatalf("tarefa deveria completar, estado %s erro %q", cp.Estado, cp.Erro)
+		t.Fatalf("task should complete, state %s error %q", cp.Estado, cp.Erro)
 	}
-	if cp.Resultado != "tarefa feita" {
-		t.Fatalf("resultado inesperado: %q", cp.Resultado)
+	if cp.Resultado != "task done" {
+		t.Fatalf("unexpected result: %q", cp.Resultado)
 	}
 	if len(cp.Transcricao()) != 1 || !strings.Contains(cp.Transcricao()[0], "list_dir") {
-		t.Fatalf("rastro de tools deveria ter list_dir: %v", cp.Transcricao())
+		t.Fatalf("tool trace should contain list_dir: %v", cp.Transcricao())
 	}
 
-	// Resultado pela tool.
-	res, err := executarTool(t, nomos["task_result"], fmt.Sprintf(`{"id":%q}`, id))
+	// Result through the tool.
+	res, err := runTool(t, byName["task_result"], fmt.Sprintf(`{"id":%q}`, id))
 	if err != nil {
-		t.Fatalf("result falhou: %v", err)
+		t.Fatalf("result failed: %v", err)
 	}
-	if res != "tarefa feita" {
-		t.Fatalf("task_result deveria devolver o texto final, veio %q", res)
+	if res != "task done" {
+		t.Fatalf("task_result should return the final text, got %q", res)
 	}
 
-	// INVARIANTE: nenhum request ao provider levou tool de delegação.
-	for i, v := range f.Vistas() {
+	// INVARIANT: no request to the provider carried a delegation tool.
+	for i, v := range f.Views() {
 		if len(v.Tools) == 0 {
-			t.Fatalf("request %d não ofereceu tools — o filho deveria ter as built-in", i)
+			t.Fatalf("request %d offered no tools — the child should have the built-ins", i)
 		}
 		for _, tl := range v.Tools {
-			nome := tl.Function.Name
-			if strings.HasPrefix(nome, "task_") {
-				t.Fatalf("request %d ofereceu %q: sub-agente NÃO pode ter tools de delegação", i, nome)
+			name := tl.Function.Name
+			if strings.HasPrefix(name, "task_") {
+				t.Fatalf("request %d offered %q: a sub-agent must NOT have delegation tools", i, name)
 			}
 		}
-		if !temBuiltin(v, "list_dir") {
-			t.Fatalf("request %d deveria oferecer as built-in do runtime (list_dir entre elas)", i)
+		if !hasBuiltin(v, "list_dir") {
+			t.Fatalf("request %d should offer the runtime built-ins (list_dir among them)", i)
 		}
 	}
 }
 
-// Test B: sem teto — N prompts numa chamada disparam N sub-agentes, todos
-// rodando ao mesmo tempo, e o pai é avisado quando terminam.
-func TestSpawnVariosSemTetoEAvisa(t *testing.T) {
-	_, cfg := novoServidor(t, "ok", 400*time.Millisecond, false)
+// Test B: no cap — N prompts in one call launch N sub-agents, all running at
+// the same time, and the parent is notified when they finish.
+func TestSpawnManyWithoutCapAndNotifies(t *testing.T) {
+	_, cfg := newServer(t, "ok", 400*time.Millisecond, false)
 	g := Novo(Config{Nome: "task"})
 	g.Vincular(context.Background())
-	avisos := make(chan struct{}, 16)
-	g.AoTerminar(func() { avisos <- struct{}{} })
-	specs := append(Especificacoes(g, cfg), especStatus(g, "task"), especResult(g, "task"))
+	notices := make(chan struct{}, 16)
+	g.AoTerminar(func() { notices <- struct{}{} })
+	specs := append(Especificacoes(g, cfg), statusSpec(g, "task"), resultSpec(g, "task"))
 	var spawn tools.Spec
 	for _, s := range specs {
 		if s.Name == "task_spawn" {
 			spawn = s
 		}
 	}
-	saida, err := executarTool(t, spawn, `{"prompts":["a","b","c","d","e"]}`)
-	if err != nil || !strings.Contains(saida, "5 sub-agente(s) disparado(s): t1, t2, t3, t4, t5") {
-		t.Fatalf("spawn = %q %v", saida, err)
+	out, err := runTool(t, spawn, `{"prompts":["a","b","c","d","e"]}`)
+	if err != nil || !strings.Contains(out, "5 sub-agent(s) launched: t1, t2, t3, t4, t5") {
+		t.Fatalf("spawn = %q %v", out, err)
 	}
-	rodando := 0
+	running := 0
 	for _, tk := range g.Fotos() {
 		if tk.Estado == Running {
-			rodando++
+			running++
 		}
 	}
-	if rodando != 5 {
-		t.Fatalf("todas deveriam rodar juntas, rodando=%d", rodando)
+	if running != 5 {
+		t.Fatalf("all should run together, running=%d", running)
 	}
 	if g.Ativas() != 5 {
-		t.Fatalf("ativas = %d", g.Ativas())
+		t.Fatalf("active = %d", g.Ativas())
 	}
-	entregues := 0
-	prazo := time.After(5 * time.Second)
-	for entregues < 5 {
+	delivered := 0
+	deadline := time.After(5 * time.Second)
+	for delivered < 5 {
 		select {
-		case <-avisos:
-			entregues += len(g.Terminadas())
-		case <-prazo:
-			t.Fatalf("só %d entregues", entregues)
+		case <-notices:
+			delivered += len(g.Terminadas())
+		case <-deadline:
+			t.Fatalf("only %d delivered", delivered)
 		}
 	}
 	if len(g.Terminadas()) != 0 {
-		t.Fatal("Terminadas não pode repetir tarefa já entregue")
+		t.Fatal("Terminadas must not repeat an already delivered task")
 	}
 	msg := AvisoTerminadas(g.Fotos(), 0)
 	if !strings.HasPrefix(msg, "[subagents]") || !strings.Contains(msg, "## t5 completed") || !strings.Contains(msg, "ok") {
-		t.Fatalf("aviso:\n%s", msg)
+		t.Fatalf("notice:\n%s", msg)
 	}
 }
 
-// Test C: cancelar uma tarefa em execução a leva a cancelled e o status mostra.
-func TestCancelarTarefaEmExecucao(t *testing.T) {
-	_, cfg := novoServidor(t, "nunca vou responder", 2*time.Second, false)
+// Test C: cancelling a running task takes it to cancelled and status shows it.
+func TestCancelRunningTask(t *testing.T) {
+	_, cfg := newServer(t, "never going to answer", 2*time.Second, false)
 	g := Novo(Config{Nome: "task"})
 	g.Vincular(context.Background())
 	g.ConfigPai(cfg)
-	specs := append(Especificacoes(g, cfg), especStatus(g, "task"), especResult(g, "task"))
-	nomos := map[string]tools.Spec{}
+	specs := append(Especificacoes(g, cfg), statusSpec(g, "task"), resultSpec(g, "task"))
+	byName := map[string]tools.Spec{}
 	for _, s := range specs {
-		nomos[s.Name] = s
+		byName[s.Name] = s
 	}
 
-	id, err := g.Spawn(context.Background(), "demora bastante")
+	id, err := g.Spawn(context.Background(), "takes a long time")
 	if err != nil {
-		t.Fatalf("spawn falhou: %v", err)
+		t.Fatalf("spawn failed: %v", err)
 	}
 
-	// Espera a sessão filha de fato começar (o provider já registrou chamada).
-	prazo := time.Now().Add(2 * time.Second)
+	// Wait for the child session to actually start (the provider got a call).
+	deadline := time.Now().Add(2 * time.Second)
 	for {
 		cp, _ := g.snapshot(id)
 		if cp.Estado == Running {
 			break
 		}
-		if time.Now().After(prazo) {
-			t.Fatalf("tarefa não iniciou (estado %s)", cp.Estado)
+		if time.Now().After(deadline) {
+			t.Fatalf("task did not start (state %s)", cp.Estado)
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
 
 	if !g.Cancelar(id) {
-		t.Fatal("Cancelar deveria devolver true para tarefa em execução")
+		t.Fatal("Cancelar should return true for a running task")
 	}
 
-	cp := esperarEstado(t, g, id, Cancelled, Completed)
+	cp := waitState(t, g, id, Cancelled, Completed)
 	if cp.Estado != Cancelled {
-		t.Fatalf("estado deveria ser cancelled, veio %s", cp.Estado)
+		t.Fatalf("state should be cancelled, got %s", cp.Estado)
 	}
 
-	// Só depois do terminal é que não há mais o que cancelar: chamar de novo
-	// devolve false. (Antes disso o worker ainda não gravou o estado.)
+	// Only after the terminal state is there nothing left to cancel: calling
+	// again returns false. (Before that the worker has not written the state.)
 	if g.Cancelar(id) {
-		t.Fatal("Cancelar de tarefa já cancelada deveria devolver false")
+		t.Fatal("Cancelar of an already cancelled task should return false")
 	}
 
-	saida, err := executarTool(t, nomos["task_result"], fmt.Sprintf(`{"id":%q}`, id))
+	out, err := runTool(t, byName["task_result"], fmt.Sprintf(`{"id":%q}`, id))
 	if err != nil {
-		t.Fatalf("result falhou: %v", err)
+		t.Fatalf("result failed: %v", err)
 	}
-	if !strings.HasPrefix(saida, "tarefa "+id+" cancelada") {
-		t.Fatalf("result de cancelada deveria ser uma linha de estado: %q", saida)
+	if !strings.HasPrefix(out, "task "+id+" cancelled") {
+		t.Fatalf("result of a cancelled task should be a state line: %q", out)
 	}
 
-	status, _ := executarTool(t, nomos["task_status"], `{}`)
+	status, _ := runTool(t, byName["task_status"], `{}`)
 	if !strings.Contains(status, Cancelled) {
-		t.Fatalf("status deveria mostrar cancelled:\n%s", status)
+		t.Fatalf("status should show cancelled:\n%s", status)
 	}
 }
 
-// Test D: task_result com id inexistente devolve erro de UMA linha; cancelar
-// id desconhecido devolve false; e prompt vazio não cria tarefa.
-func TestResultadoIdInexistenteEErrosDeEntrada(t *testing.T) {
-	_, cfg := novoServidor(t, "ok", 0, false)
+// Test D: task_result with an unknown id returns a ONE-line error; cancelling
+// an unknown id returns false; and an empty prompt creates no task.
+func TestResultUnknownIdAndInputErrors(t *testing.T) {
+	_, cfg := newServer(t, "ok", 0, false)
 	g := Novo(Config{Nome: "task"})
 	g.Vincular(context.Background())
 	g.ConfigPai(cfg)
-	specs := append(Especificacoes(g, cfg), especStatus(g, "task"), especResult(g, "task"))
-	nomos := map[string]tools.Spec{}
+	specs := append(Especificacoes(g, cfg), statusSpec(g, "task"), resultSpec(g, "task"))
+	byName := map[string]tools.Spec{}
 	for _, s := range specs {
-		nomos[s.Name] = s
+		byName[s.Name] = s
 	}
 
-	_, err := executarTool(t, nomos["task_result"], `{"id":"t99"}`)
+	_, err := runTool(t, byName["task_result"], `{"id":"t99"}`)
 	if err == nil {
-		t.Fatal("task_result de id inexistente deveria errar")
+		t.Fatal("task_result of an unknown id should fail")
 	}
 	if strings.Contains(err.Error(), "\n") {
-		t.Fatalf("erro deveria ser de UMA linha: %q", err.Error())
+		t.Fatalf("error should be ONE line: %q", err.Error())
 	}
 	if !strings.Contains(err.Error(), "t99") {
-		t.Fatalf("erro deveria citar o id: %q", err.Error())
+		t.Fatalf("error should mention the id: %q", err.Error())
 	}
 
 	if g.Cancelar("t99") {
-		t.Fatal("Cancelar de id inexistente deveria devolver false")
+		t.Fatal("Cancelar of an unknown id should return false")
 	}
 
 	if _, err := g.Spawn(context.Background(), "   "); err == nil {
-		t.Fatal("spawn com prompt vazio deveria errar")
+		t.Fatal("spawn with an empty prompt should fail")
 	}
 
-	// spawn sem argumentos também erreia (prompt obrigatório).
-	if _, err := executarTool(t, nomos["task_spawn"], `{}`); err == nil {
-		t.Fatal("spawn sem prompt deveria errar")
+	// spawn without arguments also fails (prompt is required).
+	if _, err := runTool(t, byName["task_spawn"], `{}`); err == nil {
+		t.Fatal("spawn without a prompt should fail")
 	}
 
-	// Status sem tarefas é uma linha informativa, não um erro.
-	saida, err := executarTool(t, nomos["task_status"], `{}`)
+	// Status without tasks is an informative line, not an error.
+	out, err := runTool(t, byName["task_status"], `{}`)
 	if err != nil {
-		t.Fatalf("status sem tarefas não deveria errar: %v", err)
+		t.Fatalf("status without tasks should not fail: %v", err)
 	}
-	if !strings.Contains(saida, "nenhuma") {
-		t.Fatalf("status vazio inesperado: %q", saida)
+	if !strings.Contains(out, "no tasks") {
+		t.Fatalf("unexpected empty status: %q", out)
 	}
 }
 
-// Test E: sem config pronta a tarefa nasce failed com erro de uma linha
-// (o gerente não entra em pânico nem trava a fila).
-func TestSpawnSemConfigFalhaLimpo(t *testing.T) {
+// Test E: without a ready config the task is born failed with a one-line
+// error (the manager neither panics nor stalls the queue).
+func TestSpawnWithoutConfigFailsCleanly(t *testing.T) {
 	g := Novo(Config{})
 	g.Vincular(context.Background())
-	id, err := g.Spawn(context.Background(), "algo")
+	id, err := g.Spawn(context.Background(), "something")
 	if err != nil {
-		t.Fatalf("spawn não deveria errar por config, apenas falhar a tarefa: %v", err)
+		t.Fatalf("spawn should not fail because of config, only fail the task: %v", err)
 	}
-	cp := esperarEstado(t, g, id, Failed)
+	cp := waitState(t, g, id, Failed)
 	if cp.Erro == "" || strings.Contains(cp.Erro, "\n") {
-		t.Fatalf("erro deveria ser preenchido e de uma linha: %q", cp.Erro)
+		t.Fatalf("error should be set and one line: %q", cp.Erro)
 	}
 }
 
-// Test F: o resultado volta cortado em 16 KiB quando o sub-agente escreve muito.
-func TestResultadoCortadoNoTeto(t *testing.T) {
-	grande := strings.Repeat("x", TetoResultado+5000)
-	_, cfg := novoServidor(t, grande, 0, false)
+// Test F: the result comes back truncated at 16 KiB when the sub-agent writes a lot.
+func TestResultTruncatedAtCap(t *testing.T) {
+	big := strings.Repeat("x", TetoResultado+5000)
+	_, cfg := newServer(t, big, 0, false)
 	g := Novo(Config{})
 	g.Vincular(context.Background())
 	g.ConfigPai(cfg)
-	specs := append(Especificacoes(g, cfg), especStatus(g, "task"), especResult(g, "task"))
-	nomos := map[string]tools.Spec{}
+	specs := append(Especificacoes(g, cfg), statusSpec(g, "task"), resultSpec(g, "task"))
+	byName := map[string]tools.Spec{}
 	for _, s := range specs {
-		nomos[s.Name] = s
+		byName[s.Name] = s
 	}
-	id, err := g.Spawn(context.Background(), "escreva muito")
+	id, err := g.Spawn(context.Background(), "write a lot")
 	if err != nil {
-		t.Fatalf("spawn falhou: %v", err)
+		t.Fatalf("spawn failed: %v", err)
 	}
-	esperarEstado(t, g, id, Completed, Failed)
-	saida, err := executarTool(t, nomos["task_result"], fmt.Sprintf(`{"id":%q}`, id))
+	waitState(t, g, id, Completed, Failed)
+	out, err := runTool(t, byName["task_result"], fmt.Sprintf(`{"id":%q}`, id))
 	if err != nil {
-		t.Fatalf("result falhou: %v", err)
+		t.Fatalf("result failed: %v", err)
 	}
-	if len(saida) <= TetoResultado || !strings.Contains(saida, "cortado em") {
-		t.Fatalf("resultado deveria vir cortado no teto (veio %d bytes)", len(saida))
+	if len(out) <= TetoResultado || !strings.Contains(out, "truncated at") {
+		t.Fatalf("result should come back truncated at the cap (got %d bytes)", len(out))
 	}
 }
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
-func chaves(m map[string]tools.Spec) []string {
+func keys(m map[string]tools.Spec) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
 		out = append(out, k)
@@ -436,45 +436,45 @@ func chaves(m map[string]tools.Spec) []string {
 	return out
 }
 
-func temBuiltin(v reqVista, nome string) bool {
+func hasBuiltin(v reqView, name string) bool {
 	for _, tl := range v.Tools {
-		if tl.Function.Name == nome {
+		if tl.Function.Name == name {
 			return true
 		}
 	}
 	return false
 }
 
-// O modelo só recebe task_spawn: sem status/result ele não tem como ficar
-// consultando em loop, e os resultados chegam pelo aviso automático.
-func TestModeloSoRecebeSpawn(t *testing.T) {
+// The model only gets task_spawn: without status/result it has no way to keep
+// polling in a loop, and results arrive through the automatic notice.
+func TestModelOnlyGetsSpawn(t *testing.T) {
 	specs := Especificacoes(Novo(Config{Nome: "task"}), config.Config{})
 	if len(specs) != 1 || specs[0].Name != "task_spawn" {
-		t.Fatalf("tools do modelo = %v", specs)
+		t.Fatalf("model tools = %v", specs)
 	}
 }
 
-// Um disparo por turno: a segunda chamada no mesmo turno é recusada; num
-// turno novo (outro ctx) volta a valer.
-func TestUmSpawnPorTurno(t *testing.T) {
-	_, cfg := novoServidor(t, "ok", 0, false)
+// One launch per turn: the second call in the same turn is rejected; in a
+// new turn (another ctx) it works again.
+func TestOneSpawnPerTurn(t *testing.T) {
+	_, cfg := newServer(t, "ok", 0, false)
 	g := Novo(Config{Nome: "task"})
 	g.Vincular(context.Background())
 	spawn := Especificacoes(g, cfg)[0]
-	turno1, fim1 := context.WithCancel(context.Background())
-	defer fim1()
-	if _, err := spawn.Exec(turno1, t.TempDir(), []byte(`{"prompts":["a","b"]}`)); err != nil {
+	turn1, end1 := context.WithCancel(context.Background())
+	defer end1()
+	if _, err := spawn.Exec(turn1, t.TempDir(), []byte(`{"prompts":["a","b"]}`)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := spawn.Exec(turno1, t.TempDir(), []byte(`{"prompt":"dummy"}`)); err == nil || !strings.Contains(err.Error(), "ENCERRE O TURNO") {
-		t.Fatalf("segundo spawn no turno deveria ser recusado: %v", err)
+	if _, err := spawn.Exec(turn1, t.TempDir(), []byte(`{"prompt":"dummy"}`)); err == nil || !strings.Contains(err.Error(), "END THE TURN") {
+		t.Fatalf("second spawn in the turn should be rejected: %v", err)
 	}
-	turno2, fim2 := context.WithCancel(context.Background())
-	defer fim2()
-	if _, err := spawn.Exec(turno2, t.TempDir(), []byte(`{"prompt":"c"}`)); err != nil {
-		t.Fatalf("turno novo deveria disparar: %v", err)
+	turn2, end2 := context.WithCancel(context.Background())
+	defer end2()
+	if _, err := spawn.Exec(turn2, t.TempDir(), []byte(`{"prompt":"c"}`)); err != nil {
+		t.Fatalf("a new turn should launch: %v", err)
 	}
 	if n := len(g.Fotos()); n != 3 {
-		t.Fatalf("tarefas = %d", n)
+		t.Fatalf("tasks = %d", n)
 	}
 }

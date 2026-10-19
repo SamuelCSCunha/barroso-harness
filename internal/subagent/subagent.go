@@ -1,28 +1,29 @@
-// Package subagent implementa o runner de tarefas irmãs: sub-agentes autônomos
-// que rodam em segundo plano com TODAS as ferramentas built-in, EXCETO
-// delegação, e um registro em memória das tarefas exposto ao agente pai por
-// três tools (spawn/status/result).
+// Package subagent implements the sibling-task runner: autonomous sub-agents
+// that run in the background with ALL built-in tools EXCEPT delegation, and an
+// in-memory task registry exposed to the parent agent through three tools
+// (spawn/status/result).
 //
-// A invariante "filho não delega" vale POR CONSTRUÇÃO, não por filtro:
-// runtime.Session.Send monta a lista de ferramentas de cada turno chamando
-// tools.SpecsBuiltins() (session.go: `lista := tools.SpecsBuiltins()`), e as
-// specs deste pacote são entregues SOMENTE à lista do pai pelo wiring do
-// caller. Nenhum caminho de código injeta <prefixo>_spawn numa sessão filha —
-// o sub-agente nasce sem ela —, e o prompt da tarefa é passado ao filho TAL
-// QUAL, sem wrapper: quem quiser instrução extra escreve no prompt.
+// The "child does not delegate" invariant holds BY CONSTRUCTION, not by
+// filtering: runtime.Session.Send builds each turn's tool list by calling
+// tools.SpecsBuiltins() (session.go: `lista := tools.SpecsBuiltins()`), and
+// this package's specs are handed ONLY to the parent's list by the caller's
+// wiring. No code path injects <prefix>_spawn into a child session — the
+// sub-agent is born without it —, and the task prompt is passed to the child
+// AS IS, with no wrapper: whoever wants extra instructions writes them in the
+// prompt.
 //
-// Persistência FORA DE ESCOPO: o registro vive só em memória e as tarefas
-// morrem com o processo. O slice de sessões pluga o store depois; Tarefa já
-// carrega ID determinístico e ciclo de vida explícito, que é tudo de que um
-// registro persistido precisa.
+// Persistence is OUT OF SCOPE: the registry lives only in memory and tasks die
+// with the process. The sessions slice plugs in the store later; Tarefa
+// already carries a deterministic ID and an explicit lifecycle, which is all a
+// persisted registry needs.
 //
-// TEMPO DE VIDA: Spawn deriva o contexto da sessão filha do ctx informado
-// (context.WithCancel), então cancelar o pai cancela a tarefa. O REPL cria um
-// ctx POR TURNO e o cancela no fim da linha — passar esse ctx enterraria a
-// tarefa assim que o turno acabasse. Para tarefas que sobrevivem ao turno, o
-// wiring deve usar um ctx de vida longa (ex.: g.Vincular(context.Background())
-// uma vez, e Spawn com ctx desse nível); Cancelar continua sendo a parada por
-// tarefa. Ver Vincular.
+// LIFETIME: Spawn derives the child session's context from the given ctx
+// (context.WithCancel), so cancelling the parent cancels the task. The REPL
+// creates a ctx PER TURN and cancels it at the end of the line — passing that
+// ctx would bury the task as soon as the turn ended. For tasks that outlive
+// the turn, the wiring must use a long-lived ctx (e.g.
+// g.Vincular(context.Background()) once, and Spawn with a ctx at that level);
+// Cancelar remains the per-task stop. See Vincular.
 package subagent
 
 import (
@@ -39,15 +40,15 @@ import (
 )
 
 const (
-	// PrefixoPadrao é o prefixo das tools quando Config.Nome vem vazio:
+	// PrefixoPadrao is the tool prefix when Config.Nome is empty:
 	// task_spawn / task_status / task_result.
 	PrefixoPadrao = "task"
 
-	// TetoTranscript é o teto de linhas do rastro de tools por tarefa.
+	// TetoTranscript caps the number of tool-trace lines per task.
 	TetoTranscript = 200
 )
 
-// Estados de uma tarefa.
+// Task states.
 const (
 	Queued    = "queued"
 	Running   = "running"
@@ -56,21 +57,21 @@ const (
 	Cancelled = "cancelled"
 )
 
-// Config é a configuração do gerente. Nome é o prefixo das tools expostas ao
-// pai ("task" → task_spawn/task_status/task_result). Não há teto de
-// concorrência nem de quantidade: toda tarefa começa a rodar no Spawn.
+// Config is the manager's configuration. Nome is the prefix of the tools
+// exposed to the parent ("task" → task_spawn/task_status/task_result). There
+// is no concurrency or count cap: every task starts running on Spawn.
 type Config struct {
 	Nome string
 }
 
-// Tarefa é uma tarefa irmã: o que foi pedido, em que estado está e o que o
-// sub-agente produziu. Resultado é o texto FINAL do filho (o que <prefixo>_result
-// devolve); Erro é UMA linha de falha; o rastro de tools fica em transcript
-// (teto TetoTranscript linhas).
+// Tarefa is a sibling task: what was requested, what state it is in and what
+// the sub-agent produced. Resultado is the child's FINAL text (what
+// <prefix>_result returns); Erro is ONE failure line; the tool trace lives in
+// transcript (capped at TetoTranscript lines).
 //
-// Os campos de ciclo de vida são escritos pelo worker e lidos por qualquer um,
-// sempre sob Gerente.mu — a tarefa NÃO tem lock próprio, e é por isso que pode
-// ser copiada (snapshot, testes) sem acionar o vet.
+// The lifecycle fields are written by the worker and read by anyone, always
+// under Gerente.mu — the task has NO lock of its own, which is why it can be
+// copied (snapshot, tests) without tripping vet.
 type Tarefa struct {
 	ID          string
 	Prompt      string
@@ -82,126 +83,126 @@ type Tarefa struct {
 	Erro        string
 
 	cancel     context.CancelFunc
-	ctx        context.Context // sessão filha; nasce junto com o par (ctx, cancel)
+	ctx        context.Context // child session; born together with the (ctx, cancel) pair
 	transcript []string
 }
 
-// Transcricao devolve uma cópia do rastro de tools (observabilidade/testes).
+// Transcricao returns a copy of the tool trace (observability/tests).
 func (t *Tarefa) Transcricao() []string {
 	return append([]string(nil), t.transcript...)
 }
 
-// coletor é o runtime.Renderer de um sub-agente: não desenha nada, apenas COLHE
-// a saída para dentro da Tarefa. Resposta acumula o texto final em Resultado;
-// Tool registra uma linha no rastro; Eco/Guardrail/Tokens são no-op — quem só
-// quer o resultado não precisa de eco nem de rodapé de tokens.
+// collector is a sub-agent's runtime.Renderer: it draws nothing, it only
+// COLLECTS output into the Tarefa. Resposta accumulates the final text in
+// Resultado; Tool records a trace line; Eco/Guardrail/Tokens are no-ops —
+// whoever only wants the result needs neither echo nor a token footer.
 //
-// Ele segura o lock do gerente só para escrever na tarefa (nunca atravessa a
-// chamada de rede), e é o ÚNICO escritor de Resultado/transcript enquanto a
-// tarefa roda.
-type coletor struct {
+// It holds the manager lock only to write into the task (never across the
+// network call), and it is the ONLY writer of Resultado/transcript while the
+// task runs.
+type collector struct {
 	g *Gerente
 	t *Tarefa
 }
 
-func (c *coletor) Resposta(texto string) {
-	if texto == "" {
+func (c *collector) Resposta(text string) {
+	if text == "" {
 		return
 	}
 	c.g.mu.Lock()
 	defer c.g.mu.Unlock()
-	c.t.anexarResultado(texto)
+	c.t.appendResult(text)
 }
 
-func (c *coletor) Tool(nome string, _ time.Duration, erro bool) {
-	linha := "[tool " + nome + "]"
-	if erro {
-		linha = "[tool " + nome + " error]"
+func (c *collector) Tool(name string, _ time.Duration, isErr bool) {
+	line := "[tool " + name + "]"
+	if isErr {
+		line = "[tool " + name + " error]"
 	}
 	c.g.mu.Lock()
 	defer c.g.mu.Unlock()
-	c.t.anexarTranscript(linha)
+	c.t.appendTranscript(line)
 }
 
-func (c *coletor) Eco(string)                           {}
-func (c *coletor) Guardrail(bool)                       {}
-func (c *coletor) Tokens(int, int, time.Duration, bool) {}
+func (c *collector) Eco(string)                           {}
+func (c *collector) Guardrail(bool)                       {}
+func (c *collector) Tokens(int, int, time.Duration, bool) {}
 
-// Gerente registra e executa as tarefas irmãs. Thread-safe: o chamador cria e
-// consulta tarefas enquanto os workers rodam em segundo plano.
+// Gerente registers and runs the sibling tasks. Thread-safe: the caller
+// creates and queries tasks while the workers run in the background.
 type Gerente struct {
-	nome string
+	name string
 	cwd  string
 
 	mu      sync.Mutex
-	tarefas map[string]*Tarefa
-	ordem   []string
+	tasks   map[string]*Tarefa
+	order   []string
 	seq     int
-	rodando int
+	running int
 
-	cfgFilho config.Config   // config herdada por TODAS as tarefas (provider/modelo/chave)
-	pai      context.Context // contexto de vida longa; ver Vincular
+	childCfg config.Config   // config inherited by ALL tasks (provider/model/key)
+	parent   context.Context // long-lived context; see Vincular
 
-	// aoTerminar é chamado (fora do lock) sempre que uma tarefa termina, falha
-	// ou é cancelada: é por ele que o pai fica sabendo sem consultar status.
-	aoTerminar func()
-	avisadas   map[string]bool // tarefas já entregues por Terminadas
+	// onFinish is called (outside the lock) whenever a task completes, fails
+	// or is cancelled: that is how the parent learns without polling status.
+	onFinish  func()
+	delivered map[string]bool // tasks already delivered by Terminadas
 
-	// turnoSpawn é o ctx do turno que já disparou sub-agentes: um turno
-	// dispara uma vez só (ver especSpawn).
-	turnoSpawn context.Context
+	// spawnTurn is the ctx of the turn that already launched sub-agents: a
+	// turn launches only once (see spawnSpec).
+	spawnTurn context.Context
 }
 
-// primeiroSpawnDoTurno diz se este turno (identificado pelo ctx da tool)
-// ainda não disparou sub-agentes, e o marca como tendo disparado.
-func (g *Gerente) primeiroSpawnDoTurno(ctx context.Context) bool {
+// firstSpawnOfTurn reports whether this turn (identified by the tool's ctx)
+// has not launched sub-agents yet, and marks it as having launched.
+func (g *Gerente) firstSpawnOfTurn(ctx context.Context) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if ctx != nil && g.turnoSpawn == ctx {
+	if ctx != nil && g.spawnTurn == ctx {
 		return false
 	}
-	g.turnoSpawn = ctx
+	g.spawnTurn = ctx
 	return true
 }
 
-// Novo cria um gerente de tarefas.
+// Novo creates a task manager.
 func Novo(cfg Config) *Gerente {
-	nome := strings.TrimSpace(cfg.Nome)
-	if nome == "" {
-		nome = PrefixoPadrao
+	name := strings.TrimSpace(cfg.Nome)
+	if name == "" {
+		name = PrefixoPadrao
 	}
 	cwd, _ := os.Getwd()
 	return &Gerente{
-		nome:     nome,
-		cwd:      cwd,
-		tarefas:  map[string]*Tarefa{},
-		avisadas: map[string]bool{},
-		pai:      context.Background(),
+		name:      name,
+		cwd:       cwd,
+		tasks:     map[string]*Tarefa{},
+		delivered: map[string]bool{},
+		parent:    context.Background(),
 	}
 }
 
-// AoTerminar registra quem é avisado quando uma tarefa termina (completed,
-// failed ou cancelled). O aviso não carrega a tarefa: quem recebe chama
-// Terminadas, que entrega cada tarefa terminada uma vez só — várias tarefas
-// que terminam juntas viram um aviso só para o pai.
+// AoTerminar registers who is notified when a task finishes (completed,
+// failed or cancelled). The notification does not carry the task: the
+// receiver calls Terminadas, which delivers each finished task only once —
+// several tasks finishing together become a single notice to the parent.
 func (g *Gerente) AoTerminar(fn func()) {
 	g.mu.Lock()
-	g.aoTerminar = fn
+	g.onFinish = fn
 	g.mu.Unlock()
 }
 
-// Terminadas devolve cópias das tarefas que terminaram e ainda não foram
-// entregues ao pai, na ordem de criação, e as marca como entregues.
+// Terminadas returns copies of the tasks that finished and were not yet
+// delivered to the parent, in creation order, and marks them as delivered.
 func (g *Gerente) Terminadas() []Tarefa {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	var out []Tarefa
-	for _, id := range g.ordem {
-		t := g.tarefas[id]
-		if t == nil || g.avisadas[id] || t.TerminadaEm.IsZero() {
+	for _, id := range g.order {
+		t := g.tasks[id]
+		if t == nil || g.delivered[id] || t.TerminadaEm.IsZero() {
 			continue
 		}
-		g.avisadas[id] = true
+		g.delivered[id] = true
 		cp := *t
 		cp.transcript = append([]string(nil), t.transcript...)
 		cp.cancel, cp.ctx = nil, nil
@@ -210,22 +211,22 @@ func (g *Gerente) Terminadas() []Tarefa {
 	return out
 }
 
-// marcarEntregue: o pai já leu o resultado (task_result), então o aviso
-// automático dessa tarefa não precisa repetir o texto.
-func (g *Gerente) marcarEntregue(id string) {
+// markDelivered: the parent already read the result (task_result), so the
+// automatic notice for that task need not repeat the text.
+func (g *Gerente) markDelivered(id string) {
 	g.mu.Lock()
-	if t := g.tarefas[id]; t != nil && !t.TerminadaEm.IsZero() {
-		g.avisadas[id] = true
+	if t := g.tasks[id]; t != nil && !t.TerminadaEm.IsZero() {
+		g.delivered[id] = true
 	}
 	g.mu.Unlock()
 }
 
-// Ativas conta as tarefas que ainda não terminaram.
+// Ativas counts the tasks that have not finished yet.
 func (g *Gerente) Ativas() int {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	n := 0
-	for _, t := range g.tarefas {
+	for _, t := range g.tasks {
 		if t.TerminadaEm.IsZero() {
 			n++
 		}
@@ -233,53 +234,53 @@ func (g *Gerente) Ativas() int {
 	return n
 }
 
-// avisar chama aoTerminar fora do lock.
-func (g *Gerente) avisar() {
+// notify calls onFinish outside the lock.
+func (g *Gerente) notify() {
 	g.mu.Lock()
-	fn := g.aoTerminar
+	fn := g.onFinish
 	g.mu.Unlock()
 	if fn != nil {
 		fn()
 	}
 }
 
-// Prefixo devolve o prefixo das tools deste gerente.
-func (g *Gerente) Prefixo() string { return g.nome }
+// Prefixo returns this manager's tool prefix.
+func (g *Gerente) Prefixo() string { return g.name }
 
-// Cwd devolve o diretório em que as tarefas rodam por padrão.
+// Cwd returns the directory tasks run in by default.
 func (g *Gerente) Cwd() string { return g.cwd }
 
-// DefinirCwd troca o diretório de execução das tarefas futuras.
+// DefinirCwd changes the working directory of future tasks.
 func (g *Gerente) DefinirCwd(cwd string) { g.mu.Lock(); g.cwd = cwd; g.mu.Unlock() }
 
-// ConfigPai guarda a configuração que toda tarefa filha herda (mesmo
-// provider/modelo/chave do pai). Chamada pelo wiring — normalmente por
-// Especificacoes, que já recebe a config do pai.
+// ConfigPai stores the configuration every child task inherits (same
+// provider/model/key as the parent). Called by the wiring — normally via
+// Especificacoes, which already receives the parent config.
 func (g *Gerente) ConfigPai(cfg config.Config) {
 	g.mu.Lock()
-	g.cfgFilho = cfg
+	g.childCfg = cfg
 	g.mu.Unlock()
 }
 
-// Vincular troca o contexto-pai usado quando Spawn receber ctx nil. O REPL
-// chama uma vez com context.Background() para que as tarefas irmãs sobrevivam
-// ao turno que as criou (o ctx por turno é cancelado no fim da linha).
-func (g *Gerente) Vincular(pai context.Context) {
-	if pai == nil {
-		pai = context.Background()
+// Vincular replaces the parent context used when Spawn gets a nil ctx. The
+// REPL calls it once with context.Background() so sibling tasks outlive the
+// turn that created them (the per-turn ctx is cancelled at the end of the line).
+func (g *Gerente) Vincular(parent context.Context) {
+	if parent == nil {
+		parent = context.Background()
 	}
 	g.mu.Lock()
-	g.pai = pai
+	g.parent = parent
 	g.mu.Unlock()
 }
 
-// Tarefas devolve snapshot das tarefas na ordem de criação (o mapa interno
-// nunca escapa).
+// Tarefas returns a snapshot of the tasks in creation order (the internal map
+// never escapes).
 func (g *Gerente) Tarefas() []*Tarefa {
 	g.mu.Lock()
-	out := make([]*Tarefa, 0, len(g.ordem))
-	for _, id := range g.ordem {
-		if t := g.tarefas[id]; t != nil {
+	out := make([]*Tarefa, 0, len(g.order))
+	for _, id := range g.order {
+		if t := g.tasks[id]; t != nil {
 			out = append(out, t)
 		}
 	}
@@ -287,16 +288,16 @@ func (g *Gerente) Tarefas() []*Tarefa {
 	return out
 }
 
-// Fotos devolve CÓPIAS de todas as tarefas, na ordem de criação, lidas sob o
-// mesmo lock que os workers usam para escrever. É o que a UI deve usar: os
-// ponteiros de Tarefas são vivos, e ler Estado/Resultado deles enquanto um
-// worker escreve é corrida de dados.
+// Fotos returns COPIES of all tasks, in creation order, read under the same
+// lock the workers use to write. This is what the UI should use: the Tarefas
+// pointers are live, and reading Estado/Resultado from them while a worker
+// writes is a data race.
 func (g *Gerente) Fotos() []Tarefa {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	out := make([]Tarefa, 0, len(g.ordem))
-	for _, id := range g.ordem {
-		t := g.tarefas[id]
+	out := make([]Tarefa, 0, len(g.order))
+	for _, id := range g.order {
+		t := g.tasks[id]
 		if t == nil {
 			continue
 		}
@@ -308,12 +309,12 @@ func (g *Gerente) Fotos() []Tarefa {
 	return out
 }
 
-// snapshot devolve uma cópia consistente de uma tarefa (a leitura inteira
-// acontece sob o mesmo lock que os workers usam para escrever).
+// snapshot returns a consistent copy of a task (the whole read happens under
+// the same lock the workers use to write).
 func (g *Gerente) snapshot(id string) (Tarefa, bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	t, ok := g.tarefas[id]
+	t, ok := g.tasks[id]
 	if !ok || t == nil {
 		return Tarefa{}, false
 	}
@@ -322,177 +323,182 @@ func (g *Gerente) snapshot(id string) (Tarefa, bool) {
 	return cp, true
 }
 
-// finalizar fecha o ciclo de vida de uma tarefa (chamado sob o lock do
-// gerente). erro vazio ganha um texto padrão por estado, para que
-// <prefixo>_result nunca devolva estado sem explicação.
-func (t *Tarefa) finalizar(estado, erro string) {
-	t.Estado = estado
-	if erro == "" {
-		switch estado {
+// finish closes a task's lifecycle (called under the manager lock). An empty
+// errText gets a default text per state, so that <prefix>_result never
+// returns a state without explanation.
+func (t *Tarefa) finish(state, errText string) {
+	t.Estado = state
+	if errText == "" {
+		switch state {
 		case Cancelled:
-			erro = "cancelada"
+			errText = "cancelled"
 		}
 	}
-	if erro != "" {
-		t.Erro = erro
+	if errText != "" {
+		t.Erro = errText
 	}
 	t.TerminadaEm = time.Now()
 	t.cancel = nil
 	t.ctx = nil
 }
 
-// iniciarMarca que a tarefa saiu da fila e começou a rodar.
-func (t *Tarefa) iniciarMarca() {
+// markStarted records that the task left the queue and started running.
+func (t *Tarefa) markStarted() {
 	t.Estado = Running
 	t.Inicada = time.Now()
 }
 
-// anexarResultado soma o texto do modelo ao resultado final.
-func (t *Tarefa) anexarResultado(texto string) {
+// appendResult adds the model's text to the final result.
+func (t *Tarefa) appendResult(text string) {
 	if t.Resultado != "" {
 		t.Resultado += "\n"
 	}
-	t.Resultado += texto
+	t.Resultado += text
 }
 
-// anexarTranscript registra uma tool executada, respeitando o teto de linhas.
-func (t *Tarefa) anexarTranscript(linha string) {
+// appendTranscript records an executed tool, honouring the line cap.
+func (t *Tarefa) appendTranscript(line string) {
 	if len(t.transcript) >= TetoTranscript {
 		return
 	}
-	t.transcript = append(t.transcript, linha)
+	t.transcript = append(t.transcript, line)
 }
 
-// Spawn cria uma tarefa e a entrega ao runner. O prompt vai ao filho TAL QUAL.
-// O ctx informado (ou o vinculado, se vier nil) gera o contexto da sessão
-// filha: cancelá-lo cancela a tarefa. Não há teto: a tarefa começa a rodar
-// na hora e Spawn nunca bloqueia. Retorna o id determinístico (t1, t2, …).
-func (g *Gerente) Spawn(ctx context.Context, pedido string) (string, error) {
-	if strings.TrimSpace(pedido) == "" {
-		return "", fmt.Errorf("prompt vazio")
+// Spawn creates a task and hands it to the runner. The prompt goes to the
+// child AS IS. The given ctx (or the bound one, if nil) produces the child
+// session's context: cancelling it cancels the task. There is no cap: the task
+// starts running right away and Spawn never blocks. Returns the deterministic
+// id (t1, t2, …).
+func (g *Gerente) Spawn(ctx context.Context, request string) (string, error) {
+	if strings.TrimSpace(request) == "" {
+		return "", fmt.Errorf("empty prompt")
 	}
 	g.mu.Lock()
 	if ctx == nil {
-		ctx = g.pai
+		ctx = g.parent
 	}
-	cfg := g.cfgFilho
+	cfg := g.childCfg
 	cwd := g.cwd
 	g.seq++
-	t := &Tarefa{ID: fmt.Sprintf("t%d", g.seq), Prompt: pedido, Estado: Queued, Criada: time.Now()}
-	g.tarefas[t.ID] = t
-	g.ordem = append(g.ordem, t.ID)
+	t := &Tarefa{ID: fmt.Sprintf("t%d", g.seq), Prompt: request, Estado: Queued, Criada: time.Now()}
+	g.tasks[t.ID] = t
+	g.order = append(g.order, t.ID)
 	id := t.ID
 	g.mu.Unlock()
 
 	if ctx.Err() != nil {
-		// Pai já morto: a tarefa nasce cancelada em vez de fingir que roda.
+		// Parent already dead: the task is born cancelled instead of
+		// pretending to run.
 		g.mu.Lock()
-		t.finalizar(Cancelled, "contexto do pai já estava encerrado")
+		t.finish(Cancelled, "parent context was already done")
 		g.mu.Unlock()
-		g.avisar()
+		g.notify()
 		return id, nil
 	}
 	if !cfg.Pronta() {
 		g.mu.Lock()
-		t.finalizar(Failed, "config incompleta: "+strings.Join(cfg.Faltas(), ", "))
+		t.finish(Failed, "incomplete config: "+strings.Join(cfg.Faltas(), ", "))
 		g.mu.Unlock()
-		g.avisar()
+		g.notify()
 		return id, nil
 	}
 
-	// O par (ctx, cancel) da sessão filha nasce JÁ aqui, derivado do ctx do
-	// pai — e não dentro do worker. Criá-lo sob o MESMO lock que marca running
-	// fecha a janela em que um Cancelar veria a tarefa rodando com cancel nil
-	// e recusaria o cancelamento.
-	// Sem teto de concorrência nem fila: toda tarefa começa a rodar já.
+	// The child session's (ctx, cancel) pair is born RIGHT HERE, derived from
+	// the parent ctx — not inside the worker. Creating it under the SAME lock
+	// that marks running closes the window in which a Cancelar would see the
+	// task running with a nil cancel and refuse to cancel.
+	// No concurrency cap and no queue: every task starts running now.
 	g.mu.Lock()
-	filhoCtx, cancel := context.WithCancel(ctx)
-	t.ctx = filhoCtx
+	childCtx, cancel := context.WithCancel(ctx)
+	t.ctx = childCtx
 	t.cancel = cancel
-	cfg, cwd = g.cfgFilho, g.cwd
-	t.iniciarMarca()
-	g.rodando++
+	cfg, cwd = g.childCfg, g.cwd
+	t.markStarted()
+	g.running++
 	g.mu.Unlock()
-	go g.executar(ctx, t, cfg, cwd)
+	go g.run(ctx, t, cfg, cwd)
 	return id, nil
 }
 
-// executar roda a sessão filha: mesmas ferramentas built-in do pai, sem as de
-// delegação (ver doc do pacote), transcript zerado e saída colhida pelo
-// coletor. Ao terminar (ou falhar, ou ser cancelada) avisa o pai (AoTerminar).
+// run executes the child session: the same built-in tools as the parent,
+// without the delegation ones (see the package doc), an empty transcript and
+// output collected by the collector. When it finishes (or fails, or is
+// cancelled) it notifies the parent (AoTerminar).
 //
-// O par (ctx, cancel) da sessão filha já foi criado em Spawn; aqui ele é usado
-// e devolvido.
-func (g *Gerente) executar(ctx context.Context, t *Tarefa, cfg config.Config, cwd string) {
+// The child session's (ctx, cancel) pair was already created in Spawn; here it
+// is used and released.
+func (g *Gerente) run(ctx context.Context, t *Tarefa, cfg config.Config, cwd string) {
 	defer func() {
-		// Um panic dentro do sub-agente roda numa goroutine própria e, sem
-		// recover, derrubava o bh inteiro (sessão principal junto). Vira
-		// falha da tarefa.
+		// A panic inside the sub-agent runs in its own goroutine and, without
+		// recover, used to bring down the whole bh (main session included).
+		// It becomes a task failure.
 		if r := recover(); r != nil {
 			g.mu.Lock()
-			t.finalizar(Failed, fmt.Sprintf("panic: %v", r))
+			t.finish(Failed, fmt.Sprintf("panic: %v", r))
 			g.mu.Unlock()
 		}
 		g.mu.Lock()
-		if g.rodando > 0 {
-			g.rodando--
+		if g.running > 0 {
+			g.running--
 		}
 		g.mu.Unlock()
-		g.avisar()
+		g.notify()
 	}()
 
 	g.mu.Lock()
-	filhoCtx, cancel := t.ctx, t.cancel
+	childCtx, cancel := t.ctx, t.cancel
 	g.mu.Unlock()
-	if filhoCtx == nil {
-		// Sem sessão filha (estado inesperado): falha em vez de entrar em
-		// pânico; o defer acima avisa o pai.
+	if childCtx == nil {
+		// No child session (unexpected state): fail instead of panicking;
+		// the defer above notifies the parent.
 		g.mu.Lock()
-		t.finalizar(Failed, "sessão filha não inicializada")
+		t.finish(Failed, "child session not initialized")
 		g.mu.Unlock()
 		return
 	}
 	defer cancel()
 
-	// TRANSCRIPT PRÓPRIO, não há herança: NewSession já nasce com history
-	// vazia; ClearHistory é só o reforço explícito da invariante (o sub-agente
-	// não enxerga o histórico do pai, nem o pai o do filho).
+	// OWN TRANSCRIPT, no inheritance: NewSession already starts with an empty
+	// history; ClearHistory is just an explicit reinforcement of the invariant
+	// (the sub-agent does not see the parent's history, nor the parent the
+	// child's).
 	sess := runtime.NewSession(cfg)
 	sess.ClearHistory()
 
-	// Sessão filha = tools.SpecsBuiltins() SOMENTE (session.go monta a lista
-	// internamente). Nenhuma spec de delegação chega aqui: ver doc do pacote.
-	err := sess.Send(filhoCtx, &coletor{g: g, t: t}, cwd, t.Prompt)
+	// Child session = tools.SpecsBuiltins() ONLY (session.go builds the list
+	// internally). No delegation spec reaches here: see the package doc.
+	err := sess.Send(childCtx, &collector{g: g, t: t}, cwd, t.Prompt)
 
 	g.mu.Lock()
 	switch {
 	case err == nil:
-		t.finalizar(Completed, "")
-	case filhoCtx.Err() != nil || ctx.Err() != nil || errors.Is(err, context.Canceled):
-		t.finalizar(Cancelled, "")
+		t.finish(Completed, "")
+	case childCtx.Err() != nil || ctx.Err() != nil || errors.Is(err, context.Canceled):
+		t.finish(Cancelled, "")
 	default:
-		t.finalizar(Failed, umaLinha(err))
+		t.finish(Failed, oneLine(err))
 	}
 	g.mu.Unlock()
 }
 
-// Cancelar encerra uma tarefa. Queued vira cancelled na hora; running tem o cancel() da sessão chamado e o
-// worker a marca cancelled. Devolve true só quando havia o que cancelar.
+// Cancelar stops a task. Queued becomes cancelled immediately; running gets
+// its session's cancel() called and the worker marks it cancelled. Returns
+// true only when there was something to cancel.
 func (g *Gerente) Cancelar(id string) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	t := g.tarefas[id]
+	t := g.tasks[id]
 	if t == nil {
 		return false
 	}
 	switch t.Estado {
 	case Queued:
-		t.finalizar(Cancelled, "cancelada antes de iniciar")
-		go g.avisar()
+		t.finish(Cancelled, "cancelled before starting")
+		go g.notify()
 		return true
 	case Running:
 		if t.cancel != nil {
-			t.cancel() // o worker escreve cancelled ao desenrolar o cancel
+			t.cancel() // the worker writes cancelled while unwinding the cancel
 			return true
 		}
 		return false
@@ -501,9 +507,9 @@ func (g *Gerente) Cancelar(id string) bool {
 	}
 }
 
-// umaLinha colapsa um erro em UMA linha curta (o campo Erro é de leitura rápida
-// e vai direto para a tool <prefixo>_result).
-func umaLinha(err error) string {
+// oneLine collapses an error into ONE short line (the Erro field is meant for
+// quick reading and goes straight to the <prefix>_result tool).
+func oneLine(err error) string {
 	if err == nil {
 		return ""
 	}

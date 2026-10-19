@@ -1,5 +1,5 @@
-// Specs das tools built-in do slice 0. Modo YOLO: sem gate de permissão;
-// limites técnicos (timeout, teto de saída) são operacionais, não autorização.
+// Specs of the slice 0 built-in tools. YOLO mode: no permission gate;
+// technical limits (timeout, output cap) are operational, not authorization.
 package tools
 
 import (
@@ -15,12 +15,12 @@ import (
 )
 
 const (
-	tetoSaida     = 64 << 10                               // teto de saída por tool call
-	timeoutPadrao = 120 * time.Second                      // terminal_run
-	caudaPodada   = "(conteúdo compactado pelo guardrail)" // reservado p/ runtime
+	outputCap      = 64 << 10                               // output cap per tool call
+	defaultTimeout = 120 * time.Second                      // terminal_run
+	prunedTail     = "(content compacted by the guardrail)" // reserved for runtime
 )
 
-// SpecsBuiltins devolve o catálogo completo. Ordem estável entre placas.
+// SpecsBuiltins returns the full catalog. Order is stable across platforms.
 func SpecsBuiltins() []Spec {
 	return []Spec{
 		specTerminalRun(),
@@ -35,18 +35,18 @@ func SpecsBuiltins() []Spec {
 
 // ── helpers ──────────────────────────────────────────────────────────────
 
-func texto(m map[string]any, k string) string { s, _ := m[k].(string); return s }
+func str(m map[string]any, k string) string { s, _ := m[k].(string); return s }
 
-func inteiro(m map[string]any, k string, fb int) int {
+func intOr(m map[string]any, k string, fb int) int {
 	if f, ok := m[k].(float64); ok {
 		return int(f)
 	}
 	return fb
 }
 
-// caminho resolve relativo ao cwd; em YOLO não há sandbox — privilégios do
-// processo local valem.
-func caminho(cwd, p string) string {
+// resolvePath resolves relative to cwd; in YOLO there is no sandbox — the
+// local process privileges apply.
+func resolvePath(cwd, p string) string {
 	if p == "" {
 		return cwd
 	}
@@ -56,12 +56,12 @@ func caminho(cwd, p string) string {
 	return filepath.Join(cwd, filepath.Clean(p))
 }
 
-// cortar aplica o teto com marcador no fim.
-func cortar(s string, teto int) string {
-	if len(s) <= teto {
+// truncate applies the cap with a marker at the end.
+func truncate(s string, limit int) string {
+	if len(s) <= limit {
 		return s
 	}
-	return s[:teto] + fmt.Sprintf("\n\n[saída cortada em %d bytes; leia com start/limit menores para o resto]", teto)
+	return s[:limit] + fmt.Sprintf("\n\n[output truncated at %d bytes; read with smaller start/limit for the rest]", limit)
 }
 
 // ── terminal_run ─────────────────────────────────────────────────────────
@@ -69,14 +69,14 @@ func cortar(s string, teto int) string {
 func specTerminalRun() Spec {
 	return Spec{
 		Name: "terminal_run",
-		Description: "Executa um comando no terminal da máquina local (modo YOLO, sem pedido de aprovação). " +
-			"Devolve stdout+stderr mesclados com exit_code. Timeout padrão 120 s (timeout_secs sobrescreve).",
+		Description: "Runs a command in the local machine's terminal (YOLO mode, no approval prompt). " +
+			"Returns merged stdout+stderr with exit_code. Default timeout 120 s (timeout_secs overrides).",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"command":      map[string]any{"type": "string", "description": "comando a executar"},
-				"workdir":      map[string]any{"type": "string", "description": "diretório de execução (padrão: cwd do agente)"},
-				"timeout_secs": map[string]any{"type": "integer", "description": "timeout em segundos; padrão 120"},
+				"command":      map[string]any{"type": "string", "description": "command to run"},
+				"workdir":      map[string]any{"type": "string", "description": "working directory (default: the agent's cwd)"},
+				"timeout_secs": map[string]any{"type": "integer", "description": "timeout in seconds; default 120"},
 			},
 			"required": []string{"command"},
 		},
@@ -87,17 +87,17 @@ func specTerminalRun() Spec {
 				Timeout int    `json:"timeout_secs"`
 			}
 			if err := json.Unmarshal(raw, &c); err != nil {
-				return "", fmt.Errorf("entrada inválida: %w", err)
+				return "", fmt.Errorf("invalid input: %w", err)
 			}
 			c.Command = strings.TrimSpace(c.Command)
 			if c.Command == "" {
-				return "", fmt.Errorf("command vazio")
+				return "", fmt.Errorf("empty command")
 			}
 			dir := cwd
 			if c.Workdir != "" {
-				dir = caminho(cwd, c.Workdir)
+				dir = resolvePath(cwd, c.Workdir)
 			}
-			timeout := timeoutPadrao
+			timeout := defaultTimeout
 			if c.Timeout > 0 {
 				timeout = time.Duration(c.Timeout) * time.Second
 			}
@@ -118,9 +118,9 @@ func specTerminalRun() Spec {
 			}
 			res := fmt.Sprintf("exit_code: %d\nstdout+stderr:\n%s", code, string(out))
 			if exeErr != nil && len(out) == 0 {
-				res = fmt.Sprintf("exit_code: %d\ninício falhou: %v", code, exeErr)
+				res = fmt.Sprintf("exit_code: %d\nstart failed: %v", code, exeErr)
 			}
-			return cortar(res, tetoSaida), nil
+			return truncate(res, outputCap), nil
 		},
 	}
 }
@@ -130,13 +130,13 @@ func specTerminalRun() Spec {
 func specFileRead() Spec {
 	return Spec{
 		Name:        "file_read",
-		Description: "Lê um arquivo com números de linha. Em arquivos grandes, leia janelas: start (linha inicial, 1-based) + limit; o retorno diz o intervalo entregue e o total.",
+		Description: "Reads a file with line numbers. For large files, read windows: start (first line, 1-based) + limit; the result states the delivered range and the total.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"path":  map[string]any{"type": "string"},
-				"start": map[string]any{"type": "integer", "description": "linha inicial (1-based)"},
-				"limit": map[string]any{"type": "integer", "description": "máximo de linhas nessa leitura"},
+				"start": map[string]any{"type": "integer", "description": "first line (1-based)"},
+				"limit": map[string]any{"type": "integer", "description": "maximum number of lines in this read"},
 			},
 			"required": []string{"path"},
 		},
@@ -147,38 +147,38 @@ func specFileRead() Spec {
 				Limit int    `json:"limit"`
 			}
 			if err := json.Unmarshal(raw, &c); err != nil {
-				return "", fmt.Errorf("entrada inválida: %w", err)
+				return "", fmt.Errorf("invalid input: %w", err)
 			}
 			if c.Path == "" {
-				return "", fmt.Errorf("path obrigatório")
+				return "", fmt.Errorf("path is required")
 			}
-			b, err := os.ReadFile(caminho(cwd, c.Path))
+			b, err := os.ReadFile(resolvePath(cwd, c.Path))
 			if err != nil {
 				return "", err
 			}
-			linhas := strings.Split(strings.TrimSuffix(string(b), "\n"), "\n")
-			total := len(linhas)
-			ini := 0
+			lines := strings.Split(strings.TrimSuffix(string(b), "\n"), "\n")
+			total := len(lines)
+			first := 0
 			if c.Start > 1 {
-				ini = c.Start - 1
+				first = c.Start - 1
 			}
-			fim := total
-			if c.Limit > 0 && ini+c.Limit < fim {
-				fim = ini + c.Limit
+			end := total
+			if c.Limit > 0 && first+c.Limit < end {
+				end = first + c.Limit
 			}
-			if ini >= total {
-				return fmt.Sprintf("arquivo tem %d linhas (start=%d)", total, c.Start), nil
+			if first >= total {
+				return fmt.Sprintf("file has %d lines (start=%d)", total, c.Start), nil
 			}
 			var sb strings.Builder
-			fmt.Fprintf(&sb, "linhas %d–%d de %d\n", ini+1, fim, total)
-			for i := ini; i < fim; i++ {
-				linha := linhas[i]
-				if len(linha) > 512 {
-					linha = linha[:512] + "…"
+			fmt.Fprintf(&sb, "lines %d–%d of %d\n", first+1, end, total)
+			for i := first; i < end; i++ {
+				line := lines[i]
+				if len(line) > 512 {
+					line = line[:512] + "…"
 				}
-				fmt.Fprintf(&sb, "%d: %s\n", i+1, linha)
+				fmt.Fprintf(&sb, "%d: %s\n", i+1, line)
 			}
-			return cortar(sb.String(), tetoSaida), nil
+			return truncate(sb.String(), outputCap), nil
 		},
 	}
 }
@@ -188,7 +188,7 @@ func specFileRead() Spec {
 func specFileWrite() Spec {
 	return Spec{
 		Name:        "file_write",
-		Description: "Escreve (sobrescreve) um arquivo. Cria os diretórios pais que faltarem.",
+		Description: "Writes (overwrites) a file. Creates any missing parent directories.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -203,12 +203,12 @@ func specFileWrite() Spec {
 				Content string `json:"content"`
 			}
 			if err := json.Unmarshal(raw, &c); err != nil {
-				return "", fmt.Errorf("entrada inválida: %w", err)
+				return "", fmt.Errorf("invalid input: %w", err)
 			}
 			if c.Path == "" {
-				return "", fmt.Errorf("path obrigatório")
+				return "", fmt.Errorf("path is required")
 			}
-			p := caminho(cwd, c.Path)
+			p := resolvePath(cwd, c.Path)
 			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 				return "", err
 			}
@@ -223,7 +223,7 @@ func specFileWrite() Spec {
 func specFileAppend() Spec {
 	return Spec{
 		Name:        "file_append",
-		Description: "Anexa conteúdo ao fim de um arquivo (cria se não existir).",
+		Description: "Appends content to the end of a file (creates it if missing).",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -238,12 +238,12 @@ func specFileAppend() Spec {
 				Content string `json:"content"`
 			}
 			if err := json.Unmarshal(raw, &c); err != nil {
-				return "", fmt.Errorf("entrada inválida: %w", err)
+				return "", fmt.Errorf("invalid input: %w", err)
 			}
 			if c.Path == "" {
-				return "", fmt.Errorf("path obrigatório")
+				return "", fmt.Errorf("path is required")
 			}
-			p := caminho(cwd, c.Path)
+			p := resolvePath(cwd, c.Path)
 			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 				return "", err
 			}
@@ -255,7 +255,7 @@ func specFileAppend() Spec {
 			if _, err := f.WriteString(c.Content); err != nil {
 				return "", err
 			}
-			return fmt.Sprintf("ok: anexado em %s", c.Path), nil
+			return fmt.Sprintf("ok: appended to %s", c.Path), nil
 		},
 	}
 }
@@ -265,7 +265,7 @@ func specFileAppend() Spec {
 func specFileCopy() Spec {
 	return Spec{
 		Name:        "file_copy",
-		Description: "Copia um arquivo para outro caminho (sobrescreve o destino). Usa os privilégios do sistema (cp/copy) — em YOLO não há sandbox.",
+		Description: "Copies a file to another path (overwrites the destination). Uses the system's privileges (cp/copy) — in YOLO there is no sandbox.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -280,21 +280,21 @@ func specFileCopy() Spec {
 				To   string `json:"to"`
 			}
 			if err := json.Unmarshal(raw, &c); err != nil {
-				return "", fmt.Errorf("entrada inválida: %w", err)
+				return "", fmt.Errorf("invalid input: %w", err)
 			}
 			if c.From == "" || c.To == "" {
-				return "", fmt.Errorf("from e to obrigatórios")
+				return "", fmt.Errorf("from and to are required")
 			}
 			var cmd *exec.Cmd
 			if runtime.GOOS == "windows" {
-				cmd = exec.Command("cmd", "/C", "copy", "/Y", caminho(cwd, c.From), caminho(cwd, c.To))
+				cmd = exec.Command("cmd", "/C", "copy", "/Y", resolvePath(cwd, c.From), resolvePath(cwd, c.To))
 			} else {
-				cmd = exec.Command("cp", caminho(cwd, c.From), caminho(cwd, c.To))
+				cmd = exec.Command("cp", resolvePath(cwd, c.From), resolvePath(cwd, c.To))
 			}
 			cmd.Dir = cwd
 			out, err := cmd.CombinedOutput()
 			if err != nil {
-				return fmt.Sprintf("falhou: %v\n%s", err, string(out)), nil
+				return fmt.Sprintf("failed: %v\n%s", err, string(out)), nil
 			}
 			return fmt.Sprintf("ok: %s → %s", c.From, c.To), nil
 		},
@@ -306,12 +306,12 @@ func specFileCopy() Spec {
 func specListDir() Spec {
 	return Spec{
 		Name:        "list_dir",
-		Description: "Lista um diretório (padrão: cwd), recursivo até depth (padrão 1, max 3). Diretório começa com '/'; arquivo mostra o tamanho.",
+		Description: "Lists a directory (default: cwd), recursively down to depth (default 1, max 3). Directories end with '/'; files show their size.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"path":  map[string]any{"type": "string"},
-				"depth": map[string]any{"type": "integer", "description": "profundidade; padrão 1, máximo 3"},
+				"depth": map[string]any{"type": "integer", "description": "depth; default 1, maximum 3"},
 			},
 		},
 		Exec: func(_ context.Context, cwd string, raw json.RawMessage) (string, error) {
@@ -320,9 +320,9 @@ func specListDir() Spec {
 				Depth int    `json:"depth"`
 			}
 			_ = json.Unmarshal(raw, &c)
-			raiz := cwd
+			root := cwd
 			if c.Path != "" {
-				raiz = caminho(cwd, c.Path)
+				root = resolvePath(cwd, c.Path)
 			}
 			if c.Depth <= 0 {
 				c.Depth = 1
@@ -331,60 +331,60 @@ func specListDir() Spec {
 				c.Depth = 3
 			}
 			var sb strings.Builder
-			var andante func(p string, lvl int)
-			andante = func(p string, lvl int) {
+			var walk func(p string, lvl int)
+			walk = func(p string, lvl int) {
 				ents, err := os.ReadDir(p)
 				if err != nil {
-					fmt.Fprintf(&sb, "(erro lendo %s: %v)\n", p, err)
+					fmt.Fprintf(&sb, "(error reading %s: %v)\n", p, err)
 					return
 				}
 				for _, e := range ents {
-					nome := e.Name()
-					if strings.HasPrefix(nome, ".") {
+					name := e.Name()
+					if strings.HasPrefix(name, ".") {
 						continue
 					}
-					tudo := filepath.Join(p, nome)
+					full := filepath.Join(p, name)
 					if e.IsDir() {
-						fmt.Fprintf(&sb, "%s/\n", tudo)
+						fmt.Fprintf(&sb, "%s/\n", full)
 						if lvl < c.Depth {
-							andante(tudo, lvl+1)
+							walk(full, lvl+1)
 						}
 						continue
 					}
 					info, e2 := e.Info()
 					if e2 != nil {
-						fmt.Fprintf(&sb, "%s (erro: %v)\n", tudo, e2)
+						fmt.Fprintf(&sb, "%s (error: %v)\n", full, e2)
 						continue
 					}
-					fmt.Fprintf(&sb, "%s (%d bytes)\n", tudo, info.Size())
+					fmt.Fprintf(&sb, "%s (%d bytes)\n", full, info.Size())
 				}
 			}
-			andante(raiz, 1)
-			return cortar(sb.String(), tetoSaida), nil
+			walk(root, 1)
+			return truncate(sb.String(), outputCap), nil
 		},
 	}
 }
 
-// ── ctx_read (arquivo vivo de contexto do próprio agente) ────────────────
+// ── ctx_read (the agent's own live context file) ─────────────────────────
 
 func specCtxRead() Spec {
 	return Spec{
 		Name:        "ctx_read",
-		Description: "Lê o arquivo vivo de contexto da sessão (o que o agente está fazendo, decisões e pendências). No slice 0, o contexto é o BARROSO.md + o próprio transcript; esta devolve um contador do estado.",
+		Description: "Reads the session's live context file (what the agent is doing, decisions and pending items). In slice 0, the context is BARROSO.md + the transcript itself; this returns a snapshot of the state.",
 		Schema:      map[string]any{"type": "object", "properties": map[string]any{}},
 		Exec: func(_ context.Context, cwd string, _ json.RawMessage) (string, error) {
-			baroo, _ := contextoVivo(cwd)
-			return cortar(strings.TrimSpace("contexto vivo atual:\n"+baroo), tetoSaida), nil
+			content, _ := liveContext(cwd)
+			return truncate(strings.TrimSpace("current live context:\n"+content), outputCap), nil
 		},
 	}
 }
 
-// contextoVivo devolve um template informativo; versão editável (ctx_write/
-// ctx_append) entra com sessão persistente no slice 1.
-func contextoVivo(cwd string) (string, error) {
+// liveContext returns an informative template; the editable version
+// (ctx_write/ctx_append) arrives with persistent sessions in slice 1.
+func liveContext(cwd string) (string, error) {
 	b, err := os.ReadFile(filepath.Join(cwd, "BARROSO.md"))
 	if err != nil {
-		return "(sem BARROSO.md no projeto)", nil
+		return "(no BARROSO.md in the project)", nil
 	}
 	return string(b), nil
 }
