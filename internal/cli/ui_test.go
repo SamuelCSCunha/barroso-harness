@@ -12,85 +12,85 @@ import (
 	"github.com/ruanbarroso/barroso-harness/internal/dealer"
 )
 
-// TestTuiTurnoGlifosEPaleta: com cores ligadas, a facciata TUI do turno emite
-// glifo e cor de uma vez; sem cores, rendererTurno devolve o texto cru que o
-// runtime_test crava via Turno.
-func TestTuiTurnoGlifosEPaleta(t *testing.T) {
-	antiga := coresLigadas
-	coresLigadas = true
-	defer func() { coresLigadas = antiga }()
+// TestBasicTUITurnGlyphsAndPalette: with colors on, the TUI turn facade emits
+// glyph and color together; without colors, turnRenderer returns the plain
+// text runtime_test pins via Turno.
+func TestBasicTUITurnGlyphsAndPalette(t *testing.T) {
+	prevColors := colorsOn
+	colorsOn = true
+	defer func() { colorsOn = prevColors }()
 
 	var sb strings.Builder
-	tui := tuiTurno{out: &sb}
+	tui := basicTUITurn{out: &sb}
 	tui.Tool("terminal_run", 120*time.Millisecond, false)
 	tui.Eco("exit_code: 0")
 	tui.Guardrail(false)
 	tui.Tokens(1200, 45, 890*time.Millisecond, true)
-	saida := sb.String()
+	output := sb.String()
 
-	for _, quer := range []string{
-		glifoTool, "terminal_run", "120ms", corCorMag,
-		glifoGuard, "tokens ↑1200 ↓45", "890ms", "compacted",
+	for _, want := range []string{
+		glyphTool, "terminal_run", "120ms", paletteMagenta,
+		glyphGuard, "tokens ↑1200 ↓45", "890ms", "compacted",
 	} {
-		if !strings.Contains(saida, quer) {
-			t.Fatalf("TUI sem %q na saída:\n%q", quer, saida)
+		if !strings.Contains(output, want) {
+			t.Fatalf("TUI output missing %q:\n%q", want, output)
 		}
 	}
 }
 
-func TestPuroSemEscapes(t *testing.T) {
-	antiga := coresLigadas
-	coresLigadas = false
-	defer func() { coresLigadas = antiga }()
+func TestPlainHasNoEscapes(t *testing.T) {
+	prevColors := colorsOn
+	colorsOn = false
+	defer func() { colorsOn = prevColors }()
 
 	var sb strings.Builder
-	rendererTurno(&sb).Tool("terminal_run", 120*time.Millisecond, false)
+	turnRenderer(&sb).Tool("terminal_run", 120*time.Millisecond, false)
 	if !strings.Contains(sb.String(), "[tool terminal_run ok in 120ms]") {
-		t.Fatalf("modo puro perdeu o literal do runtime_test:\n%q", sb.String())
+		t.Fatalf("plain mode lost the runtime_test literal:\n%q", sb.String())
 	}
 	if strings.Contains(sb.String(), "\033") {
-		t.Fatalf("escape ANSI à revelia no modo puro:\n%q", sb.String())
+		t.Fatalf("stray ANSI escape in plain mode:\n%q", sb.String())
 	}
 }
 
-// TestListaModelosCompleta: o catálogo inteiro sai numa lista só, sem
-// paginação, e a coluna da janela fica alinhada também na linha do modelo
-// atual (o negrito não pode entrar na conta do preenchimento).
-func TestListaModelosCompleta(t *testing.T) {
-	antiga := coresLigadas
-	defer func() { coresLigadas = antiga }()
+// TestListModelsComplete: the whole catalog comes out in one list, with no
+// paging, and the window column stays aligned on the current model's line
+// too (bold must not count towards the padding).
+func TestListModelsComplete(t *testing.T) {
+	prevColors := colorsOn
+	defer func() { colorsOn = prevColors }()
 
 	ls := make([]dealer.CatalogModel, 0, 120)
 	for i := 0; i < 120; i++ {
 		ls = append(ls, dealer.CatalogModel{ID: fmt.Sprintf("m-%03d", i), Input: []string{"text"}, ContextLength: 250000})
 	}
-	ls = append(ls, dealer.CatalogModel{ID: "z-modelo-longo", ContextLength: 1048000})
+	ls = append(ls, dealer.CatalogModel{ID: "z-long-model", ContextLength: 1048000})
 
-	coresLigadas = false
+	colorsOn = false
 	var sb strings.Builder
-	listarModelos(&sb, ls, "m-050")
-	saida := sb.String()
-	for _, quer := range []string{"121 available", "  1 m-000", " 51 m-050", "120 m-119", "121 z-modelo-longo"} {
-		if !strings.Contains(saida, quer) {
-			t.Fatalf("lista sem %q:\n%s", quer, saida)
+	listModels(&sb, ls, "m-050")
+	output := sb.String()
+	for _, want := range []string{"121 available", "  1 m-000", " 51 m-050", "120 m-119", "121 z-long-model"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("list missing %q:\n%s", want, output)
 		}
 	}
-	if strings.Contains(saida, "página") || strings.Contains(saida, "pg<") {
-		t.Fatalf("não deveria haver paginação:\n%s", saida)
+	if strings.Contains(output, "page") || strings.Contains(output, "pg<") {
+		t.Fatalf("there should be no paging:\n%s", output)
 	}
 
-	// Com cores, a coluna da janela começa na mesma posição visível na linha
-	// do modelo atual e numa linha comum.
-	coresLigadas = true
+	// With colors, the window column starts at the same visible position
+	// on the current model's line and on a regular line.
+	colorsOn = true
 	sb.Reset()
-	listarModelos(&sb, ls, "m-050")
-	sem := regexp.MustCompile("" + `\[[0-9;]*m`)
+	listModels(&sb, ls, "m-050")
+	ansiRe := regexp.MustCompile("" + `\[[0-9;]*m`)
 	col := func(id string) int {
 		for _, l := range strings.Split(sb.String(), "\n") {
-			l = sem.ReplaceAllString(l, "")
+			l = ansiRe.ReplaceAllString(l, "")
 			if strings.Contains(l, id+" ") {
-				// Coluna em CARACTERES, não bytes: o ▸ do modelo atual tem 3
-				// bytes e ocupa uma coluna, igual a um espaço.
+				// Column in CHARACTERS, not bytes: the current model's ▸ is 3
+				// bytes and takes one column, like a space.
 				if k := strings.Index(l, "250k"); k >= 0 {
 					return utf8.RuneCountInString(l[:k])
 				}
@@ -100,28 +100,28 @@ func TestListaModelosCompleta(t *testing.T) {
 		return -1
 	}
 	if a, b := col("m-050"), col("m-051"); a < 0 || a != b {
-		t.Fatalf("coluna desalinhada no modelo atual: %d vs %d", a, b)
+		t.Fatalf("column misaligned on the current model: %d vs %d", a, b)
 	}
 }
 
-// TestCoresDesligadasSemEscape: coresLigadas=false tira todo escape e o
-// erroFmt mantém uma linha única (o detalhe de protocolo é descartado).
-func TestCoresDesligadasSemEscape(t *testing.T) {
-	antiga := coresLigadas
-	defer func() { coresLigadas = antiga }()
-	coresLigadas = false
-	for _, f := range []func(string) string{verdof, vermelhof, amarelof, cianof, dimf, magof, roxof, negritof} {
+// TestColorsOffNoEscape: colorsOn=false strips every escape and errorFmt
+// keeps a single line (the protocol detail is dropped).
+func TestColorsOffNoEscape(t *testing.T) {
+	prevColors := colorsOn
+	defer func() { colorsOn = prevColors }()
+	colorsOn = false
+	for _, f := range []func(string) string{greenf, redf, yellowf, cyanf, dimf, magentaf, purplef, boldf} {
 		if strings.ContainsRune(f("x"), 0x1b) {
-			t.Fatal("cor emita escape com coresLigadas=false")
+			t.Fatal("color emitted an escape with colorsOn=false")
 		}
 	}
 	var sb strings.Builder
-	erroFmt(&sb, "erro salvando", errors.New("disco cheio\ndetalhe de protocolo"))
-	saida := sb.String()
-	if !strings.Contains(saida, "disco cheio") || strings.ContainsRune(saida, 0x1b) {
-		t.Fatalf("erroFmt com escape ou sem a mensagem: %q", saida)
+	errorFmt(&sb, "error saving", errors.New("disk full\nprotocol detail"))
+	output := sb.String()
+	if !strings.Contains(output, "disk full") || strings.ContainsRune(output, 0x1b) {
+		t.Fatalf("errorFmt has an escape or lacks the message: %q", output)
 	}
-	if strings.Contains(saida, "detalhe de protocolo") {
-		t.Fatalf("erroFmt devia descartar as linhas seguintes: %q", saida)
+	if strings.Contains(output, "protocol detail") {
+		t.Fatalf("errorFmt should drop the following lines: %q", output)
 	}
 }

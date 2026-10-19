@@ -1,8 +1,8 @@
-// /tasks: o usuário enxerga e controla os sub-agentes que o modelo disparou.
+// /tasks: the user sees and controls the sub-agents the model spawned.
 //
-// task_spawn / task_status / task_result são ferramentas do MODELO. Sem este
-// comando, quem tinha tarefas em background só sabia delas perguntando ao
-// próprio modelo — e não tinha como cancelar uma que travou.
+// task_spawn / task_status / task_result are MODEL tools. Without this
+// command, background tasks were only visible by asking the model itself —
+// and there was no way to cancel a stuck one.
 package cli
 
 import (
@@ -15,109 +15,109 @@ import (
 	"github.com/ruanbarroso/barroso-harness/internal/subagent"
 )
 
-// cmdTasks trata `/tasks`, `/tasks <id>` e `/tasks cancel <id>`. g nil quer
-// dizer caminho sem wiring (o Montar padrão sempre cria o gerente) — resta
-// explicar em vez de falhar em silêncio.
+// cmdTasks handles `/tasks`, `/tasks <id>` and `/tasks cancel <id>`. A nil g
+// means a path without wiring (the default Montar always creates the
+// manager) — so explain instead of failing silently.
 func cmdTasks(out io.Writer, g *subagent.Gerente, arg string) {
 	if g == nil {
-		avisoFmt(out, "sub-agentes indisponíveis nesta sessão: o catálogo de tools não passou pelo wiring padrão")
+		warnFmt(out, "sub-agents unavailable in this session: the tool catalog did not go through the default wiring")
 		return
 	}
-	campos := strings.Fields(arg)
+	fields := strings.Fields(arg)
 	switch {
-	case len(campos) == 0:
-		listarTarefas(out, g.Fotos())
-	case campos[0] == "cancel" || campos[0] == "cancelar":
-		if len(campos) < 2 {
-			avisoFmt(out, "uso: /tasks cancel <id>")
+	case len(fields) == 0:
+		listTasks(out, g.Fotos())
+	case fields[0] == "cancel" || fields[0] == "cancelar": // "cancelar": legacy alias
+		if len(fields) < 2 {
+			warnFmt(out, "usage: /tasks cancel <id>")
 			return
 		}
-		if g.Cancelar(campos[1]) {
-			okFmt(out, "tarefa "+campos[1]+" cancelada")
+		if g.Cancelar(fields[1]) {
+			okFmt(out, "task "+fields[1]+" canceled")
 		} else {
-			avisoFmt(out, "nada a cancelar em "+campos[1]+" (inexistente ou já terminada)")
+			warnFmt(out, "nothing to cancel in "+fields[1]+" (unknown or already finished)")
 		}
 	default:
-		detalharTarefa(out, g.Fotos(), campos[0])
+		showTask(out, g.Fotos(), fields[0])
 	}
 }
 
-// listarTarefas imprime uma linha por tarefa e o resumo por estado.
-func listarTarefas(out io.Writer, ts []subagent.Tarefa) {
+// listTasks prints one line per task and a per-state summary.
+func listTasks(out io.Writer, ts []subagent.Tarefa) {
 	if len(ts) == 0 {
-		fmt.Fprintln(out, dimf("nenhuma tarefa nesta sessão"))
+		fmt.Fprintln(out, dimf("no tasks in this session"))
 		return
 	}
-	cont := map[string]int{}
+	counts := map[string]int{}
 	for i := range ts {
 		t := &ts[i]
-		cont[t.Estado]++
+		counts[t.Estado]++
 		fmt.Fprintf(out, "%s %s %s %s\n",
-			cianof(fmt.Sprintf("%-4s", t.ID)),
-			corEstado(t.Estado),
-			dimf(fmt.Sprintf("%6s", duracaoTarefa(t))),
-			resumoLinha(t.Prompt, 70),
+			cyanf(fmt.Sprintf("%-4s", t.ID)),
+			stateColor(t.Estado),
+			dimf(fmt.Sprintf("%6s", taskDuration(t))),
+			oneLine(t.Prompt, 70),
 		)
 	}
-	partes := []string{}
+	parts := []string{}
 	for _, e := range []string{subagent.Running, subagent.Queued, subagent.Completed, subagent.Failed, subagent.Cancelled} {
-		if cont[e] > 0 {
-			partes = append(partes, fmt.Sprintf("%d %s", cont[e], e))
+		if counts[e] > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", counts[e], e))
 		}
 	}
-	fmt.Fprintln(out, dimf(strings.Join(partes, " · ")+" — /tasks <id> detalha, /tasks cancel <id> cancela"))
+	fmt.Fprintln(out, dimf(strings.Join(parts, " · ")+" — /tasks <id> for details, /tasks cancel <id> to cancel"))
 }
 
-// detalharTarefa mostra pedido, estado, resultado/erro e o rastro de tools.
-func detalharTarefa(out io.Writer, ts []subagent.Tarefa, id string) {
+// showTask shows the prompt, state, result/error and the tool trail.
+func showTask(out io.Writer, ts []subagent.Tarefa, id string) {
 	for i := range ts {
 		t := &ts[i]
 		if t.ID != id {
 			continue
 		}
-		fmt.Fprintf(out, "%s %s %s\n", cianof(t.ID), corEstado(t.Estado), dimf(duracaoTarefa(t)))
-		fmt.Fprintln(out, dimf("pedido: ")+t.Prompt)
+		fmt.Fprintf(out, "%s %s %s\n", cyanf(t.ID), stateColor(t.Estado), dimf(taskDuration(t)))
+		fmt.Fprintln(out, dimf("prompt: ")+t.Prompt)
 		for _, l := range t.Transcricao() {
 			fmt.Fprintln(out, dimf("  "+l))
 		}
 		if t.Erro != "" {
-			fmt.Fprintln(out, vermelhof("erro: ")+t.Erro)
+			fmt.Fprintln(out, redf("error: ")+t.Erro)
 		}
 		if t.Resultado != "" {
 			fmt.Fprintln(out, t.Resultado)
 		}
 		return
 	}
-	avisoFmt(out, "tarefa "+id+" não existe (/tasks lista)")
+	warnFmt(out, "task "+id+" does not exist (/tasks lists them)")
 }
 
-func corEstado(e string) string {
-	rot := fmt.Sprintf("%-9s", e)
+func stateColor(e string) string {
+	label := fmt.Sprintf("%-9s", e)
 	switch e {
 	case subagent.Running:
-		return amarelof(rot)
+		return yellowf(label)
 	case subagent.Completed:
-		return verdof(rot)
+		return greenf(label)
 	case subagent.Failed:
-		return vermelhof(rot)
+		return redf(label)
 	default:
-		return dimf(rot)
+		return dimf(label)
 	}
 }
 
-// duracaoTarefa: quanto rodou (terminada) ou está rodando (em curso).
-func duracaoTarefa(t *subagent.Tarefa) string {
+// taskDuration: how long it ran (finished) or has been running (in progress).
+func taskDuration(t *subagent.Tarefa) string {
 	if t.Inicada.IsZero() {
 		return "-"
 	}
-	fim := t.TerminadaEm
-	if fim.IsZero() {
-		fim = time.Now()
+	end := t.TerminadaEm
+	if end.IsZero() {
+		end = time.Now()
 	}
-	return fim.Sub(t.Inicada).Round(time.Second).String()
+	return end.Sub(t.Inicada).Round(time.Second).String()
 }
 
-func resumoLinha(s string, max int) string {
+func oneLine(s string, max int) string {
 	s = strings.Join(strings.Fields(s), " ")
 	if r := []rune(s); len(r) > max {
 		return string(r[:max]) + "…"
@@ -125,18 +125,18 @@ func resumoLinha(s string, max int) string {
 	return s
 }
 
-// listarSkills mostra as skills invocáveis com /<nome>.
-func listarSkills(out io.Writer, hab []skills.Skill) {
-	if len(hab) == 0 {
-		fmt.Fprintln(out, dimf("nenhuma skill: crie .barroso/skills/<nome>/SKILL.md no projeto ou em ~/.barroso-harness/skills"))
+// listSkills shows the skills invocable with /<name>.
+func listSkills(out io.Writer, skillList []skills.Skill) {
+	if len(skillList) == 0 {
+		fmt.Fprintln(out, dimf("no skills: create .barroso/skills/<name>/SKILL.md in the project or in ~/.barroso-harness/skills"))
 		return
 	}
-	for _, s := range hab {
-		desc := resumoLinha(s.Descricao, 70)
+	for _, s := range skillList {
+		desc := oneLine(s.Descricao, 70)
 		if desc == "" {
-			desc = dimf("(sem descrição)")
+			desc = dimf("(no description)")
 		}
-		fmt.Fprintf(out, "%s %s %s\n", cianof("/"+s.Nome), desc, dimf("("+s.Fontes+")"))
+		fmt.Fprintf(out, "%s %s %s\n", cyanf("/"+s.Nome), desc, dimf("("+s.Fontes+")"))
 	}
-	fmt.Fprintln(out, dimf("/<nome> [argumentos] executa a skill"))
+	fmt.Fprintln(out, dimf("/<name> [arguments] runs the skill"))
 }

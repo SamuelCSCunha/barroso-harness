@@ -1,12 +1,13 @@
-// /update: baixa a release mais nova do canal e troca o binário instalado.
+// /update: downloads the newest release from the channel and replaces the installed binary.
 //
-// O comando é deliberadamente FORA do REPL: a instalação troca o executável que
-// está rodando, e no Windows isso exige que o processo saia antes. Rodar a
-// troca dentro do loop interativo herdaria um lock que não se resolve — o
-// handler só orquestra, e internal/update decide o que é possível.
+// The command deliberately runs OUTSIDE the REPL loop: installing replaces
+// the running executable, and on Windows that requires the process to exit
+// first. Doing the swap inside the interactive loop would inherit a lock that
+// never resolves — the handler only orchestrates, and internal/update decides
+// what is possible.
 //
-// A pergunta vem ANTES do download (via Confirmar), para ninguém esperar 11 MB
-// para descobrir que não queria trocar.
+// The question comes BEFORE the download (via Confirmar), so nobody waits
+// for 11 MB to find out they did not want to update.
 package cli
 
 import (
@@ -18,46 +19,46 @@ import (
 	"github.com/ruanbarroso/barroso-harness/internal/update"
 )
 
-// Versao é a versão deste binário, injetada pelo main (-X main.Versao). Fica
-// aqui como variável de pacote porque o REPL não recebe a versão por
-// argumento, e um /update que não sabe a própria versão compararia contra
-// string vazia.
+// Versao is this binary's version, injected by main (-X main.Versao). It
+// lives here as a package variable because the REPL does not receive the
+// version as an argument, and an /update that does not know its own version
+// would compare against an empty string.
 var Versao = "dev"
 
-// timeoutUpdate é o prazo do canal: consulta + download de ~11 MB + exec-check.
-// Conexão ruim precisa de folga; 10 min é o teto que ainda não parece travado
-// para quem está olhando o terminal.
+// timeoutUpdate is the channel deadline: query + ~11 MB download + exec check.
+// A bad connection needs slack; 10 min is the ceiling that still does not
+// look stuck to someone watching the terminal.
 const timeoutUpdate = 10 * time.Minute
 
-// cmdUpdate roda o ciclo completo. Falha do canal NUNCA derruba o REPL: o erro
-// volta como mensagem e a sessão continua — atualização é conveniência.
+// cmdUpdate runs the full cycle. A channel failure NEVER brings the REPL
+// down: the error comes back as a message and the session goes on — updating is a convenience.
 func cmdUpdate(io IO) {
-	versao := strings.TrimSpace(Versao)
+	version := strings.TrimSpace(Versao)
 	ctx, cancel := context.WithTimeout(context.Background(), timeoutUpdate)
 	defer cancel()
 
-	err := update.Rodar(ctx, io.Out, versao, func() bool {
-		return confirmar(io, "update barroso-harness now? [y/N]")
+	err := update.Rodar(ctx, io.Out, version, func() bool {
+		return confirm(io, "update barroso-harness now? [y/N]")
 	})
 	if err != nil {
-		erroFmt(io.ErrOut, "update failed", err)
+		errorFmt(io.ErrOut, "update failed", err)
 		return
 	}
 }
 
-// confirmar faz a pergunta de sim/não e devolve true só para resposta
-// afirmativa explícita. Enter vazio é NÃO: quem não respondeu não consentiu, e
-// trocar binário por omissão seria o default mais perigoso possível.
+// confirm asks a yes/no question and returns true only for an explicit yes.
+// An empty Enter is NO: whoever did not answer did not consent, and
+// replacing the binary by omission would be the most dangerous default.
 //
-// EOF (Ctrl+D) no meio da pergunta também é não — a linha volta limpa, como no
-// resto do REPL.
-func confirmar(io IO, pergunta string) bool {
-	fmt.Fprintf(io.Out, "%s %s ", verdof("❯"), pergunta)
-	linha, err := io.Reader().ReadString('\n')
+// EOF (Ctrl+D) midway is also a no — the line comes back clean, as in the
+// rest of the REPL. "s"/"sim" are still accepted as yes (Portuguese input).
+func confirm(io IO, question string) bool {
+	fmt.Fprintf(io.Out, "%s %s ", greenf("❯"), question)
+	line, err := io.Reader().ReadString('\n')
 	if err != nil {
 		fmt.Fprintln(io.Out)
 		return false
 	}
-	resposta := strings.ToLower(strings.TrimSpace(linha))
-	return resposta == "s" || resposta == "sim" || resposta == "y" || resposta == "yes"
+	answer := strings.ToLower(strings.TrimSpace(line))
+	return answer == "s" || answer == "sim" || answer == "y" || answer == "yes"
 }

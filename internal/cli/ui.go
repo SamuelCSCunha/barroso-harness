@@ -14,65 +14,65 @@ import (
 	"golang.org/x/term"
 )
 
-// Camada de apresentação do REPL, no espírito do OpenCode: paleta ANSI-256,
-// glifos UTF-8 e status line viva; nenhum framework de TUI (um binário, sem
-// terceiros). Nenhum texto conferido por teste leva escape no meio — a cor
-// envolve a linha inteira, e coresLigadas só fica ligada quando Out E ErrOut
-// são terminais reais; pipes, redireções e buffers de teste (que não são
-// *os.File) recebem texto cru.
+// REPL presentation layer, in the spirit of OpenCode: ANSI-256 palette,
+// UTF-8 glyphs and a live status line; no TUI framework (one binary, no third
+// parties). No text checked by a test has an escape in the middle — color
+// wraps the whole line, and colorsOn is only enabled when both Out AND ErrOut
+// are real terminals; pipes, redirections and test buffers (which are not
+// *os.File) get plain text.
 const (
 	reset = "\033[0m"
-	neg   = "\033[1m"
+	bold  = "\033[1m"
 )
 
-// Paleta ANSI-256, tonalidade baixa — menos o cian de títulos e o verde/vermelho.
+// Low-key ANSI-256 palette — except the title cyan and the green/red.
 const (
-	corDim  = "\033[38;5;244m"
-	corCian = "\033[38;5;38m"
-	corVerd = "\033[38;5;114m"
-	corVerm = "\033[38;5;203m"
-	corAmar = "\033[38;5;221m"
-	corMag  = "\033[38;5;176m"
-	corRox  = "\033[38;5;99m"
+	colorDim     = "\033[38;5;244m"
+	colorCyan    = "\033[38;5;38m"
+	colorGreen   = "\033[38;5;114m"
+	colorRed     = "\033[38;5;203m"
+	colorYellow  = "\033[38;5;221m"
+	colorMagenta = "\033[38;5;176m"
+	colorPurple  = "\033[38;5;99m"
 )
 
-// Glifos: fontes de terminal modernas (Windows Terminal, conhost do 10/11,
-// macOS, Linux) cobrem todos; com cores desligadas continuam sinais visuais.
+// Glyphs: modern terminal fonts (Windows Terminal, conhost on 10/11, macOS,
+// Linux) cover them all; with colors off they still work as visual cues.
 const (
-	glifoOk    = "✓"
-	glifoErro  = "✗"
-	glifoAviso = "⚠"
-	glifoTool  = "▶"
-	glifoGuard = "◆"
-	glifoAtual = "▸"
+	glyphOk      = "✓"
+	glyphErr     = "✗"
+	glyphWarn    = "⚠"
+	glyphTool    = "▶"
+	glyphGuard   = "◆"
+	glyphCurrent = "▸"
 )
 
-// corCorMag está exposta para o teste afirmar que a paleta foi emitida (o
-// próprio cor() devolve texto limpo com coresLigadas=false, então o teste liga
-// cores e procura esta constante cruda).
-const corCorMag = corMag
+// paletteMagenta is exposed so the test can assert the palette was emitted
+// (color() itself returns plain text with colorsOn=false, so the test turns
+// colors on and looks for this raw constant).
+const paletteMagenta = colorMagenta
 
-// coresLigadas decide se a paleta é emitida. Começa desligada; ligarCores
-// determina o valor no início de cada RunInteractive.
-var coresLigadas = false
+// colorsOn decides whether the palette is emitted. Starts off; enableColors
+// sets it at the start of each RunInteractive.
+var colorsOn = false
 
-func cor(cod, s string) string {
-	if !coresLigadas || cod == "" {
+func color(ansi, s string) string {
+	if !colorsOn || ansi == "" {
 		return s
 	}
-	return cod + s + reset
+	return ansi + s + reset
 }
 
-func dimf(s string) string      { return cor(corDim, s) }
-func cianof(s string) string    { return cor(corCian, s) }
-func verdof(s string) string    { return cor(corVerd, s) }
-func vermelhof(s string) string { return cor(corVerm, s) }
-func amarelof(s string) string  { return cor(corAmar, s) }
-func magof(s string) string     { return cor(corMag, s) }
-func roxof(s string) string     { return cor(corRox, s) }
-func negritof(s string) string  { return cor(neg, s) }
+func dimf(s string) string     { return color(colorDim, s) }
+func cyanf(s string) string    { return color(colorCyan, s) }
+func greenf(s string) string   { return color(colorGreen, s) }
+func redf(s string) string     { return color(colorRed, s) }
+func yellowf(s string) string  { return color(colorYellow, s) }
+func magentaf(s string) string { return color(colorMagenta, s) }
+func purplef(s string) string  { return color(colorPurple, s) }
+func boldf(s string) string    { return color(bold, s) }
 
-func éTerminal(w io.Writer) bool {
+func isTerminal(w io.Writer) bool {
 	f, ok := w.(*os.File)
 	if !ok {
 		return false
@@ -80,195 +80,195 @@ func éTerminal(w io.Writer) bool {
 	return term.IsTerminal(int(f.Fd()))
 }
 
-// ligarCores liga a paleta somente com Out e ErrOut em terminal (x/term, já
-// dependência da chave oculta), honrando NO_COLOR e TERM=dumb.
-func ligarCores(io IO) {
-	coresLigadas = éTerminal(io.Out) && éTerminal(io.ErrOut) &&
+// enableColors turns the palette on only with Out and ErrOut on a terminal
+// (x/term, already a dependency for the hidden key), honouring NO_COLOR and TERM=dumb.
+func enableColors(io IO) {
+	colorsOn = isTerminal(io.Out) && isTerminal(io.ErrOut) &&
 		os.Getenv("NO_COLOR") == "" &&
 		os.Getenv("TERM") != "dumb"
 }
 
-// banner é a faixa de abertura — limpa e estável, no espírito do OpenCode.
-// Estado volátil fica na statusbar; a marca não se repete a cada turno.
+// banner is the opening strip — clean and stable, in the spirit of OpenCode.
+// Volatile state lives in the statusbar; the brand is not repeated every turn.
 func banner(out io.Writer) {
 	fmt.Fprintln(out)
-	fmt.Fprintln(out, cianof("╭─ ")+negritof(cianof("Barroso Harness")))
-	fmt.Fprintln(out, cianof("╰─ ")+dimf("type /help for commands · plain text goes to the model"))
+	fmt.Fprintln(out, cyanf("╭─ ")+boldf(cyanf("Barroso Harness")))
+	fmt.Fprintln(out, cyanf("╰─ ")+dimf("type /help for commands · plain text goes to the model"))
 	fmt.Fprintln(out)
 }
 
-// statusbar imprime uma faixa compacta antes de cada prompt. Ela substitui o
-// formato cru de Config.Resumo e torna mudanças de /model, /effort e /provider
-// imediatamente visíveis sem empurrar um bloco de texto desnecessário.
+// statusbar prints a compact strip before each prompt. It replaces the raw
+// Config.Resumo format and makes /model, /effort and /provider changes
+// immediately visible without pushing an unnecessary block of text.
 func statusbar(out io.Writer, cfg *config.Config) {
 	provider := cfg.CurrentProvider
 	if provider == "" {
 		provider = "no-provider"
 	}
-	modelo := cfg.Model
-	if modelo == "" {
-		modelo = "select a model"
+	model := cfg.Model
+	if model == "" {
+		model = "select a model"
 	}
-	linha := provider + " · " + modelo
+	line := provider + " · " + model
 	if cfg.Effort != "" {
-		linha += " · effort " + cfg.Effort
+		line += " · effort " + cfg.Effort
 	} else {
-		linha += " · effort off"
+		line += " · effort off"
 	}
 	if cfg.Janela > 0 {
-		linha += fmt.Sprintf(" · %dk", cfg.Janela/1000)
+		line += fmt.Sprintf(" · %dk", cfg.Janela/1000)
 	}
-	fmt.Fprintln(out, dimf("╭─ "+linha))
+	fmt.Fprintln(out, dimf("╭─ "+line))
 }
 
-// prompto é a linha de entrada: o chevron do OpenCode, modelo em destaque e
-// effort discreto. Termina em espaço para o cursor colar nela.
-func prompto(out io.Writer, modelo, effort string) {
-	mod := modelo
+// printPrompt is the input line: OpenCode's chevron, the model highlighted
+// and a discreet effort. Ends with a space so the cursor sits right after it.
+func printPrompt(out io.Writer, model, effort string) {
+	mod := model
 	if mod == "" {
 		mod = "barroso"
 	}
-	fmt.Fprint(out, verdof("❯")+" "+negritof(mod))
+	fmt.Fprint(out, greenf("❯")+" "+boldf(mod))
 	if effort != "" {
-		fmt.Fprint(out, " "+amarelof("·"+effort))
+		fmt.Fprint(out, " "+yellowf("·"+effort))
 	}
 	fmt.Fprint(out, " ")
 }
 
-// despedida encerra limpo.
-func despedida(out io.Writer) {
-	if coresLigadas {
-		// Garantia: o cursor nunca fica escondido depois que o bh sai, mesmo
-		// que o spinner tenha sido interrompido no meio.
-		fmt.Fprint(out, mostrarCursor)
+// farewell exits cleanly.
+func farewell(out io.Writer) {
+	if colorsOn {
+		// Guarantee: the cursor is never left hidden after bh exits, even if
+		// the spinner was interrupted midway.
+		fmt.Fprint(out, showCursor)
 	}
 	fmt.Fprintln(out, dimf("╰─ bye"))
 }
 
-// erroFmt imprime erro em vermelho, uma linha, sem markup cru.
-func erroFmt(out io.Writer, prefixo string, err error) {
+// errorFmt prints an error in red, on one line, with no raw markup.
+func errorFmt(out io.Writer, prefix string, err error) {
 	msg := err.Error()
 	if i := strings.IndexByte(msg, '\n'); i >= 0 {
-		msg = msg[:i] // erro é uma linha; o resto é detalhe de protocolo
+		msg = msg[:i] // an error is one line; the rest is protocol detail
 	}
-	recuo := ""
-	if coresLigadas {
-		recuo = "  " // alinhado com as linhas do turno na TUI
+	indent := ""
+	if colorsOn {
+		indent = "  " // aligned with the turn lines in the TUI
 	}
-	fmt.Fprintf(out, "%s%s %s\n", recuo, vermelhof(glifoErro), vermelhof(prefixo+": "+msg))
+	fmt.Fprintf(out, "%s%s %s\n", indent, redf(glyphErr), redf(prefix+": "+msg))
 }
 
-// okFmt imprime confirmação em verde.
+// okFmt prints a confirmation in green.
 func okFmt(out io.Writer, msg string) {
-	fmt.Fprintf(out, "%s %s\n", verdof(glifoOk), msg)
+	fmt.Fprintf(out, "%s %s\n", greenf(glyphOk), msg)
 }
 
-// avisoFmt imprime aviso em amarelo.
-func avisoFmt(out io.Writer, msg string) {
-	fmt.Fprintf(out, "%s %s\n", amarelof(glifoAviso), msg)
+// warnFmt prints a warning in yellow.
+func warnFmt(out io.Writer, msg string) {
+	fmt.Fprintf(out, "%s %s\n", yellowf(glyphWarn), msg)
 }
 
-// listarModelos mostra o catálogo INTEIRO, em ordem alfabética, numerado (o
-// mesmo número que a seleção aceita), com a coluna da janela alinhada e o
-// modelo atual marcado com ▸. Sem paginação: o terminal rola, e a lista
-// completa é o que permite achar um modelo pelo olho.
-func listarModelos(out io.Writer, ls []dealer.CatalogModel, atual string) {
+// listModels shows the WHOLE catalog, alphabetically, numbered (the same
+// number the selection accepts), with the window column aligned and the
+// current model marked with ▸. No paging: the terminal scrolls, and the full
+// list is what lets you spot a model by eye.
+func listModels(out io.Writer, ls []dealer.CatalogModel, current string) {
 	if len(ls) == 0 {
-		fmt.Fprintln(out, amarelof("empty catalog"))
+		fmt.Fprintln(out, yellowf("empty catalog"))
 		return
 	}
 	fmt.Fprintln(out)
-	fmt.Fprintln(out, cianof(fmt.Sprintf("Models  %d available", len(ls))))
+	fmt.Fprintln(out, cyanf(fmt.Sprintf("Models  %d available", len(ls))))
 	fmt.Fprintln(out, dimf("────────────────────────────────────────────────────────────"))
-	largura := 0
+	width := 0
 	for _, m := range ls {
-		if n := utf8.RuneCountInString(m.ID); n > largura {
-			largura = n
+		if n := utf8.RuneCountInString(m.ID); n > width {
+			width = n
 		}
 	}
-	if largura > 44 {
-		largura = 44
+	if width > 44 {
+		width = 44
 	}
 	for i, m := range ls {
-		marca := "  "
-		// O preenchimento é calculado sobre o id CRU: aplicar a largura depois
-		// de colorir contaria os bytes do escape ANSI e desalinharia a coluna
-		// justamente na linha do modelo atual.
-		pad := strings.Repeat(" ", max(0, largura-utf8.RuneCountInString(m.ID)))
-		nome := m.ID
-		if m.ID == atual {
-			marca = verdof("▸ ")
-			nome = negritof(m.ID)
+		mark := "  "
+		// Padding is computed on the RAW id: applying the width after
+		// coloring would count the ANSI escape bytes and misalign the column
+		// exactly on the current model's line.
+		pad := strings.Repeat(" ", max(0, width-utf8.RuneCountInString(m.ID)))
+		name := m.ID
+		if m.ID == current {
+			mark = greenf("▸ ")
+			name = boldf(m.ID)
 		}
 		extra := ""
 		if m.ContextLength > 0 {
 			extra = dimf(fmt.Sprintf("  %dk", m.ContextLength/1000))
 		}
-		fmt.Fprintf(out, "%s%s %s%s%s\n", marca, dimf(fmt.Sprintf("%3d", i+1)), nome, pad, extra)
+		fmt.Fprintf(out, "%s%s %s%s%s\n", mark, dimf(fmt.Sprintf("%3d", i+1)), name, pad, extra)
 	}
-	dica := "type the number or id"
-	if atual != "" {
-		dica += " · empty Enter keeps " + atual
+	hint := "type the number or id"
+	if current != "" {
+		hint += " · empty Enter keeps " + current
 	}
-	fmt.Fprintln(out, dimf(dica))
+	fmt.Fprintln(out, dimf(hint))
 }
 
-// tuiTurno é a roupa TUI de um turno: glifo ▶ com nome de tool em magenta,
-// duração dim, eco indentado 2, guardrail ◆ e rodapé de tokens.
-type tuiTurno struct{ out io.Writer }
+// basicTUITurn is the TUI dress of a turn: ▶ glyph with the tool name in
+// magenta, dim duration, echo indented by 2, ◆ guardrail and a token footer.
+type basicTUITurn struct{ out io.Writer }
 
-func (t tuiTurno) Resposta(texto string) { fmt.Fprintln(t.out, texto) }
+func (t basicTUITurn) Resposta(text string) { fmt.Fprintln(t.out, text) }
 
-func (t tuiTurno) Tool(nome string, dur time.Duration, erro bool) {
-	estado, colore := "ok", verdof
-	if erro {
-		estado, colore = "error", vermelhof
+func (t basicTUITurn) Tool(name string, dur time.Duration, failed bool) {
+	state, colorize := "ok", greenf
+	if failed {
+		state, colorize = "error", redf
 	}
 	fmt.Fprintf(t.out, "%s %s %s %s\n",
-		cianof(glifoTool), magof(nome),
-		dimf(dur.Round(time.Millisecond).String()), colore(estado))
+		cyanf(glyphTool), magentaf(name),
+		dimf(dur.Round(time.Millisecond).String()), colorize(state))
 }
 
-func (t tuiTurno) Eco(saida string) {
-	if saida == "" {
+func (t basicTUITurn) Eco(output string) {
+	if output == "" {
 		return
 	}
-	for _, linha := range strings.Split(saida, "\n") {
-		fmt.Fprintln(t.out, dimf("  "+linha))
+	for _, line := range strings.Split(output, "\n") {
+		fmt.Fprintln(t.out, dimf("  "+line))
 	}
 }
 
-func (t tuiTurno) Guardrail(proativa bool) {
+func (t basicTUITurn) Guardrail(proactive bool) {
 	msg := "provider rejected the request size; reactive compaction"
-	if proativa {
+	if proactive {
 		msg = "proactive compaction (predicted overflow)"
 	}
-	fmt.Fprintf(t.out, "%s %s\n", roxof(glifoGuard), dimf(msg))
+	fmt.Fprintf(t.out, "%s %s\n", purplef(glyphGuard), dimf(msg))
 }
 
-func (t tuiTurno) Tokens(prompt, saida int, dur time.Duration, compactou bool) {
-	if prompt <= 0 && saida <= 0 {
+func (t basicTUITurn) Tokens(prompt, output int, dur time.Duration, compacted bool) {
+	if prompt <= 0 && output <= 0 {
 		return
 	}
-	linha := fmt.Sprintf("tokens ↑%d ↓%d · %s", prompt, saida, dur.Round(time.Millisecond))
-	if compactou {
-		linha += " · compacted"
+	line := fmt.Sprintf("tokens ↑%d ↓%d · %s", prompt, output, dur.Round(time.Millisecond))
+	if compacted {
+		line += " · compacted"
 	}
-	fmt.Fprintln(t.out, dimf(linha))
+	fmt.Fprintln(t.out, dimf(line))
 }
 
-// rendererTurno escolhe a facciata: glifos+paleta quando a sessão ligou cores
-// (terminal real), texto cru caso contrário — inclusive nos buffers dos testes,
-// que então veem a mesma linha literal que runtime_test crava no modo puro.
-func rendererTurno(out io.Writer) runtime.Renderer {
-	if coresLigadas {
-		return tuiTurno{out: out}
+// turnRenderer picks the facade: glyphs+palette when the session turned
+// colors on (real terminal), plain text otherwise — including test buffers,
+// which then see the same literal line runtime_test pins in plain mode.
+func turnRenderer(out io.Writer) runtime.Renderer {
+	if colorsOn {
+		return basicTUITurn{out: out}
 	}
 	return runtime.RendererDe(out)
 }
 
-// larguraTerminal devolve as colunas do stdout; 100 quando não dá para saber.
-func larguraTerminal() int {
+// terminalWidth returns stdout's columns; 100 when unknown.
+func terminalWidth() int {
 	if w, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 20 {
 		return w
 	}

@@ -1,6 +1,6 @@
-// Testes de persistência do REPL: /resume (listar, escolher, retomar),
-// /save (título), a sufixo `· sess <4hex>` da statusbar e o degrade best-effort
-// quando o banco não abre.
+// REPL persistence tests: /resume (list, pick, resume), /save (title), the
+// statusbar's `· sess <4hex>` suffix and the best-effort fallback when the
+// database does not open.
 package cli
 
 import (
@@ -13,144 +13,144 @@ import (
 	"github.com/ruanbarroso/barroso-harness/internal/store"
 )
 
-func TestIDFormatoEUnicidade(t *testing.T) {
-	vistos := map[string]bool{}
+func TestIDFormatAndUniqueness(t *testing.T) {
+	seen := map[string]bool{}
 	for i := 0; i < 50; i++ {
-		id := novoIDSessao()
-		partes := strings.Split(id, "-")
-		if len(partes) != 3 {
-			t.Fatalf("id devia ter 3 partes separadas por '-': %q", id)
+		id := newSessionID()
+		parts := strings.Split(id, "-")
+		if len(parts) != 3 {
+			t.Fatalf("id should have 3 parts separated by '-': %q", id)
 		}
-		if len(partes[1]) != 14 {
-			t.Fatalf("timestamp YYYYMMDDHHMMSS devia ter 14 dígitos, veio %q", partes[1])
+		if len(parts[1]) != 14 {
+			t.Fatalf("timestamp YYYYMMDDHHMMSS should have 14 digits, got %q", parts[1])
 		}
-		if len(partes[2]) != 4 {
-			t.Fatalf("sufixo aleatório devia ter 4 hex, veio %q", partes[2])
+		if len(parts[2]) != 4 {
+			t.Fatalf("random suffix should have 4 hex digits, got %q", parts[2])
 		}
-		if vistos[id] {
-			t.Fatalf("id repetido: %q", id)
+		if seen[id] {
+			t.Fatalf("repeated id: %q", id)
 		}
-		vistos[id] = true
+		seen[id] = true
 	}
-	if curta := sessaoCurta(novoIDSessao()); len(curta) != 4 {
-		t.Fatalf("sessaoCurta devia devolver os 4 hex finais, veio %q", curta)
+	if short := shortSession(newSessionID()); len(short) != 4 {
+		t.Fatalf("shortSession should return the last 4 hex digits, got %q", short)
 	}
 }
 
-func TestIdadeFormata(t *testing.T) {
-	agora := time.Now().UTC()
-	casos := []struct {
-		atras    time.Duration
-		contem   string
-		querExat string
+func TestFormatAge(t *testing.T) {
+	now := time.Now().UTC()
+	cases := []struct {
+		ago       time.Duration
+		contains  string
+		wantExact string
 	}{
 		{10 * time.Second, "", "now"},
 		{5 * time.Minute, "min", ""},
 		{3 * time.Hour, "h", ""},
 		{48 * time.Hour, "d", ""},
 	}
-	for _, c := range casos {
-		ts := agora.Add(-c.atras).Format(store.TsFormato)
-		veio := idadeFormata(ts)
-		if c.querExat != "" && veio != c.querExat {
-			t.Fatalf("idade de %v = %q, esperado %q", c.atras, veio, c.querExat)
+	for _, c := range cases {
+		ts := now.Add(-c.ago).Format(store.TsFormato)
+		res := formatAge(ts)
+		if c.wantExact != "" && res != c.wantExact {
+			t.Fatalf("age of %v = %q, want %q", c.ago, res, c.wantExact)
 		}
-		if c.contem != "" && !strings.Contains(veio, c.contem) {
-			t.Fatalf("idade de %v = %q, deveria conter %q", c.atras, veio, c.contem)
+		if c.contains != "" && !strings.Contains(res, c.contains) {
+			t.Fatalf("age of %v = %q, should contain %q", c.ago, res, c.contains)
 		}
 	}
-	if idadeFormata("lixo") != "?" {
-		t.Fatal("timestamp inválido deveria devolver '?'")
+	if formatAge("garbage") != "?" {
+		t.Fatal("an invalid timestamp should return '?'")
 	}
 }
 
-func TestResolverSessaoNumeroEPrefixo(t *testing.T) {
-	ls := []linhaSessao{
-		{Session: store.Session{ID: "bh-20240101100000-aaaa", Title: "uma"}},
-		{Session: store.Session{ID: "bh-20240101110000-bbbb", Title: "duas"}},
-		{Session: store.Session{ID: "bh-20240101120000-cccc", Title: "três"}},
+func TestResolveSessionNumberAndPrefix(t *testing.T) {
+	ls := []sessionRow{
+		{Session: store.Session{ID: "bh-20240101100000-aaaa", Title: "one"}},
+		{Session: store.Session{ID: "bh-20240101110000-bbbb", Title: "two"}},
+		{Session: store.Session{ID: "bh-20240101120000-cccc", Title: "three"}},
 	}
-	// Número da lista (1-based).
-	if id := resolverSessao("2", ls); id != "bh-20240101110000-bbbb" {
-		t.Fatalf("resolver 2 = %q", id)
+	// List number (1-based).
+	if id := resolveSession("2", ls); id != "bh-20240101110000-bbbb" {
+		t.Fatalf("resolve 2 = %q", id)
 	}
-	// Prefixo do id e id completo.
-	if id := resolverSessao("bh-20240101120000", ls); id != "bh-20240101120000-cccc" {
-		t.Fatalf("resolver prefixo = %q", id)
+	// Id prefix and full id.
+	if id := resolveSession("bh-20240101120000", ls); id != "bh-20240101120000-cccc" {
+		t.Fatalf("resolve prefix = %q", id)
 	}
-	if id := resolverSessao("bh-20240101100000-aaaa", ls); id != "bh-20240101100000-aaaa" {
-		t.Fatalf("resolver id completo = %q", id)
+	if id := resolveSession("bh-20240101100000-aaaa", ls); id != "bh-20240101100000-aaaa" {
+		t.Fatalf("resolve full id = %q", id)
 	}
-	// Fora da lista ou vazio: nada escolhido.
-	for _, entrada := range []string{"", "  ", "99", "0", "-1", "nao-existe"} {
-		if id := resolverSessao(entrada, ls); id != "" {
-			t.Fatalf("resolver %q deveria falhar, veio %q", entrada, id)
+	// Out of the list or empty: nothing chosen.
+	for _, input := range []string{"", "  ", "99", "0", "-1", "does-not-exist"} {
+		if id := resolveSession(input, ls); id != "" {
+			t.Fatalf("resolve %q should fail, got %q", input, id)
 		}
 	}
 }
 
-func TestStatusbarSessaoSufixo(t *testing.T) {
+func TestSessionStatusbarSuffix(t *testing.T) {
 	cfg := &config.Config{CurrentProvider: "p1", Model: "mod"}
 	var sb strings.Builder
-	statusbarSessao(&sb, cfg, "bh-20240101100000-abcd")
-	saida := sb.String()
-	if !strings.Contains(saida, "· sess abcd") {
-		t.Fatalf("statusbar sem o sufixo de sessão:\n%s", saida)
+	sessionStatusbar(&sb, cfg, "bh-20240101100000-abcd")
+	output := sb.String()
+	if !strings.Contains(output, "· sess abcd") {
+		t.Fatalf("statusbar missing the session suffix:\n%s", output)
 	}
-	// A linha base continua igual à da ui.go (provider · model · effort).
-	for _, quer := range []string{"p1", "mod", "effort off"} {
-		if !strings.Contains(saida, quer) {
-			t.Fatalf("statusbar perdeu %q:\n%s", quer, saida)
+	// The base line stays the same as in ui.go (provider · model · effort).
+	for _, want := range []string{"p1", "mod", "effort off"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("statusbar lost %q:\n%s", want, output)
 		}
 	}
-	// Sem sessão ativa, nenhum sufixo.
+	// Without an active session, no suffix.
 	sb.Reset()
-	statusbarSessao(&sb, cfg, "")
+	sessionStatusbar(&sb, cfg, "")
 	if strings.Contains(sb.String(), "sess") {
-		t.Fatalf("sem sessão não devia haver sufixo:\n%s", sb.String())
+		t.Fatalf("without a session there should be no suffix:\n%s", sb.String())
 	}
 }
 
-func TestUmaLinhaErro(t *testing.T) {
-	veio := umaLinhaErro(errTeste{"primeira linha\ndetalhe de protocolo\nmais outra"})
-	if strings.Contains(veio, "detalhe") || strings.Contains(veio, "\n") {
-		t.Fatalf("umaLinhaErro deveria manter só a primeira linha: %q", veio)
+func TestFirstErrLine(t *testing.T) {
+	res := firstErrLine(testErr{"first line\nprotocol detail\none more"})
+	if strings.Contains(res, "detail") || strings.Contains(res, "\n") {
+		t.Fatalf("firstErrLine should keep only the first line: %q", res)
 	}
-	if veio != "primeira linha" {
-		t.Fatalf("umaLinhaErro = %q", veio)
+	if res != "first line" {
+		t.Fatalf("firstErrLine = %q", res)
 	}
 }
 
-type errTeste struct{ s string }
+type testErr struct{ s string }
 
-func (e errTeste) Error() string { return e.s }
+func (e testErr) Error() string { return e.s }
 
-// ── ponta a ponta pelo REPL ───────────────────────────────────────────────
+// ── end to end through the REPL ───────────────────────────────────────────
 
-// semCores desliga a paleta para os asserts verem texto cru.
-func semCores(t *testing.T) {
+// noColors turns the palette off so asserts see plain text.
+func noColors(t *testing.T) {
 	t.Helper()
-	antiga := coresLigadas
-	coresLigadas = false
-	t.Cleanup(func() { coresLigadas = antiga })
+	prevColors := colorsOn
+	colorsOn = false
+	t.Cleanup(func() { colorsOn = prevColors })
 }
 
-// /resume lista as sessões gravadas e retoma a escolhida.
-func TestResumeRetomaSessaoDoLog(t *testing.T) {
-	home := homeFake(t)
-	semCores(t)
-	// Uma sessão anterior com conteúdo no log. cfgPronta cria o próprio
-	// diretório de dados, então ela vem primeiro e é o home REAL do teste.
-	srv := providerFakeModelos(t, "barroso-chat")
+// /resume lists the stored sessions and resumes the chosen one.
+func TestResumeRestoresSessionFromLog(t *testing.T) {
+	home := fakeHome(t)
+	noColors(t)
+	// A previous session with content in the log. readyConfig creates its own
+	// data directory, so it comes first and is the test's REAL home.
+	srv := fakeModelsProvider(t, "barroso-chat")
 	defer srv.Close()
-	home = cfgPronta(t, srv.URL+"/v1", "k", "barroso-chat")
+	home = readyConfig(t, srv.URL+"/v1", "k", "barroso-chat")
 
-	loja, err := store.Open(filepath.Join(home, "sessions.db"))
+	db, err := store.Open(filepath.Join(home, "sessions.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	const anterior = "bh-20240101100000-abcd"
-	if err := loja.NewSession(anterior); err != nil {
+	const prevSession = "bh-20240101100000-abcd"
+	if err := db.NewSession(prevSession); err != nil {
 		t.Fatal(err)
 	}
 	for _, ev := range []struct {
@@ -160,118 +160,118 @@ func TestResumeRetomaSessaoDoLog(t *testing.T) {
 		{"user_message", map[string]any{"role": "user", "content": "pergunta anterior"}},
 		{"assistant", map[string]any{"role": "assistant", "content": "resposta anterior"}},
 	} {
-		if _, err := loja.StoreEvent(anterior, ev.kind, ev.payload); err != nil {
+		if _, err := db.StoreEvent(prevSession, ev.kind, ev.payload); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := loja.SetTitle(anterior, "conversa antiga"); err != nil {
+	if err := db.SetTitle(prevSession, "old conversation"); err != nil {
 		t.Fatal(err)
 	}
-	if err := loja.Fechar(); err != nil {
+	if err := db.Fechar(); err != nil {
 		t.Fatal(err)
 	}
 
-	// REPL novo: /resume, escolha pelo número, /exit.
-	io, outIO, _ := ponteIO(t, "/resume\n1\n/exit\n")
+	// New REPL: /resume, pick by number, /exit.
+	io, outIO, _ := bridgeIO(t, "/resume\n1\n/exit\n")
 	if code := RunInteractive(io); code != 0 {
-		t.Fatalf("repl saiu com %d: %s", code, io.ErrOut)
+		t.Fatalf("repl exited with %d: %s", code, io.ErrOut)
 	}
-	tela := outIO.String()
-	for _, quer := range []string{anterior, "conversa antiga", "2 events", "resumed"} {
-		if !strings.Contains(tela, quer) {
-			t.Fatalf("/resume sem %q:\n%s", quer, tela)
+	screen := outIO.String()
+	for _, want := range []string{prevSession, "old conversation", "2 events", "resumed"} {
+		if !strings.Contains(screen, want) {
+			t.Fatalf("/resume missing %q:\n%s", want, screen)
 		}
 	}
 
-	// O log é append-only: a sessão anterior continua inteira, com título.
-	loja2, err := store.Open(filepath.Join(home, "sessions.db"))
+	// The log is append-only: the previous session stays whole, with its title.
+	db2, err := store.Open(filepath.Join(home, "sessions.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer loja2.Fechar()
-	se, err := loja2.GetSession(anterior)
+	defer db2.Fechar()
+	se, err := db2.GetSession(prevSession)
 	if err != nil {
-		t.Fatalf("sessão anterior sumiu do log: %v", err)
+		t.Fatalf("previous session vanished from the log: %v", err)
 	}
-	if se.Title != "conversa antiga" {
-		t.Fatalf("título = %q", se.Title)
+	if se.Title != "old conversation" {
+		t.Fatalf("title = %q", se.Title)
 	}
-	if n, _ := loja2.ContarEventos(anterior); n != 2 {
-		t.Fatalf("eventos da sessão anterior = %d; o log é append-only", n)
+	if n, _ := db2.ContarEventos(prevSession); n != 2 {
+		t.Fatalf("previous session events = %d; the log is append-only", n)
 	}
 }
 
-// /save grava o título; a listagem seguinte o mostra.
-func TestSaveGravaTitulo(t *testing.T) {
-	semCores(t)
-	srv := providerFakeModelos(t, "barroso-chat")
+// /save stores the title; the next listing shows it.
+func TestSaveStoresTitle(t *testing.T) {
+	noColors(t)
+	srv := fakeModelsProvider(t, "barroso-chat")
 	defer srv.Close()
-	cfgPronta(t, srv.URL+"/v1", "k", "barroso-chat")
+	readyConfig(t, srv.URL+"/v1", "k", "barroso-chat")
 
-	io, outIO, _ := ponteIO(t, "/save minha conversa de teste\n/exit\n")
+	io, outIO, _ := bridgeIO(t, "/save my test conversation\n/exit\n")
 	if code := RunInteractive(io); code != 0 {
-		t.Fatalf("código %d: %s", code, io.ErrOut)
+		t.Fatalf("exit code %d: %s", code, io.ErrOut)
 	}
 	if !strings.Contains(outIO.String(), "saved") {
-		t.Fatalf("/save não confirmou:\n%s", outIO.String())
+		t.Fatalf("/save did not confirm:\n%s", outIO.String())
 	}
 
-	// O banco é o do config.Dir() ativo (o mesmo que o REPL usou).
-	loja, err := store.Open(filepath.Join(config.Dir(), "sessions.db"))
+	// The database is the one in the active config.Dir() (the same the REPL used).
+	db, err := store.Open(filepath.Join(config.Dir(), "sessions.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer loja.Fechar()
-	ls, err := loja.ListSessions(10)
+	defer db.Fechar()
+	ls, err := db.ListSessions(10)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
 	if len(ls) != 1 {
-		t.Fatalf("sessões = %d; esperava 1: %+v", len(ls), ls)
+		t.Fatalf("sessions = %d; want 1: %+v", len(ls), ls)
 	}
-	if ls[0].Title != "minha conversa de teste" {
-		t.Fatalf("título gravado = %q", ls[0].Title)
+	if ls[0].Title != "my test conversation" {
+		t.Fatalf("stored title = %q", ls[0].Title)
 	}
 }
 
-// Uma sessão vazia não aparece em /resume — não há conversa para retomar.
-func TestResumeSemSessoesAvisa(t *testing.T) {
-	semCores(t)
-	srv := providerFakeModelos(t, "barroso-chat")
+// An empty session does not show in /resume — there is no conversation to resume.
+func TestResumeWithoutSessionsWarns(t *testing.T) {
+	noColors(t)
+	srv := fakeModelsProvider(t, "barroso-chat")
 	defer srv.Close()
-	cfgPronta(t, srv.URL+"/v1", "k", "barroso-chat")
+	readyConfig(t, srv.URL+"/v1", "k", "barroso-chat")
 
-	io, outIO, _ := ponteIO(t, "/resume\n/exit\n")
+	io, outIO, _ := bridgeIO(t, "/resume\n/exit\n")
 	if code := RunInteractive(io); code != 0 {
-		t.Fatalf("código %d: %s", code, io.ErrOut)
+		t.Fatalf("exit code %d: %s", code, io.ErrOut)
 	}
 	if !strings.Contains(outIO.String(), "no previous sessions") {
-		t.Fatalf("/resume vazio não avisou:\n%s", outIO.String())
+		t.Fatalf("empty /resume did not warn:\n%s", outIO.String())
 	}
 }
 
-// /rename grava o nome da sessão; sem argumento, mostra o uso.
-func TestRenameGravaNome(t *testing.T) {
-	semCores(t)
-	srv := providerFakeModelos(t, "barroso-chat")
+// /rename stores the session name; without an argument, it shows usage.
+func TestRenameStoresName(t *testing.T) {
+	noColors(t)
+	srv := fakeModelsProvider(t, "barroso-chat")
 	defer srv.Close()
-	cfgPronta(t, srv.URL+"/v1", "k", "barroso-chat")
+	readyConfig(t, srv.URL+"/v1", "k", "barroso-chat")
 
-	io, outIO, _ := ponteIO(t, "/rename\n/rename   refatorar   o parser\n/exit\n")
+	io, outIO, _ := bridgeIO(t, "/rename\n/rename   refactor   the parser\n/exit\n")
 	if code := RunInteractive(io); code != 0 {
-		t.Fatalf("código %d", code)
+		t.Fatalf("exit code %d", code)
 	}
-	saida := outIO.String()
-	if !strings.Contains(saida, "usage: /rename") || !strings.Contains(saida, "session renamed: refatorar o parser") {
-		t.Fatalf("saída:\n%s", saida)
+	output := outIO.String()
+	if !strings.Contains(output, "usage: /rename") || !strings.Contains(output, "session renamed: refactor the parser") {
+		t.Fatalf("output:\n%s", output)
 	}
-	loja, err := store.Open(filepath.Join(config.Dir(), "sessions.db"))
+	db, err := store.Open(filepath.Join(config.Dir(), "sessions.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer loja.Fechar()
-	ls, _ := loja.ListSessions(10)
-	if len(ls) != 1 || ls[0].Title != "refatorar o parser" {
-		t.Fatalf("título gravado: %+v", ls)
+	defer db.Fechar()
+	ls, _ := db.ListSessions(10)
+	if len(ls) != 1 || ls[0].Title != "refactor the parser" {
+		t.Fatalf("stored title: %+v", ls)
 	}
 }

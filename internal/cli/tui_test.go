@@ -8,32 +8,32 @@ import (
 	"github.com/ruanbarroso/barroso-harness/internal/config"
 )
 
-// O spinner esconde o cursor e o devolve ao parar — o cursor piscando ao lado
-// de "Pensando" parecia campo de digitação.
-func TestSpinnerEscondeEDevolveCursor(t *testing.T) {
-	coresLigadas = true
-	defer func() { coresLigadas = false }()
+// The spinner hides the cursor and restores it when stopping — a cursor
+// blinking next to "Thinking" looked like an input field.
+func TestSpinnerHidesAndRestoresCursor(t *testing.T) {
+	colorsOn = true
+	defer func() { colorsOn = false }()
 	var sb strings.Builder
-	tui := novoTurnoTUI(&sb, &config.Config{Model: "m"})
+	tui := newTUITurn(&sb, &config.Config{Model: "m"})
 	tui.Pensando()
 	time.Sleep(20 * time.Millisecond)
-	tui.pararSpin()
+	tui.stopSpin()
 	s := sb.String()
-	i, j := strings.Index(s, esconderCursor), strings.LastIndex(s, mostrarCursor)
+	i, j := strings.Index(s, hideCursor), strings.LastIndex(s, showCursor)
 	if i < 0 || j < 0 || j < i {
-		t.Fatalf("cursor não foi escondido e devolvido nessa ordem: %q", s)
+		t.Fatalf("cursor was not hidden and restored in that order: %q", s)
 	}
 }
 
-// O BH não tem modos: nem a linha de status nem o rodapé levam "Build".
-func TestSemRotuloDeModo(t *testing.T) {
-	coresLigadas = true
-	defer func() { coresLigadas = false }()
+// BH has no modes: neither the status line nor the footer carries "Build".
+func TestNoModeLabel(t *testing.T) {
+	colorsOn = true
+	defer func() { colorsOn = false }()
 	var sb strings.Builder
 	cfg := &config.Config{CurrentProvider: "p", Model: "m", Janela: 1000}
-	statusEntrada(&sb, cfg, "", 0, 0)
-	novoTurnoTUI(&sb, cfg).Tokens(10, 10, time.Second, false)
+	inputStatus(&sb, cfg, "", 0, 0)
+	newTUITurn(&sb, cfg).Tokens(10, 10, time.Second, false)
 	if strings.Contains(sb.String(), "Build") {
-		t.Fatalf("rótulo de modo não deveria aparecer: %q", sb.String())
+		t.Fatalf("mode label should not appear: %q", sb.String())
 	}
 }

@@ -1,6 +1,6 @@
-// Package cli abriga o modo interativo: onboarding de provider/model e o
-// REPL com /model, /effort, /provider, /help e /exit. A leitura da chave é
-// oculta (x/term); testes injetam reader/writer e chaves fictícias.
+// Package cli holds the interactive mode: provider/model onboarding and the
+// REPL with /model, /effort, /provider, /help and /exit. Key input is hidden
+// (x/term); tests inject reader/writer and fake keys.
 package cli
 
 import (
@@ -23,33 +23,33 @@ import (
 	"golang.org/x/term"
 )
 
-// Esforcos são os níveis comuns de reasoning_effort. O provider pode aceitar
-// outros; validação real é o HTTP dele, e o erro volta para o usuário com a
-// chance de limpar via `/effort -` (nada de downgrade silencioso).
+// Esforcos are the common reasoning_effort levels. The provider may accept
+// others; the real validation is its HTTP API, and the error reaches the user
+// with the option to clear it via `/effort -` (no silent downgrade).
 var Esforcos = []string{"low", "medium", "high", "xhigh", "max"}
 
-// IO agrega os três fluxos, para testes injetarem reader/writer. O Reader
-// compartilhado evita descartar bytes quando a entrada é prebuffered.
+// IO bundles the three streams so tests can inject reader/writer. The shared
+// Reader avoids dropping bytes when the input is prebuffered.
 type IO struct {
 	In     io.Reader
 	Out    io.Writer
 	ErrOut io.Writer
 	reader *bufio.Reader
 
-	// tela != nil quando o REPL roda por trás da tela cheia (tela.go): Out e
-	// ErrOut viram linhas da conversa e cancelar recebe o Esc/Ctrl+C do turno.
-	tela     *tela
-	cancelar chan struct{}
-	// injetar põe uma linha na entrada do REPL como se fosse digitada (só na
-	// tela cheia): é por onde o aviso de sub-agente terminado acorda o REPL
-	// parado esperando o usuário.
-	injetar func(string)
+	// screen != nil when the REPL runs behind the full screen (screen.go): Out
+	// and ErrOut become conversation lines and cancelCh receives the turn's Esc/Ctrl+C.
+	screen   *screen
+	cancelCh chan struct{}
+	// inject puts a line into the REPL input as if typed (full screen only):
+	// it is how the finished sub-agent notice wakes a REPL that is waiting
+	// for the user.
+	inject func(string)
 }
 
-// linhaSubagentes é a linha sintética que avisa o REPL de que sub-agentes
-// terminaram. Começa com um caractere de controle para nunca colidir com
-// algo digitado.
-const linhaSubagentes = "\x1esubagents"
+// subagentsLine is the synthetic line telling the REPL that sub-agents
+// finished. It starts with a control character so it never collides with
+// typed text.
+const subagentsLine = "\x1esubagents"
 
 func (io *IO) Reader() *bufio.Reader {
 	if io.reader == nil {
@@ -58,7 +58,7 @@ func (io *IO) Reader() *bufio.Reader {
 	return io.reader
 }
 
-// PromptKey lê a chave SEM eco (x/term no stdin cru). Testes sobrescrevem.
+// PromptKey reads the key WITHOUT echo (x/term on raw stdin). Tests override it.
 var PromptKey = func(prompt string) (string, error) {
 	fmt.Print(prompt)
 	b, err := term.ReadPassword(int(os.Stdin.Fd()))
@@ -69,18 +69,18 @@ var PromptKey = func(prompt string) (string, error) {
 	return strings.TrimSpace(string(b)), nil
 }
 
-// buscarModelos é a costura de rede do catálogo: produção chama
-// dealer.Modelos, testes substituem para não sair da máquina. Separado do
-// PromptKey porque aqui a substituição precisa de URL e chave.
-var buscarModelos = func(ctx context.Context, base, key string) ([]dealer.CatalogModel, error) {
+// fetchModels is the catalog's network seam: production calls dealer.Modelos,
+// tests replace it to stay off the network. Separate from PromptKey because
+// this replacement needs the URL and the key.
+var fetchModels = func(ctx context.Context, base, key string) ([]dealer.CatalogModel, error) {
 	return dealer.Modelos(ctx, base, key)
 }
 
-// RunInteractive é o caminho de `bh` sem argumentos: onboarding se a config
-// estiver incompleta, REPL em seguida.
+// RunInteractive is the path for `bh` with no arguments: onboarding if the
+// config is incomplete, then the REPL.
 func RunInteractive(io IO) int {
-	if io.tela == nil && usarTela(io) {
-		if c := runTela(io); c >= 0 {
+	if io.screen == nil && useScreen(io) {
+		if c := runScreen(io); c >= 0 {
 			return c
 		}
 	}
@@ -92,13 +92,13 @@ func RunInteractive(io IO) int {
 }
 
 func run(io IO) error {
-	io.Reader() // inicializa o buffer ANTES de qualquer leitura: as cópias de IO
-	// passadas a Onboarding/repl precisam compartilhar o mesmo *bufio.Reader,
-	// senão o segundo leitor vê EOF e o REPL não recebe linha nenhuma.
-	if io.tela != nil {
-		coresLigadas = true // Out é o escritor da tela, que é terminal de verdade
+	io.Reader() // initialize the buffer BEFORE any read: the IO copies
+	// passed to Onboarding/repl must share the same *bufio.Reader,
+	// otherwise the second reader sees EOF and the REPL gets no lines.
+	if io.screen != nil {
+		colorsOn = true // Out is the screen writer, which is a real terminal
 	} else {
-		ligarCores(io)
+		enableColors(io)
 	}
 	cfg, err := config.Load()
 	if err != nil {
@@ -107,16 +107,16 @@ func run(io IO) error {
 	if !cfg.Pronta() {
 		fmt.Fprintln(io.Out, "Barroso Harness — first-time setup (provider, key and model; the key stays on this computer).")
 		if err := Onboarding(io, &cfg); err != nil {
-			if err == errCancelar || strings.Contains(strings.ToLower(err.Error()), "canceled") {
+			if err == errCanceled || strings.Contains(strings.ToLower(err.Error()), "canceled") {
 				fmt.Fprintln(io.Out, "onboarding canceled; nothing was changed or saved.")
 				return nil
 			}
 			return err
 		}
-	} else if io.tela != nil {
-		// a tela cheia já tem título, painel e rodapé
-	} else if coresLigadas {
-		cabecalhoTUI(io.Out, Versao)
+	} else if io.screen != nil {
+		// the full screen already has title, panel and footer
+	} else if colorsOn {
+		headerTUI(io.Out, Versao)
 	} else {
 		banner(io.Out)
 	}
@@ -124,16 +124,16 @@ func run(io IO) error {
 	return nil
 }
 
-var errCancelar = fmt.Errorf("canceled")
+var errCanceled = fmt.Errorf("canceled")
 
-// errMantido: a seleção de modelo terminou sem troca (Enter vazio).
-var errMantido = fmt.Errorf("model unchanged")
+// errUnchanged: model selection ended without a change (empty Enter).
+var errUnchanged = fmt.Errorf("model unchanged")
 
 // ── onboarding ───────────────────────────────────────────────────────────
 
-// Onboarding guia: base URL (default keys.barroso) → chave oculta →
-// /models validado → escolha de modelo. Reasoning effort inicia desativado.
-// Persiste somente no sucesso; Ctrl+D/cancelamento devolve errCancelar.
+// Onboarding walks through: base URL (default keys.barroso) → hidden key →
+// validated /models → model choice. Reasoning effort starts off.
+// Persists only on success; Ctrl+D/cancel returns errCanceled.
 func Onboarding(io IO, cfg *config.Config) error {
 	if io.reader == nil {
 		io.reader = bufio.NewReader(io.In)
@@ -142,7 +142,7 @@ func Onboarding(io IO, cfg *config.Config) error {
 	if p := cfg.Ativo(); p != nil && p.BaseURL != "" {
 		base = p.BaseURL
 	}
-	if v := perguntar(io, "base URL", base); strings.TrimSpace(v) != "" && strings.TrimSpace(v) != base {
+	if v := ask(io, "base URL", base); strings.TrimSpace(v) != "" && strings.TrimSpace(v) != base {
 		base = strings.TrimSpace(v)
 	}
 
@@ -151,20 +151,20 @@ func Onboarding(io IO, cfg *config.Config) error {
 		key = p.APIKey
 		fmt.Fprintln(io.Out, "current key kept; press enter to keep it or type a new one (hidden input).")
 	}
-	if nova, err := PromptKey("api key: "); err == nil && strings.TrimSpace(nova) != "" {
-		key = strings.TrimSpace(nova)
+	if newKey, err := PromptKey("api key: "); err == nil && strings.TrimSpace(newKey) != "" {
+		key = strings.TrimSpace(newKey)
 	}
 	if key == "" {
 		return fmt.Errorf("an API key is required to query /models and authenticate turns")
 	}
 
-	if err := configurarProvider(io, cfg, base, key); err != nil {
+	if err := configureProvider(io, cfg, base, key); err != nil {
 		if _, ok := err.(*ForaDoCatalogo); !ok {
 			return err
 		}
 	}
 	if cfg.Model == "" {
-		if err := selecionarModelo(io, cfg); err != nil {
+		if err := selectModel(io, cfg); err != nil {
 			return err
 		}
 	}
@@ -176,48 +176,48 @@ func Onboarding(io IO, cfg *config.Config) error {
 	return nil
 }
 
-// perguntar lê uma linha de entrada textual com sugestão default.
-func perguntar(io IO, rótulo, def string) string {
-	fmt.Fprintf(io.Out, "%s [%s]: ", rótulo, def)
-	linha, _ := io.Reader().ReadString('\n')
-	return strings.TrimSpace(linha)
+// ask reads one line of text input with a default suggestion.
+func ask(io IO, fieldLabel, def string) string {
+	fmt.Fprintf(io.Out, "%s [%s]: ", fieldLabel, def)
+	line, _ := io.Reader().ReadString('\n')
+	return strings.TrimSpace(line)
 }
 
-// configurarProvider valida base+chave NO /models ANTES de alterar memória ou
-// disco; em falha devolve erro — nada mudou (rollback integral). Quando o
-// model guardado não existe no catálogo novo, a cópia fica com o provider
-// aplicado e Model="" e devolve *ForaDoCatalogo (caller decide persistir).
-func configurarProvider(io IO, cfg *config.Config, base, key string) error {
+// configureProvider validates base+key AGAINST /models BEFORE touching memory
+// or disk; on failure it returns an error and nothing changed (full rollback).
+// When the stored model is not in the new catalog, the draft keeps the
+// provider applied with Model="" and returns *ForaDoCatalogo (caller decides to persist).
+func configureProvider(io IO, cfg *config.Config, base, key string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	ls, err := buscarModelos(ctx, base, key)
+	ls, err := fetchModels(ctx, base, key)
 	if err != nil {
 		return fmt.Errorf("provider rejected %s: %v (rolled back — nothing was saved)", base, err)
 	}
-	copia := *cfg
-	copia = atualizarProvider(copia, definirNomeProvider(base), base, key)
+	draft := *cfg
+	draft = updateProvider(draft, providerName(base), base, key)
 
-	fora := ForaDoCatalogo{}
-	if copia.Model != "" {
-		if !catalogoTem(copia.Model, ls) {
-			fora.Modelo = copia.Model
-			copia.Model = "" // provider novo não tem o modelo guardado
+	notIn := ForaDoCatalogo{}
+	if draft.Model != "" {
+		if !inCatalog(draft.Model, ls) {
+			notIn.Modelo = draft.Model
+			draft.Model = "" // the new provider does not have the stored model
 		}
 	}
-	if copia.Model != "" {
-		// Model existente no catálogo novo: a janela segue o que está gravado
-		// (fonte manual) ou rederiva do catálogo quando derivada.
-		if copia.JanelaSource != config.FonteManual {
-			if j := janelaDe(copia.Model, ls); j > 0 {
-				copia = aplicarJanela(copia, j)
+	if draft.Model != "" {
+		// Model exists in the new catalog: the window follows what is stored
+		// (manual source) or is re-derived from the catalog when derived.
+		if draft.JanelaSource != config.FonteManual {
+			if j := windowOf(draft.Model, ls); j > 0 {
+				draft = applyWindow(draft, j)
 			} else {
-				copia = limparJanelaCatalogo(copia)
+				draft = clearCatalogWindow(draft)
 			}
 		}
 	}
-	*cfg = copia
-	if fora.Modelo != "" || copia.Model == "" {
-		return &fora
+	*cfg = draft
+	if notIn.Modelo != "" || draft.Model == "" {
+		return &notIn
 	}
 	return nil
 }
@@ -228,7 +228,7 @@ func (e *ForaDoCatalogo) Error() string {
 	return "model " + e.Modelo + " is not in this provider's catalog; pick another (/model)"
 }
 
-func definirNomeProvider(base string) string {
+func providerName(base string) string {
 	t := strings.TrimSuffix(strings.TrimSpace(base), "/")
 	t = strings.TrimPrefix(strings.TrimPrefix(t, "https://"), "http://")
 	if i := strings.IndexAny(t, "/:"); i >= 0 {
@@ -237,7 +237,7 @@ func definirNomeProvider(base string) string {
 	return strings.NewReplacer(".", "-").Replace(t)
 }
 
-func catalogoTem(id string, ls []dealer.CatalogModel) bool {
+func inCatalog(id string, ls []dealer.CatalogModel) bool {
 	if id == "" {
 		return false
 	}
@@ -249,19 +249,19 @@ func catalogoTem(id string, ls []dealer.CatalogModel) bool {
 	return false
 }
 
-// aplicarJanela respeita override manual: se o usuário escreveu
-// context_window à mão, catálogo não sobrescreve.
-func aplicarJanela(cfg config.Config, janela int) config.Config {
+// applyWindow honours a manual override: if the user wrote
+// context_window by hand, the catalog does not overwrite it.
+func applyWindow(cfg config.Config, window int) config.Config {
 	if cfg.JanelaSource == config.FonteManual && cfg.Janela > 0 {
 		return cfg
 	}
-	cfg.Janela = janela
+	cfg.Janela = window
 	cfg.JanelaSource = config.FonteCatalogo
 	return cfg
 }
 
-// limparJanelaCatalogo zera somente o valor derivado do catálogo; manual fica.
-func limparJanelaCatalogo(cfg config.Config) config.Config {
+// clearCatalogWindow clears only the catalog-derived value; manual stays.
+func clearCatalogWindow(cfg config.Config) config.Config {
 	if cfg.JanelaSource == config.FonteManual && cfg.Janela > 0 {
 		return cfg
 	}
@@ -270,18 +270,18 @@ func limparJanelaCatalogo(cfg config.Config) config.Config {
 	return cfg
 }
 
-func atualizarProvider(cfg config.Config, nome, base, key string) config.Config {
+func updateProvider(cfg config.Config, name, base, key string) config.Config {
 	if cfg.Providers == nil {
 		cfg.Providers = map[string]*config.Provider{}
 	}
-	cfg.Providers[nome] = &config.Provider{BaseURL: base, APIKey: key}
-	cfg.CurrentProvider = nome
+	cfg.Providers[name] = &config.Provider{BaseURL: base, APIKey: key}
+	cfg.CurrentProvider = name
 	cfg.BaseURL, cfg.APIKey = base, key
 	return cfg
 }
 
-// janelaDe devolve o context_length publicado para o id (0 = desconhecida).
-func janelaDe(id string, ls []dealer.CatalogModel) int {
+// windowOf returns the published context_length for the id (0 = unknown).
+func windowOf(id string, ls []dealer.CatalogModel) int {
 	for _, m := range ls {
 		if m.ID == id {
 			return m.ContextLength
@@ -290,11 +290,11 @@ func janelaDe(id string, ls []dealer.CatalogModel) int {
 	return 0
 }
 
-// ── seleção de model ─────────────────────────────────────────────────────
+// ── model selection ──────────────────────────────────────────────────────
 
-// selecionarModelo: lista o catálogo filtrado (text-capable), ordem
-// alfabética, numerado; aceita índice ou ID. Atualiza janela derivada.
-func selecionarModelo(io IO, cfg *config.Config) error {
+// selectModel lists the filtered (text-capable) catalog, alphabetically,
+// numbered; accepts an index or an ID. Updates the derived window.
+func selectModel(io IO, cfg *config.Config) error {
 	p := cfg.Ativo()
 	base, key := "", ""
 	if p != nil {
@@ -302,35 +302,35 @@ func selecionarModelo(io IO, cfg *config.Config) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	ls, err := buscarModelos(ctx, base, key)
+	ls, err := fetchModels(ctx, base, key)
 	if err != nil {
 		return err
 	}
 	if len(ls) == 0 {
 		return fmt.Errorf("catalog has no usable chat models")
 	}
-	listarModelos(io.Out, ls, cfg.Model)
+	listModels(io.Out, ls, cfg.Model)
 	for {
-		fmt.Fprint(io.Out, cianof("select model > "))
-		linha, err := io.Reader().ReadString('\n')
+		fmt.Fprint(io.Out, cyanf("select model > "))
+		line, err := io.Reader().ReadString('\n')
 		if err != nil {
-			return errCancelar
+			return errCanceled
 		}
-		v := strings.TrimSpace(linha)
+		v := strings.TrimSpace(line)
 		if v == "" {
-			// Enter vazio com um modelo válido do catálogo = sair sem trocar.
-			// Sem modelo (onboarding, provider novo que não tem o atual) não
-			// há o que manter, então a escolha continua obrigatória.
-			if cfg.Model != "" && catalogoTem(cfg.Model, ls) {
-				return errMantido
+			// Empty Enter with a valid catalog model = exit without switching.
+			// Without a model (onboarding, a new provider lacking the current one)
+			// there is nothing to keep, so a choice is still required.
+			if cfg.Model != "" && inCatalog(cfg.Model, ls) {
+				return errUnchanged
 			}
 			fmt.Fprintln(io.Out, "pick an item (number or id) — no model, no turn.")
 			continue
 		}
 		id := ""
-		if n, errA := strconv.Atoi(v); errA == nil && n >= 1 && n <= len(ls) {
+		if n, errAtoi := strconv.Atoi(v); errAtoi == nil && n >= 1 && n <= len(ls) {
 			id = ls[n-1].ID
-		} else if catalogoTem(v, ls) {
+		} else if inCatalog(v, ls) {
 			id = v
 		}
 		if id == "" {
@@ -338,10 +338,10 @@ func selecionarModelo(io IO, cfg *config.Config) error {
 			continue
 		}
 		cfg.Model = id
-		if j := janelaDe(id, ls); j > 0 {
-			*cfg = aplicarJanela(*cfg, j)
+		if j := windowOf(id, ls); j > 0 {
+			*cfg = applyWindow(*cfg, j)
 		} else {
-			*cfg = limparJanelaCatalogo(*cfg)
+			*cfg = clearCatalogWindow(*cfg)
 		}
 		return nil
 	}
@@ -349,350 +349,350 @@ func selecionarModelo(io IO, cfg *config.Config) error {
 
 // ── REPL ─────────────────────────────────────────────────────────────────
 
-// sinais é preenchido por signal.Notify; o primeiro Ctrl+C durante um turno
-// cancela a rodada, um segundo encerra o REPL (via canal fechar).
-func (io IO) cancelarTurno(fechar chan<- struct{}) (context.Context, context.CancelFunc) {
-	signais := make(chan os.Signal, 2)
-	signal.Notify(signais, os.Interrupt, syscall.SIGTERM)
+// turnContext: the first Ctrl+C during a turn cancels the round, a second one
+// ends the REPL (by closing quitCh).
+func (io IO) turnContext(quitCh chan<- struct{}) (context.Context, context.CancelFunc) {
+	sigs := make(chan os.Signal, 2)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
 	ctx, cancel := context.WithCancel(context.Background())
-	if io.cancelar != nil {
-		// Tela cheia: o raw mode não gera sinal; Esc/Ctrl+C chegam por aqui.
-		// Um pedido que sobrou de um turno já encerrado não pode derrubar
-		// este (ex.: Enter no instante em que o turno anterior terminava).
+	if io.cancelCh != nil {
+		// Full screen: raw mode raises no signal; Esc/Ctrl+C come through here.
+		// A request left over from a finished turn must not kill this one
+		// (e.g. Enter right as the previous turn was ending).
 		select {
-		case <-io.cancelar:
+		case <-io.cancelCh:
 		default:
 		}
 		go func() {
 			select {
-			case <-io.cancelar:
+			case <-io.cancelCh:
 				cancel()
 			case <-ctx.Done():
 			}
 		}()
 	}
 	go func() {
-		<-signais
+		<-sigs
 		fmt.Fprintln(io.Out)
-		avisoFmt(io.Out, "canceling the turn — press again to exit")
+		warnFmt(io.Out, "canceling the turn — press again to exit")
 		cancel()
 		select {
-		case <-signais:
-			close(fechar)
+		case <-sigs:
+			close(quitCh)
 		case <-ctx.Done():
 		}
-		signal.Stop(signais)
+		signal.Stop(sigs)
 	}()
 	return ctx, cancel
 }
 
 func repl(io IO, cfg *config.Config) {
-	// Persistência best-effort: sem banco, o REPL continua em memória (o aviso
-	// sai uma vez, em ErrOut, e nunca interrompe a conversa).
-	loja, idAtivo := abrirStore(io)
+	// Best-effort persistence: without a database the REPL keeps going in memory
+	// (the warning goes out once, on ErrOut, and never interrupts the conversation).
+	db, activeID := openStore(io)
 	var sess *runtime.Session
-	if loja != nil {
-		sess = runtime.NewSessionWithStore(*cfg, loja, idAtivo)
+	if db != nil {
+		sess = runtime.NewSessionWithStore(*cfg, db, activeID)
 	} else {
 		sess = runtime.NewSession(*cfg)
 	}
 	defer func() {
-		if loja != nil {
-			_ = loja.TouchSession(idAtivo)
-			_ = loja.Fechar()
+		if db != nil {
+			_ = db.TouchSession(activeID)
+			_ = db.Fechar()
 		}
 	}()
 	br := io.Reader()
 	cwd, _ := os.Getwd()
-	fechar := make(chan struct{})
-	sair := false
-	ultimoContexto := 0 // prompt tokens do último request, para o % de contexto
+	quitCh := make(chan struct{})
+	exiting := false
+	lastContext := 0 // prompt tokens of the last request, for the context %
 
-	// ── subsistemas com dono de processo (MCP, sub-agentes) ───────────────
-	// O ctx aqui é de VIDA DO PROCESSO: os sub-agentes precisam sobreviver ao
-	// turno que os criou, e o handshake do MCP não pode morrer com um Ctrl+C
-	// de rodada. Persistentes best-effort — falha de UM servidor vira aviso,
-	// não derrubada do REPL; /model trocando provider reinjeta na próxima linha.
-	ctxProcesso, cancelaProcesso := context.WithCancel(context.Background())
-	defer cancelaProcesso()
-	conjunto, avisosWiring := wiring.Montar(ctxProcesso, *cfg, sess, cwd)
-	for _, aviso := range avisosWiring {
-		avisoFmt(io.Out, aviso)
+	// ── process-owned subsystems (MCP, sub-agents) ─────────────────────────
+	// This ctx lives for the WHOLE PROCESS: sub-agents must outlive the turn
+	// that created them, and the MCP handshake must not die with a round's
+	// Ctrl+C. Best-effort — a failure of ONE server becomes a warning, not a
+	// REPL crash; /model switching provider re-injects on the next line.
+	processCtx, cancelProcess := context.WithCancel(context.Background())
+	defer cancelProcess()
+	wired, wiringWarnings := wiring.Montar(processCtx, *cfg, sess, cwd)
+	for _, notice := range wiringWarnings {
+		warnFmt(io.Out, notice)
 	}
-	// Fechar ao sair: Fecha() do conjunto encerra subprocessos MCP; o gerente
-	// de sub-agentes é in-memory e morre com o processo.
-	defer func() { _ = conjunto.Fechar() }()
-	if g := conjunto.Gerente(); g != nil && io.injetar != nil {
-		g.AoTerminar(func() { io.injetar(linhaSubagentes) })
+	// Close on exit: the set's Fechar() stops MCP subprocesses; the sub-agent
+	// manager is in-memory and dies with the process.
+	defer func() { _ = wired.Fechar() }()
+	if g := wired.Gerente(); g != nil && io.inject != nil {
+		g.AoTerminar(func() { io.inject(subagentsLine) })
 	}
 
 	for {
-		// Encerramentos vindos de um turno (Ctrl+C duas vezes) saem ANTES de
-		// desenhar prompt novo; o EOF fecha no meio da linha e pede a quebra.
+		// Exits requested by a turn (Ctrl+C twice) happen BEFORE drawing a new
+		// prompt; EOF closes mid-line and asks for the line break.
 		select {
-		case <-fechar:
-			despedida(io.Out)
+		case <-quitCh:
+			farewell(io.Out)
 			return
 		default:
 		}
-		if sair {
-			despedida(io.Out)
+		if exiting {
+			farewell(io.Out)
 			return
 		}
-		if io.tela != nil {
+		if io.screen != nil {
 			var mcps []string
-			for _, c := range conjunto.MCP() {
+			for _, c := range wired.MCP() {
 				mcps = append(mcps, c.Fonte())
 			}
-			io.tela.Estado(estadoPainel{
-				titulo: tituloAtual(loja, sess), modelo: cfg.Model,
-				provider: cfg.CurrentProvider, effort: cfg.Effort, cwd: cwdCurto(cwd),
-				contexto: ultimoContexto, janela: cfg.Janela, mcps: mcps,
+			io.screen.Estado(panelState{
+				title: currentTitle(db, sess), model: cfg.Model,
+				provider: cfg.CurrentProvider, effort: cfg.Effort, cwd: shortCwd(cwd),
+				ctxTokens: lastContext, window: cfg.Janela, mcps: mcps,
 			})
-		} else if coresLigadas {
-			statusEntrada(io.Out, cfg, sess.ID(), len(conjunto.MCP()), ultimoContexto)
-			promptoTUI(io.Out)
+		} else if colorsOn {
+			inputStatus(io.Out, cfg, sess.ID(), len(wired.MCP()), lastContext)
+			printPromptTUI(io.Out)
 		} else {
-			statusbarSessao(io.Out, cfg, sess.ID())
-			prompto(io.Out, cfg.Model, cfg.Effort)
+			sessionStatusbar(io.Out, cfg, sess.ID())
+			printPrompt(io.Out, cfg.Model, cfg.Effort)
 		}
-		linha, err := br.ReadString('\n')
-		if err != nil { // EOF / Ctrl+D: sair limpo
+		line, err := br.ReadString('\n')
+		if err != nil { // EOF / Ctrl+D: exit cleanly
 			fmt.Fprintln(io.Out)
-			if loja != nil {
-				_ = loja.TouchSession(sess.ID())
+			if db != nil {
+				_ = db.TouchSession(sess.ID())
 			}
-			despedida(io.Out)
+			farewell(io.Out)
 			return
 		}
-		// Sub-agentes terminaram: o resultado vira um turno do modelo, sem o
-		// usuário precisar perguntar.
-		avisoSub := ""
-		if strings.TrimSpace(linha) == linhaSubagentes {
-			ts := conjunto.Gerente().Terminadas()
+		// Sub-agents finished: the result becomes a model turn, without the
+		// user having to ask.
+		subNotice := ""
+		if strings.TrimSpace(line) == subagentsLine {
+			ts := wired.Gerente().Terminadas()
 			if len(ts) == 0 {
-				continue // já entregue (task_result ou aviso anterior)
+				continue // already delivered (task_result or an earlier notice)
 			}
-			avisoSub = subagent.AvisoTerminadas(ts, conjunto.Gerente().Ativas())
-			linha = avisoSub
+			subNotice = subagent.AvisoTerminadas(ts, wired.Gerente().Ativas())
+			line = subNotice
 		}
-		partes := strings.SplitN(strings.TrimSpace(linha), " ", 2)
-		campos := strings.Fields(partes[0])
+		parts := strings.SplitN(strings.TrimSpace(line), " ", 2)
+		fields := strings.Fields(parts[0])
 		arg := ""
-		if len(partes) > 1 {
-			arg = strings.TrimSpace(partes[1])
+		if len(parts) > 1 {
+			arg = strings.TrimSpace(parts[1])
 		}
-		if len(campos) == 0 {
+		if len(fields) == 0 {
 			continue
 		}
-		if avisoSub != "" {
-			campos = []string{""} // cai no turno do modelo, nunca num comando
+		if subNotice != "" {
+			fields = []string{""} // goes to the model turn, never to a command
 		}
-		switch campos[0] {
+		switch fields[0] {
 		case "/exit", "/quit":
-			if loja != nil {
-				_ = loja.TouchSession(sess.ID())
+			if db != nil {
+				_ = db.TouchSession(sess.ID())
 			}
-			despedida(io.Out)
+			farewell(io.Out)
 			return
 		case "/new":
-			// A caixa faia do /new: limpar o transcript da sessão sem trocar
-			// provider (CONFIG fica onde está). Pode ser usado após terminar algo
-			// pra não carregar o contexto pro próximo pedido.
+			// /new: clear the session transcript without switching provider (the
+			// config stays as is). Useful after finishing something, so the context
+			// is not carried into the next request.
 			sess.ClearHistory()
-			ultimoContexto = 0
-			if io.tela != nil {
-				io.tela.Limpar()
+			lastContext = 0
+			if io.screen != nil {
+				io.screen.Limpar()
 			}
 			okFmt(io.Out, "history cleared; new conversation")
 		case "/resume":
-			if loja == nil {
-				avisoFmt(io.Out, "session not persisted: nothing to resume")
+			if db == nil {
+				warnFmt(io.Out, "session not persisted: nothing to resume")
 				continue
 			}
-			lista := listarSessoesMonta(loja, 10)
-			if len(lista) == 0 {
-				listarSessaoResumo(io.Out, nil)
+			list := loadSessionRows(db, 10)
+			if len(list) == 0 {
+				printSessionList(io.Out, nil)
 				continue
 			}
-			listarSessaoResumo(io.Out, lista)
-			fmt.Fprint(io.Out, verdof("❯")+" "+dimf("number or id (enter cancels)")+" ")
-			escolha, errLeitura := br.ReadString('\n')
-			if errLeitura != nil { // EOF no meio: sai limpo como no loop
+			printSessionList(io.Out, list)
+			fmt.Fprint(io.Out, greenf("❯")+" "+dimf("number or id (enter cancels)")+" ")
+			choice, errRead := br.ReadString('\n')
+			if errRead != nil { // EOF midway: exit cleanly, as in the loop
 				fmt.Fprintln(io.Out)
-				_ = loja.TouchSession(sess.ID())
-				despedida(io.Out)
+				_ = db.TouchSession(sess.ID())
+				farewell(io.Out)
 				return
 			}
-			escolhido := resolverSessao(escolha, lista)
-			if escolhido == "" {
-				avisoFmt(io.Out, "empty or invalid choice; keeping the current session")
+			chosen := resolveSession(choice, list)
+			if chosen == "" {
+				warnFmt(io.Out, "empty or invalid choice; keeping the current session")
 				continue
 			}
-			// Retomar = novo id ativo + transcript reconstruído do log, na
-			// MESMA sessão: as tools injetadas pelo wiring (task_spawn, MCP)
-			// ficam na sessão em que foram injetadas. Trocar por uma sessão
-			// nova deixava a retomada sem sub-agentes e sem MCP.
-			idAtivo = escolhido
-			sess.Attach(loja, idAtivo)
+			// Resume = new active id + transcript rebuilt from the log, in the
+			// SAME session: tools injected by wiring (task_spawn, MCP) stay in the
+			// session they were injected into. Swapping in a new session left the
+			// resumed one without sub-agents and without MCP.
+			activeID = chosen
+			sess.Attach(db, activeID)
 			_ = sess.ContextoVivoCarregar()
 			if err := sess.Resume(); err != nil {
-				erroFmt(io.ErrOut, "error resuming session", err)
+				errorFmt(io.ErrOut, "error resuming session", err)
 				continue
 			}
-			ultimoContexto = sess.UltimoContexto()
-			if io.tela != nil {
-				// Tela cheia: a conversa retomada volta para a tela, não só
-				// para o modelo.
-				io.tela.Limpar()
-				reproduzirHistorico(io.tela, sess.History())
-				io.tela.Adicionar("") // respiro entre a conversa e o aviso
+			lastContext = sess.UltimoContexto()
+			if io.screen != nil {
+				// Full screen: the resumed conversation comes back to the screen,
+				// not just to the model.
+				io.screen.Limpar()
+				replayHistory(io.screen, sess.History())
+				io.screen.Adicionar("") // spacing between the conversation and the notice
 			}
 			okFmt(io.Out, "session "+sess.ID()+" resumed")
 		case "/save":
-			if loja == nil {
-				avisoFmt(io.Out, "session not persisted: nothing to save")
+			if db == nil {
+				warnFmt(io.Out, "session not persisted: nothing to save")
 				continue
 			}
-			titulo := arg
-			if titulo == "" {
-				titulo = tituloPadrao(sess)
+			title := arg
+			if title == "" {
+				title = defaultTitle(sess)
 			}
-			if err := loja.SetTitle(sess.ID(), titulo); err != nil {
-				erroFmt(io.ErrOut, "error saving title", err)
+			if err := db.SetTitle(sess.ID(), title); err != nil {
+				errorFmt(io.ErrOut, "error saving title", err)
 				continue
 			}
-			okFmt(io.Out, "session "+sess.ID()+" saved — "+strings.TrimSpace(titulo))
+			okFmt(io.Out, "session "+sess.ID()+" saved — "+strings.TrimSpace(title))
 		case "/rename":
-			nome := strings.Join(strings.Fields(arg), " ")
-			if nome == "" {
-				avisoFmt(io.Out, "usage: /rename <new session name>")
+			name := strings.Join(strings.Fields(arg), " ")
+			if name == "" {
+				warnFmt(io.Out, "usage: /rename <new session name>")
 				continue
 			}
-			if loja == nil {
-				avisoFmt(io.Out, "session not persisted: nowhere to store the name")
+			if db == nil {
+				warnFmt(io.Out, "session not persisted: nowhere to store the name")
 				continue
 			}
-			if err := loja.SetTitle(sess.ID(), nome); err != nil {
-				erroFmt(io.ErrOut, "error renaming", err)
+			if err := db.SetTitle(sess.ID(), name); err != nil {
+				errorFmt(io.ErrOut, "error renaming", err)
 				continue
 			}
-			okFmt(io.Out, "session renamed: "+nome)
+			okFmt(io.Out, "session renamed: "+name)
 		case "/help":
-			ajuda(io)
+			printHelp(io)
 		case "/update":
 			cmdUpdate(io)
-		case "/context", "/contexto": // /contexto: alias antigo, fora da ajuda
-			cmdContexto(io.Out, cfg, loja)
+		case "/context", "/contexto": // /contexto: legacy alias, not in help
+			cmdContext(io.Out, cfg, db)
 		case "/skills":
-			listarSkills(io.Out, runtime.SkillsDisponiveis(cwd))
+			listSkills(io.Out, runtime.SkillsDisponiveis(cwd))
 		case "/tasks":
-			cmdTasks(io.Out, conjunto.Gerente(), arg)
+			cmdTasks(io.Out, wired.Gerente(), arg)
 		case "/model":
 			if arg != "" {
-				// troca direta por id se ele existir no catálogo atual
-				if err := trocarModeloDireto(io, cfg, arg); err != nil {
-					erroFmt(io.ErrOut, "error", err)
+				// switch directly by id if it is in the current catalog
+				if err := switchModelDirect(io, cfg, arg); err != nil {
+					errorFmt(io.ErrOut, "error", err)
 					continue
 				}
-			} else if err := selecionarModelo(io, cfg); err == errMantido {
+			} else if err := selectModel(io, cfg); err == errUnchanged {
 				okFmt(io.Out, "model unchanged: "+cfg.Model)
 				continue
 			} else if err != nil {
-				erroFmt(io.ErrOut, "error", err)
+				errorFmt(io.ErrOut, "error", err)
 				continue
 			} else {
 				if err := cfg.Save(); err != nil {
-					erroFmt(io.ErrOut, "error saving", err)
+					errorFmt(io.ErrOut, "error saving", err)
 					continue
 				}
 				sess.Configure(*cfg)
 			}
 			statusbar(io.Out, cfg)
 		case "/effort":
-			procEffort(io, cfg, sess, arg)
+			handleEffort(io, cfg, sess, arg)
 		case "/provider":
 			if err := cmdProvider(io, cfg); err != nil {
-				erroFmt(io.ErrOut, "error", err)
+				errorFmt(io.ErrOut, "error", err)
 				continue
 			}
 			sess.Configure(*cfg)
 			statusbar(io.Out, cfg)
 		default:
-			pedido := strings.TrimSpace(linha)
-			if avisoSub == "" {
-				// Resultado de sub-agente que terminou enquanto o usuário
-				// digitava vai junto com o pedido (modo sem tela cheia, ou
-				// aviso que ainda não foi lido).
-				if g := conjunto.Gerente(); g != nil {
+			request := strings.TrimSpace(line)
+			if subNotice == "" {
+				// A sub-agent result that finished while the user was typing
+				// goes along with the request (non-full-screen mode, or a
+				// notice not yet read).
+				if g := wired.Gerente(); g != nil {
 					if ts := g.Terminadas(); len(ts) > 0 {
-						pedido = subagent.AvisoTerminadas(ts, g.Ativas()) + "\n---\n" + pedido
+						request = subagent.AvisoTerminadas(ts, g.Ativas()) + "\n---\n" + request
 					}
 				}
 			}
-			if strings.HasPrefix(campos[0], "/") && avisoSub == "" {
-				// /<nome-de-skill> [args] executa a skill; qualquer outro / é
-				// comando desconhecido.
-				expandido, nome, ok := runtime.ExpandirSkill(cwd, pedido)
+			if strings.HasPrefix(fields[0], "/") && subNotice == "" {
+				// /<skill-name> [args] runs the skill; any other / is an
+				// unknown command.
+				expanded, name, ok := runtime.ExpandirSkill(cwd, request)
 				if !ok {
-					fmt.Fprintf(io.Out, "unknown command: %s (/help lists commands; /skills lists skills)\n", campos[0])
+					fmt.Fprintf(io.Out, "unknown command: %s (/help lists commands; /skills lists skills)\n", fields[0])
 					continue
 				}
-				okFmt(io.Out, "skill "+nome)
-				pedido = expandido
+				okFmt(io.Out, "skill "+name)
+				request = expanded
 			}
-			// turno do modelo: Ctrl+C abre mão da rodada corrente; um segundo
-			// sinal (ou /exit) encerra o REPL.
-			ctx, cancel := io.cancelarTurno(fechar)
-			rend := rendererTurno(io.Out)
-			var tui *turnoTUI
-			var tt *turnoTela
-			if io.tela != nil && avisoSub != "" {
-				io.tela.AvisoSubagentes(avisoSub)
-				io.tela.Ocupado(true)
-				tt = &turnoTela{t: io.tela, modelo: cfg.Model}
+			// model turn: Ctrl+C gives up the current round; a second
+			// signal (or /exit) ends the REPL.
+			ctx, cancel := io.turnContext(quitCh)
+			rend := turnRenderer(io.Out)
+			var tui *tuiTurn
+			var tt *screenTurn
+			if io.screen != nil && subNotice != "" {
+				io.screen.AvisoSubagentes(subNotice)
+				io.screen.Ocupado(true)
+				tt = &screenTurn{t: io.screen, model: cfg.Model}
 				rend = tt
-			} else if io.tela != nil {
-				io.tela.Usuario(strings.TrimSpace(linha))
-				io.tela.Ocupado(true)
-				tt = &turnoTela{t: io.tela, modelo: cfg.Model}
+			} else if io.screen != nil {
+				io.screen.Usuario(strings.TrimSpace(line))
+				io.screen.Ocupado(true)
+				tt = &screenTurn{t: io.screen, model: cfg.Model}
 				rend = tt
-			} else if coresLigadas {
-				ecoPedido(io.Out, strings.TrimSpace(linha))
-				tui = novoTurnoTUI(io.Out, cfg)
+			} else if colorsOn {
+				echoRequest(io.Out, strings.TrimSpace(line))
+				tui = newTUITurn(io.Out, cfg)
 				rend = tui
 			}
-			errTurno := sess.Send(ctx, rend, cwd, pedido)
+			errTurn := sess.Send(ctx, rend, cwd, request)
 			if tt != nil {
-				io.tela.pararSpin()
-				io.tela.Ocupado(false)
-				if tt.contexto > 0 {
-					ultimoContexto = tt.contexto
+				io.screen.stopSpin()
+				io.screen.Ocupado(false)
+				if tt.ctxTokens > 0 {
+					lastContext = tt.ctxTokens
 				}
 			}
 			if tui != nil {
-				tui.pararSpin()
+				tui.stopSpin()
 				tui.mu.Lock()
-				if tui.contexto > 0 {
-					ultimoContexto = tui.contexto
+				if tui.ctxTokens > 0 {
+					lastContext = tui.ctxTokens
 				}
 				tui.mu.Unlock()
 			}
 			cancel()
-			if errTurno != nil {
-				erroFmt(io.ErrOut, "error", errTurno)
+			if errTurn != nil {
+				errorFmt(io.ErrOut, "error", errTurn)
 			}
 			select {
-			case <-fechar:
-				sair = true
+			case <-quitCh:
+				exiting = true
 			default:
 			}
 		}
 	}
 }
 
-func ajuda(io IO) {
-	fmt.Fprint(io.Out, cianof("commands")+`
+func printHelp(io IO) {
+	fmt.Fprint(io.Out, cyanf("commands")+`
   /model            list the full catalog (alphabetical) and switch model
   /model <id>       switch directly when the id is in the catalog
   /effort           show the current effort and common levels
@@ -713,10 +713,10 @@ func ajuda(io IO) {
 	fmt.Fprint(io.Out, dimf("plain text goes straight to the model; Ctrl+C cancels the current turn.")+"\n\n")
 }
 
-// trocarModeloDireto resolve /model <índice|id>: aceita número da lista
-// alfabética ou o ID; se nenhum dos dois existir no catálogo, erro acionável
-// e nada muda.
-func trocarModeloDireto(io IO, cfg *config.Config, entrada string) error {
+// switchModelDirect resolves /model <index|id>: accepts the number from the
+// alphabetical list or the ID; if neither is in the catalog, an actionable
+// error and nothing changes.
+func switchModelDirect(io IO, cfg *config.Config, input string) error {
 	p := cfg.Ativo()
 	base, key := "", ""
 	if p != nil {
@@ -724,54 +724,54 @@ func trocarModeloDireto(io IO, cfg *config.Config, entrada string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	ls, err := buscarModelos(ctx, base, key)
+	ls, err := fetchModels(ctx, base, key)
 	if err != nil {
 		return err
 	}
 	id := ""
-	if n, errA := strconv.Atoi(entrada); errA == nil && n >= 1 && n <= len(ls) {
+	if n, errAtoi := strconv.Atoi(input); errAtoi == nil && n >= 1 && n <= len(ls) {
 		id = ls[n-1].ID
-	} else if catalogoTem(entrada, ls) {
-		id = entrada
+	} else if inCatalog(input, ls) {
+		id = input
 	}
 	if id == "" {
-		return fmt.Errorf("%q is not in the provider's catalog; run /model with no argument to list it", entrada)
+		return fmt.Errorf("%q is not in the provider's catalog; run /model with no argument to list it", input)
 	}
-	copia := *cfg
-	copia.Model = id
-	if j := janelaDe(id, ls); j > 0 {
-		copia = aplicarJanela(copia, j)
+	draft := *cfg
+	draft.Model = id
+	if j := windowOf(id, ls); j > 0 {
+		draft = applyWindow(draft, j)
 	} else {
-		copia = limparJanelaCatalogo(copia)
+		draft = clearCatalogWindow(draft)
 	}
-	if err := copia.Save(); err != nil {
+	if err := draft.Save(); err != nil {
 		return err
 	}
-	*cfg = copia
+	*cfg = draft
 	return nil
 }
 
-// procEffort processa /effort [nivel].
-func procEffort(io IO, cfg *config.Config, sess *runtime.Session, arg string) {
-	atual := "(off)"
+// handleEffort processes /effort [level].
+func handleEffort(io IO, cfg *config.Config, sess *runtime.Session, arg string) {
+	current := "(off)"
 	if cfg.Effort != "" {
-		atual = cfg.Effort
+		current = cfg.Effort
 	}
 	if arg == "" {
-		fmt.Fprintf(io.Out, "effort: %s · levels: %s · `/effort -` clears\n", atual, strings.Join(Esforcos, ", "))
+		fmt.Fprintf(io.Out, "effort: %s · levels: %s · `/effort -` clears\n", current, strings.Join(Esforcos, ", "))
 		return
 	}
-	copia := *cfg
+	draft := *cfg
 	if arg == "-" || arg == "off" || arg == "clear" {
-		copia.Effort = ""
+		draft.Effort = ""
 	} else {
-		copia.Effort = arg
+		draft.Effort = arg
 	}
-	if err := copia.Save(); err != nil {
-		fmt.Fprintf(io.ErrOut, "error saving: %v (effort stays %s)\n", err, atual)
+	if err := draft.Save(); err != nil {
+		fmt.Fprintf(io.ErrOut, "error saving: %v (effort stays %s)\n", err, current)
 		return
 	}
-	*cfg = copia
+	*cfg = draft
 	sess.Configure(*cfg)
 	if cfg.Effort == "" {
 		fmt.Fprintln(io.Out, "effort cleared; the next request goes out WITHOUT reasoning_effort.")
@@ -780,22 +780,22 @@ func procEffort(io IO, cfg *config.Config, sess *runtime.Session, arg string) {
 	}
 }
 
-// cmdProvider pergunta base URL e chave (oculta), valida /models e persiste.
-// Em falha de validação o erro sobe: nada de memória nem disco é alterado.
+// cmdProvider asks for base URL and key (hidden), validates /models and persists.
+// On validation failure the error propagates: neither memory nor disk changes.
 func cmdProvider(io IO, cfg *config.Config) error {
 	base := config.DefaultBaseURL
 	if p := cfg.Ativo(); p != nil && p.BaseURL != "" {
 		base = p.BaseURL
 	}
-	if v := perguntar(io, "base URL", base); v != "" && v != base {
+	if v := ask(io, "base URL", base); v != "" && v != base {
 		base = v
 	}
 	fmt.Fprintln(io.Out, "enter keeps the current key; the new key input is hidden.")
-	nova := ""
+	newKey := ""
 	if v, err := PromptKey("api key: "); err == nil && strings.TrimSpace(v) != "" {
-		nova = strings.TrimSpace(v)
+		newKey = strings.TrimSpace(v)
 	}
-	key := nova
+	key := newKey
 	if key == "" {
 		if p := cfg.Ativo(); p != nil {
 			key = p.APIKey
@@ -805,31 +805,31 @@ func cmdProvider(io IO, cfg *config.Config) error {
 		return fmt.Errorf("an API key is required to validate /models")
 	}
 
-	copia := *cfg
-	err := configurarProvider(io, &copia, base, key)
-	// configurarProvider devolve ForaDoCatalogo quando o model guardado não
-	// existe no catálogo novo: o provider já foi aplicado na cópia, mas a
-	// escolha de model deve acontecer ANTES de salvar.
+	draft := *cfg
+	err := configureProvider(io, &draft, base, key)
+	// configureProvider returns ForaDoCatalogo when the stored model is not in
+	// the new catalog: the provider is already applied to the draft, but the
+	// model must be chosen BEFORE saving.
 	var fc *ForaDoCatalogo
-	if err != nil && !asForaCatalogo(err, &fc) {
+	if err != nil && !asNotInCatalog(err, &fc) {
 		return err
 	}
-	if copia.Model == "" || fc != nil {
+	if draft.Model == "" || fc != nil {
 		fmt.Fprintln(io.Out, "the new provider does not have the current model — pick another:")
-		if err := selecionarModelo(io, &copia); err != nil {
+		if err := selectModel(io, &draft); err != nil {
 			return fmt.Errorf("provider validated; run /provider again to pick a model (%w)", err)
 		}
 	}
-	if err := copia.Save(); err != nil {
+	if err := draft.Save(); err != nil {
 		return err
 	}
-	*cfg = copia
+	*cfg = draft
 	return nil
 }
 
-func asForaCatalogo(err error, destino **ForaDoCatalogo) bool {
+func asNotInCatalog(err error, dst **ForaDoCatalogo) bool {
 	if e, ok := err.(*ForaDoCatalogo); ok {
-		*destino = e
+		*dst = e
 		return true
 	}
 	return false
