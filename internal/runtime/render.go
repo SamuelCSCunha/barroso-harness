@@ -1,13 +1,14 @@
 package runtime
 
-// Camada de saída do turno. O runtime não decide COR nem glifo: ele descreve o
-// que aconteceu e quem escreve escolhe a roupa. Duas implementações:
+// Turn output layer. The runtime does not decide COLOR or glyph: it describes
+// what happened and the writer picks the styling. Two implementations:
 //
-//   - RendererPuro: texto cru, um caractere de escape sequer. É o que `-p` usa
-//     (as receitas do site e do painel passam a saída por pipe e não podem
-//     ganhar ANSI) e o que os testes usam — o prefixo "[tool <nome> ok" continua
-//     LITERAL, porque runtime_test.go o procura como substring.
-//   - a TUI do REPL (pacote cli): paleta 256, glifos UTF-8 e rodapé de tokens.
+//   - RendererPuro: raw text, not a single escape character. It is what `-p`
+//     uses (the site and panel recipes pipe the output and must not get ANSI)
+//     and what tests use — the "[tool <name> ok" prefix stays LITERAL, because
+//     runtime_test.go looks for it as a substring.
+//   - the REPL TUI (package cli): 256-color palette, UTF-8 glyphs and a token
+//     footer.
 
 import (
 	"fmt"
@@ -15,97 +16,99 @@ import (
 	"time"
 )
 
-// Renderer é a saída de um turno: texto do modelo, eco de tool, avisos do
-// guardrail e o rodapé de tokens.
+// Renderer is the output of a turn: model text, tool echo, guardrail notices
+// and the token footer.
 type Renderer interface {
-	// Resposta escreve a fala do modelo com a quebra final.
-	Resposta(texto string)
-	// Tool desenha o cabeçalho de uma tool executada (nome, duração, falha).
-	Tool(nome string, dur time.Duration, erro bool)
-	// Eco ecoa um trecho do resultado da tool (o histórico já recebeu tudo).
-	Eco(saida string)
-	// Guardrail relata uma compactação: proativa (previsão de estouro) ou
-	// reativa (o provider recusou por contexto).
-	Guardrail(proativa bool)
-	// Tokens é o rodapé do turno: tamanho do request enviado, tokens gerados,
-	// duração e se alguma compactação rodou. `compactou` sozinho já distingue
-	// um turno normal de um que passou pelo guardrail.
-	Tokens(prompt, saida int, dur time.Duration, compactou bool)
+	// Resposta writes the model's reply with the trailing newline.
+	Resposta(text string)
+	// Tool draws the header of an executed tool (name, duration, failure).
+	Tool(name string, dur time.Duration, failed bool)
+	// Eco echoes an excerpt of the tool result (the history already got it all).
+	Eco(output string)
+	// Guardrail reports a compaction: proactive (predicted overflow) or
+	// reactive (the provider rejected it for context size).
+	Guardrail(proactive bool)
+	// Tokens is the turn footer: size of the request sent, tokens generated,
+	// duration and whether any compaction ran. `compacted` alone already tells
+	// a normal turn apart from one that went through the guardrail.
+	Tokens(prompt, output int, dur time.Duration, compacted bool)
 }
 
-// RendererDetalhado é OPCIONAL: quem implementa recebe também o início de
-// cada tool (com os argumentos, antes de executar) e o tamanho do contexto do
-// último request. A TUI usa para mostrar "executando <tool>" e o % de contexto;
-// ACP, sub-agente e modo puro não precisam e seguem só com Renderer.
+// RendererDetalhado is OPTIONAL: implementers also receive the start of each
+// tool (with its arguments, before executing) and the context size of the
+// last request. The TUI uses it to show "running <tool>" and the context %;
+// ACP, subagents and plain mode do not need it and stick to Renderer.
 type RendererDetalhado interface {
-	// Pensando: o request ao modelo vai sair (a TUI anima a espera).
+	// Pensando: the request to the model is about to go out (the TUI animates
+	// the wait).
 	Pensando()
-	ToolInicio(nome, args string)
+	ToolInicio(name, args string)
 	Contexto(promptTokens int)
 }
 
-// RendererRaciocinio é OPCIONAL: recebe o pensamento da rodada quando o
-// provider o expõe, antes das tools e da resposta (a TUI mostra "Thought").
+// RendererRaciocinio is OPTIONAL: it receives the round's reasoning when the
+// provider exposes it, before tools and the answer (the TUI shows "Thought").
 type RendererRaciocinio interface {
-	Pensou(texto string, dur time.Duration)
+	Pensou(text string, dur time.Duration)
 }
 
-// RendererCorte é OPCIONAL: avisa que a resposta foi cortada pelo teto de
-// saída. desistiu=false: o turno vai continuar sozinho; true: parou.
+// RendererCorte is OPTIONAL: it reports that the response was cut at the
+// output limit. gaveUp=false: the turn will continue on its own; true: it
+// stopped.
 type RendererCorte interface {
-	Cortada(teto int, desistiu bool)
+	Cortada(limit int, gaveUp bool)
 }
 
-// RendererPuro é a implementação sem adorno.
+// RendererPuro is the unadorned implementation.
 type RendererPuro struct{ out io.Writer }
 
-// NovoRendererPuro cria o renderer de texto cru sobre out.
+// NovoRendererPuro creates the raw-text renderer over out.
 func NovoRendererPuro(out io.Writer) *RendererPuro { return &RendererPuro{out: out} }
 
-// RendererDe adapta um io.Writer à interface — compatibilidade com chamadores
-// antigos e com o caminho `-p`, que só sabe escrever bytes.
+// RendererDe adapts an io.Writer to the interface — compatibility with older
+// callers and with the `-p` path, which only knows how to write bytes.
 func RendererDe(out io.Writer) Renderer { return NovoRendererPuro(out) }
 
-func (p *RendererPuro) Resposta(texto string) { fmt.Fprintln(p.out, texto) }
+func (p *RendererPuro) Resposta(text string) { fmt.Fprintln(p.out, text) }
 
-func (p *RendererPuro) Tool(nome string, dur time.Duration, erro bool) {
-	estado := "ok"
-	if erro {
-		estado = "error"
+func (p *RendererPuro) Tool(name string, dur time.Duration, failed bool) {
+	status := "ok"
+	if failed {
+		status = "error"
 	}
-	fmt.Fprintf(p.out, "[tool %s %s in %s]\n", nome, estado, dur.Round(time.Millisecond))
+	fmt.Fprintf(p.out, "[tool %s %s in %s]\n", name, status, dur.Round(time.Millisecond))
 }
 
-func (p *RendererPuro) Eco(saida string) {
-	if saida == "" {
+func (p *RendererPuro) Eco(output string) {
+	if output == "" {
 		return
 	}
-	fmt.Fprintln(p.out, saida)
+	fmt.Fprintln(p.out, output)
 }
 
-func (p *RendererPuro) Cortada(teto int, desistiu bool) {
-	if desistiu {
-		fmt.Fprintf(p.out, "[output limit] response cut at %d tokens; giving up\n", teto)
+func (p *RendererPuro) Cortada(limit int, gaveUp bool) {
+	if gaveUp {
+		fmt.Fprintf(p.out, "[output limit] response cut at %d tokens; giving up\n", limit)
 		return
 	}
-	fmt.Fprintf(p.out, "[output limit] response cut at %d tokens; continuing\n", teto)
+	fmt.Fprintf(p.out, "[output limit] response cut at %d tokens; continuing\n", limit)
 }
 
-func (p *RendererPuro) Guardrail(proativa bool) {
-	if proativa {
-		fmt.Fprintln(p.out, guardrailProativo)
+func (p *RendererPuro) Guardrail(proactive bool) {
+	if proactive {
+		fmt.Fprintln(p.out, guardrailProactive)
 		return
 	}
-	fmt.Fprintln(p.out, guardrailReativo)
+	fmt.Fprintln(p.out, guardrailReactive)
 }
 
-// Tokens é deliberadamente silenciosa no modo puro: `-p` alimenta receitas via
-// pipe e um rodapé de status poluiria cada uma. O contador por turno é coisa da
-// UI interativa, onde alguém está olhando para a tela.
+// Tokens is deliberately silent in plain mode: `-p` feeds recipes through a
+// pipe and a status footer would pollute each one. The per-turn counter
+// belongs to the interactive UI, where someone is watching the screen.
 func (p *RendererPuro) Tokens(int, int, time.Duration, bool) {}
 
-// Textos do guardrail. Ficam aqui porque o modo puro os imprime literal.
+// Guardrail texts. They live here because plain mode prints them literally.
 const (
-	guardrailProativo = "[guardrail] proactive compaction (predicted overflow)"
-	guardrailReativo  = "[guardrail] provider rejected the request size; reactive compaction"
+	guardrailProactive = "[guardrail] proactive compaction (predicted overflow)"
+	guardrailReactive  = "[guardrail] provider rejected the request size; reactive compaction"
 )

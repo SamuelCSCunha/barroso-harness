@@ -1,6 +1,7 @@
-// Persistência da sessão: a ponte entre o log append-only (internal/store) e o
-// transcript em memória ([ ]dealer.Mensagem). O log guarda o que aconteceu; a
-// memória é derivada dele — nunca o contrário. Send grava; Resume reconstrói.
+// Session persistence: the bridge between the append-only log (internal/store)
+// and the in-memory transcript ([]dealer.Mensagem). The log stores what
+// happened; memory is derived from it — never the other way around. Send
+// writes; Resume rebuilds.
 package runtime
 
 import (
@@ -12,113 +13,122 @@ import (
 	"github.com/ruanbarroso/barroso-harness/internal/store"
 )
 
-// Tetos do log. O limite de 16 KiB no resultado de tool é o que mantém o
-// arquivo curto sem perder conteúdo: acima dele o resultado vai para `blobs`
-// e o evento carrega só o preview + a referência.
+// Log limits. The 16 KiB limit on tool results keeps the file short without
+// losing content: above it the result goes to `blobs` and the event carries
+// only the preview + the reference.
 const (
-	limiteBlob   = 16 << 10 // 16 KiB: acima disso, tool_result vira blob
-	previewBytes = 512      // quanto do resultado fica no preview
+	blobThreshold = 16 << 10 // 16 KiB: above this, tool_result becomes a blob
+	previewBytes  = 512      // how much of the result stays in the preview
 )
 
-// registrar grava um evento no log. Silencioso quando não há persistência: a
-// sessão em memória continua funcionando sem banco (é o modo -p e os testes).
+// record writes an event to the log. Silent when there is no persistence: the
+// in-memory session keeps working without a database (-p mode and tests).
 //
-// Falha de gravação NÃO aborta o turno. Razão: o log é observabilidade, não
-// autorização — perder uma linha porque o disco encheu não pode derrubar uma
-// conversa que está rodando. O custo é um histórico incompleto, reversível.
-func (s *Session) registrar(kind string, payload map[string]any) {
+// A write failure does NOT abort the turn. Reason: the log is observability,
+// not authorization — losing a line because the disk filled up must not take
+// down a running conversation. The cost is an incomplete, recoverable history.
+func (s *Session) record(kind string, payload map[string]any) {
 	if !s.Persistente() || payload == nil {
 		return
 	}
 	_, _ = s.store.StoreEvent(s.sessionID, kind, payload)
 }
 
-// registrarResultado grava um tool_result, deslocando para blob o que passar
-// de limiteBlob. Devolve o payload gravado (útil para teste e inspeção).
-func (s *Session) registrarResultado(callID, nome, saida string, isErr bool) map[string]any {
-	// Sessão sem banco (sub-agente, -p sem store): nada a gravar. Sem esta
-	// saída, um resultado acima de limiteBlob chamava PutBlob num store nil
-	// e derrubava o processo inteiro.
+// recordResult writes a tool_result, moving to a blob whatever exceeds
+// blobThreshold. It returns the written payload (useful for tests and
+// inspection).
+func (s *Session) recordResult(callID, name, output string, isErr bool) map[string]any {
+	// Session without a database (subagent, -p without store): nothing to
+	// write. Without this early return, a result above blobThreshold called
+	// PutBlob on a nil store and crashed the whole process.
 	if !s.Persistente() {
 		return nil
 	}
 	payload := map[string]any{
 		"role":      "tool_result",
 		"tool_id":   callID,
-		"tool_name": nome,
+		"tool_name": name,
 		"is_erro":   isErr,
 	}
-	if len(saida) > limiteBlob {
-		if ref, err := s.store.PutBlob([]byte(saida)); err == nil {
+	if len(output) > blobThreshold {
+		if ref, err := s.store.PutBlob([]byte(output)); err == nil {
 			for k, v := range ref {
 				payload[k] = v
 			}
-			payload["preview"] = cortarPrefixo(saida, previewBytes)
+			payload["preview"] = truncatePrefix(output, previewBytes)
 			payload["truncated"] = true
 		} else {
-			// Sem blob (falha de gravação), o preview é o que fica registrado.
-			payload["content"] = cortarPrefixo(saida, previewBytes)
+			// Without a blob (write failure), the preview is what gets recorded.
+			payload["content"] = truncatePrefix(output, previewBytes)
 			payload["truncated"] = true
 		}
 	} else {
-		payload["content"] = saida
+		payload["content"] = output
 	}
-	s.registrar("tool_result", payload)
+	s.record("tool_result", payload)
 	return payload
 }
 
-// cortarPrefixo devolve os primeiros n bytes sem quebrar uma runa UTF-8 no
-// meio: preview com bytes pendurados viraria "?" na leitura e no log.
-func cortarPrefixo(s string, n int) string {
+// truncatePrefix returns the first n bytes without splitting a UTF-8 rune: a
+// preview with dangling bytes would show up as "?" when read and in the log.
+func truncatePrefix(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	corte := s[:n]
-	// Recua enquanto o byte anterior for de continuação (10xxxxxx): significa
-	// que cortamos dentro de uma runa multibyte.
-	for len(corte) > 0 && !utf8.RuneStart(corte[len(corte)-1]) {
-		corte = corte[:len(corte)-1]
+	cut := s[:n]
+	// Back off while the last byte is a continuation byte (10xxxxxx): it means
+	// we cut inside a multibyte rune.
+	for len(cut) > 0 && !utf8.RuneStart(cut[len(cut)-1]) {
+		cut = cut[:len(cut)-1]
 	}
-	return corte
+	return cut
 }
 
-// ── reconstrução ──────────────────────────────────────────────────────────
+// ── reconstruction ────────────────────────────────────────────────────────
 
-// Resume carrega os eventos da sessão e remonta s.history no mesmo formato
-// []dealer.Mensagem que o loop de Send já usa. Resultados de tool que foram
-// para blob são reidratados aqui — o transcript volta completo.
+// Resume loads the session events and rebuilds s.history in the same
+// []dealer.Mensagem format the Send loop already uses. Tool results that went
+// to a blob are rehydrated here — the transcript comes back complete.
 //
-// Sem eventos, history fica vazia (sessão nova ou id errado): não é erro,
-// é apenas uma conversa começando.
+// Without events, history stays empty (new session or wrong id): not an
+// error, just a conversation starting.
 func (s *Session) Resume() error {
 	if !s.Persistente() {
 		return nil
 	}
-	eventos, err := s.store.ListEvents(s.sessionID, 0, 0)
+	events, err := s.store.ListEvents(s.sessionID, 0, 0)
 	if err != nil {
 		return err
 	}
-	s.history = eventosParaMensagens(s.store, eventos)
+	s.history = eventsToMessages(s.store, events)
 	return nil
 }
 
-// eventosParaMensagens traduz o log para o transcript. Só eventos de conteúdo
-// entram: user_message, assistant, tool_call, tool_result. Os demais
-// (guardrail, session_reset, metadado) são observabilidade, não transcript.
-func eventosParaMensagens(st *store.Store, eventos []store.Event) []dealer.Mensagem {
+// eventsToMessages translates the log into the transcript. Only content
+// events enter: user_message, assistant, tool_call, tool_result. The others
+// (guardrail, session_reset, metadata) are observability, not transcript.
+func eventsToMessages(st *store.Store, events []store.Event) []dealer.Mensagem {
 	var out []dealer.Mensagem
-	for _, e := range eventos {
+	for _, e := range events {
 		switch e.Kind {
 		case "user_message", "assistant", "tool_call", "tool_result":
-		case "compactacao":
-			// Reaplica a compactação do agente no ponto em que aconteceu: sem
-			// isso, /resume e session/load trariam de volta a conversa que o
-			// modelo já tinha resumido.
+		case eventCompaction, eventCompactionEN:
+			// Re-apply the agent compaction where it happened: without this,
+			// /resume and session/load would bring back the conversation the
+			// model had already summarized. Both the original "estado" key and
+			// the English "state" key are accepted.
 			var c struct {
 				Estado string `json:"estado"`
+				State  string `json:"state"`
 			}
-			if json.Unmarshal([]byte(e.Payload), &c) == nil && strings.TrimSpace(c.Estado) != "" {
-				out = compactarHistorico(out, c.Estado)
+			if json.Unmarshal([]byte(e.Payload), &c) == nil {
+				state := c.Estado
+				if strings.TrimSpace(state) == "" {
+					state = c.State
+				}
+				if strings.TrimSpace(state) != "" {
+					out = compactHistory(out, state)
+				}
 			}
 			continue
 		default:
@@ -139,7 +149,7 @@ func eventosParaMensagens(st *store.Store, eventos []store.Event) []dealer.Mensa
 			} `json:"usage"`
 		}
 		if err := json.Unmarshal([]byte(e.Payload), &p); err != nil {
-			continue // evento ilegível não pode corromper o transcript
+			continue // an unreadable event must not corrupt the transcript
 		}
 		m := dealer.Mensagem{
 			Role:     p.Role,
@@ -155,49 +165,49 @@ func eventosParaMensagens(st *store.Store, eventos []store.Event) []dealer.Mensa
 				OutputTokens: p.Usage.OutputTokens,
 			}
 		}
-		// Reidratação: conteúdo grande ficou no blob, o evento tem a referência.
+		// Rehydration: large content stayed in the blob, the event holds the reference.
 		if p.Blob != "" {
-			m.Conteudo = reidratar(st, p.Blob, p.Preview)
+			m.Conteudo = rehydrate(st, p.Blob, p.Preview)
 		}
 		out = append(out, m)
 	}
 	return out
 }
 
-// reidratar devolve o conteúdo completo de um tool_result arquivado. O
-// preview NÃO é somado: ele é o começo do próprio blob, e concatená-los
-// repetiria os primeiros bytes. Sem blob (banco sem os dados), o preview é o
-// que sobrou — e é melhor que nada.
-func reidratar(st *store.Store, hash, preview string) string {
+// rehydrate returns the full content of an archived tool_result. The preview
+// is NOT added: it is the start of the blob itself, and concatenating them
+// would repeat the first bytes. Without a blob (database missing the data),
+// the preview is what is left — and better than nothing.
+func rehydrate(st *store.Store, hash, preview string) string {
 	if st == nil || hash == "" {
 		return preview
 	}
-	dados, err := st.GetBlob(hash)
+	data, err := st.GetBlob(hash)
 	if err != nil {
 		return preview
 	}
-	return string(dados)
+	return string(data)
 }
 
-// umaLinha colapsa um texto em uma única linha: o log é uma linha por evento,
-// e mensagem de provider costuma ter newlines no meio.
-func umaLinha(s string) string {
+// oneLine collapses a text into a single line: the log is one line per event,
+// and provider messages often contain newlines.
+func oneLine(s string) string {
 	s = strings.TrimSpace(s)
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		s = s[:i]
 	}
-	const teto = 240
-	if len(s) > teto {
-		s = s[:teto] + "…"
+	const limit = 240
+	if len(s) > limit {
+		s = s[:limit] + "…"
 	}
 	return s
 }
 
-// ── busca e recuperação ───────────────────────────────────────────────────
+// ── search and retrieval ──────────────────────────────────────────────────
 
-// Buscar procura nos eventos da sessão (substring, sem distinguir maiúscula)
-// e devolve trechos com contexto — é o que recupera conteúdo que o guardrail
-// compactou ou que saiu da janela do modelo.
+// Search looks through the session events (substring, case-insensitive) and
+// returns excerpts with context — it is what recovers content the guardrail
+// compacted or that left the model window.
 func (s *Session) Search(query string, limit int) []store.Hit {
 	if !s.Persistente() || strings.TrimSpace(query) == "" {
 		return nil
@@ -209,8 +219,8 @@ func (s *Session) Search(query string, limit int) []store.Hit {
 	return hits
 }
 
-// Retrieve devolve UM evento com o payload completo (blob reidratado), para o
-// modelo recuperar a saída inteira de uma tool arquivada.
+// Retrieve returns ONE event with the full payload (blob rehydrated), so the
+// model can recover the whole output of an archived tool.
 func (s *Session) Retrieve(seq int) (store.Event, error) {
 	if !s.Persistente() {
 		return store.Event{}, store.ErrSessaoInexistente
@@ -219,10 +229,10 @@ func (s *Session) Retrieve(seq int) (store.Event, error) {
 	if err != nil {
 		return store.Event{}, err
 	}
-	cheio, err := s.store.Rehydrate(e.Payload)
+	full, err := s.store.Rehydrate(e.Payload)
 	if err != nil {
 		return *e, nil
 	}
-	e.Payload = cheio
+	e.Payload = full
 	return *e, nil
 }

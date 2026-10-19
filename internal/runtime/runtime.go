@@ -1,7 +1,7 @@
-// Package runtime compõe o turno: instruções BARROSO.md → histórico →
-// guardrail → loop do modelo → tools YOLO → compactação proativa/reativa.
-// O transcript é append-only dentro do processo. A Sessão (session.go)
-// executa o loop; Turno é o wrapper de um único pedido usado por -p.
+// Package runtime composes a turn: BARROSO.md instructions → history →
+// guardrail → model loop → YOLO tools → proactive/reactive compaction.
+// The transcript is append-only within the process. Session (session.go)
+// runs the loop; Turno is the single-prompt wrapper used by -p.
 package runtime
 
 import (
@@ -18,11 +18,11 @@ import (
 	"github.com/ruanbarroso/barroso-harness/internal/store"
 )
 
-// Turno executa um pedido único (modo -p): streaming de texto na saída, tools
-// em modo YOLO, guardrail de janela antes de cada chamada e recuperação
-// reativa limitada. Reusa a Sessão sem histórico prévio: stateless por vez.
-func Turno(out io.Writer, cfg config.Config, cwd, pedido string) error {
-	if strings.TrimSpace(pedido) == "" {
+// Turno runs a single prompt (-p mode): text streamed to the output, tools in
+// YOLO mode, a window guardrail before each call and bounded reactive
+// recovery. It reuses Session with no prior history: stateless per call.
+func Turno(out io.Writer, cfg config.Config, cwd, prompt string) error {
+	if strings.TrimSpace(prompt) == "" {
 		return fmt.Errorf("empty prompt: use -p \"...\"")
 	}
 	if !cfg.Pronta() {
@@ -30,20 +30,21 @@ func Turno(out io.Writer, cfg config.Config, cwd, pedido string) error {
 			"incomplete configuration (%s) — run `bh` with no arguments to set up provider/model interactively, or edit %s",
 			strings.Join(cfg.Faltas(), ", "), filePath(cfg))
 	}
-	if err := NewSession(cfg).Send(context.Background(), RendererDe(out), cwd, pedido); err != nil {
+	if err := NewSession(cfg).Send(context.Background(), RendererDe(out), cwd, prompt); err != nil {
 		return err
 	}
 	return nil
 }
 
-// TurnoPersistente é o Turno do modo -p COM log. O store chega pronto de quem
-// chama (main.go abre em best-effort); sessionID é o id já gerado, para que o
-// caller possa comunicar. Sem store, degrada para Turno: o turno roda igual.
-func TurnoPersistente(out io.Writer, cfg config.Config, cwd, pedido string, st *store.Store, sessionID string) error {
+// TurnoPersistente is the -p mode Turno WITH logging. The caller hands over a
+// ready store (main.go opens it best-effort); sessionID is the already
+// generated id, so the caller can report it. Without a store it degrades to
+// Turno: the turn runs the same.
+func TurnoPersistente(out io.Writer, cfg config.Config, cwd, prompt string, st *store.Store, sessionID string) error {
 	if st == nil || strings.TrimSpace(sessionID) == "" {
-		return Turno(out, cfg, cwd, pedido)
+		return Turno(out, cfg, cwd, prompt)
 	}
-	if strings.TrimSpace(pedido) == "" {
+	if strings.TrimSpace(prompt) == "" {
 		return fmt.Errorf("empty prompt: use -p \"...\"")
 	}
 	if !cfg.Pronta() {
@@ -51,11 +52,11 @@ func TurnoPersistente(out io.Writer, cfg config.Config, cwd, pedido string, st *
 			"incomplete configuration (%s) — run `bh` with no arguments to set up provider/model interactively, or edit %s",
 			strings.Join(cfg.Faltas(), ", "), filePath(cfg))
 	}
-	return NewSessionWithStore(cfg, st, sessionID).Send(context.Background(), RendererDe(out), cwd, pedido)
+	return NewSessionWithStore(cfg, st, sessionID).Send(context.Background(), RendererDe(out), cwd, prompt)
 }
 
-// NovoSessaoID gera um id de sessão no mesmo formato do REPL
-// (bh-<YYYYMMDDHHMMSS>-<4hex>), para o modo -p gravar no MESMO log.
+// NovoSessaoID generates a session id in the same format as the REPL
+// (bh-<YYYYMMDDHHMMSS>-<4hex>), so -p mode writes to the SAME log.
 func NovoSessaoID() string {
 	return fmt.Sprintf("bh-%s-%s", time.Now().Format("20060102150405"), hex4Rand())
 }
@@ -63,13 +64,13 @@ func NovoSessaoID() string {
 func hex4Rand() string {
 	var b [2]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		// Sem entropia, o relógio vira a segunda fonte do aleatório.
+		// Without entropy, the clock becomes the fallback source of randomness.
 		return fmt.Sprintf("%04x", time.Now().UnixNano()&0xffff)
 	}
 	return hex.EncodeToString(b[:])
 }
 
-// filePath devolve o caminho do config.json (não impresso em testes).
+// filePath returns the config.json path (not printed in tests).
 func filePath(cfg config.Config) string {
 	if cfg.Home != "" {
 		return cfg.Home + "\\config.json"
@@ -77,59 +78,61 @@ func filePath(cfg config.Config) string {
 	return "~/.barroso-harness/config.json"
 }
 
-// resultadoSaida devolve trecho a ecoar no stream: até 2 KiB de uma saída de
-// tool (o histórico do modelo já recebeu tudo).
-func resultadoSaida(saida string) string {
-	s := strings.TrimRight(saida, "\n")
+// echoExcerpt returns the excerpt to echo on the stream: up to 2 KiB of a tool
+// output (the model history already received all of it).
+func echoExcerpt(output string) string {
+	s := strings.TrimRight(output, "\n")
 	if s == "" {
 		return ""
 	}
-	linhas := strings.Split(s, "\n")
-	if len(linhas) > 12 {
-		linhas = append(linhas[:12], "…")
+	lines := strings.Split(s, "\n")
+	if len(lines) > 12 {
+		lines = append(lines[:12], "…")
 	}
-	eco := strings.Join(linhas, "\n")
-	if len(eco) > 2<<10 {
-		eco = eco[:2<<10] + "…"
+	echo := strings.Join(lines, "\n")
+	if len(echo) > 2<<10 {
+		echo = echo[:2<<10] + "…"
 	}
-	return eco
+	return echo
 }
 
-// podar troca resultados antigos e grandes de tool por bilhete curto. A poda
-// é monotônica dentro do turno — mantém o prefixo do request estável.
-func podar(h []dealer.Mensagem, piso *int, deficit int) []dealer.Mensagem {
+// prune replaces large, old tool results with a short stub. Pruning is
+// monotonic within the turn — it keeps the request prefix stable.
+func prune(h []dealer.Mensagem, floor *int, deficit int) []dealer.Mensagem {
 	if deficit <= 0 {
 		return nil
 	}
-	const cauda = 24
-	if len(h) <= cauda {
+	const tail = 24
+	if len(h) <= tail {
 		return nil
 	}
-	nova := append([]dealer.Mensagem(nil), h...)
-	limite := len(nova) - cauda
-	if limite <= *piso {
+	pruned := append([]dealer.Mensagem(nil), h...)
+	limit := len(pruned) - tail
+	if limit <= *floor {
 		return nil
 	}
-	recuperado := 0
-	for i := *piso; i < limite; i++ {
-		if nova[i].Role != "tool_result" || len(nova[i].Conteudo) < 2048 {
+	freed := 0
+	for i := *floor; i < limit; i++ {
+		if pruned[i].Role != "tool_result" || len(pruned[i].Conteudo) < 2048 {
 			continue
 		}
-		t := len(nova[i].Conteudo)
-		nova[i].Conteudo = fmt.Sprintf("(resultado anterior de %s compactado pelo guardrail; re-peça com range menor se precisar do conteúdo)", nova[i].ToolName)
-		recuperado += t - len(nova[i].Conteudo)
-		if recuperado >= deficit {
+		before := len(pruned[i].Conteudo)
+		pruned[i].Conteudo = fmt.Sprintf("(earlier result of %s compacted by the guardrail; request it again with a smaller range if you need the content)", pruned[i].ToolName)
+		freed += before - len(pruned[i].Conteudo)
+		if freed >= deficit {
 			break
 		}
 	}
-	if recuperado < deficit {
+	if freed < deficit {
 		return nil
 	}
-	*piso = limite
-	return nova
+	*floor = limit
+	return pruned
 }
 
-func estouraContexto(err error) bool {
+// contextOverflow reports whether a provider error means the request
+// exceeded the context window.
+func contextOverflow(err error) bool {
 	s := strings.ToLower(err.Error())
 	return (strings.Contains(s, "context") || strings.Contains(s, "maximum")) &&
 		(strings.Contains(s, "length") || strings.Contains(s, "tokens"))

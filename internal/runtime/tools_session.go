@@ -1,13 +1,13 @@
-// Tools de recuperação do log da sessão. Vivem no runtime, e não no pacote
-// tools, porque fecham sobre a Sessão: precisam do store para ler o log, e o
-// pacote tools não pode importar o runtime (seria ciclo). Send anexa estas
-// specs às built-in antes de montar os schemas, então o modelo as vê como
-// qualquer outra ferramenta.
+// Session-log retrieval tools. They live in runtime, not in package tools,
+// because they close over the Session: they need the store to read the log,
+// and package tools cannot import runtime (it would be a cycle). Send appends
+// these specs to the built-ins before building the schemas, so the model sees
+// them like any other tool.
 //
-// O problema que resolvem: o guardrail compacta resultados grandes de tool
-// para o turno caber na janela, e o transcript manda o resto embora. Sem
-// recuperação, o conteúdo some — o agente fica sabendo que existiu algo ali
-// sem poder ler de novo. Estas duas tools dão o caminho de volta.
+// The problem they solve: the guardrail compacts large tool results so the
+// turn fits in the window, and the transcript drops the rest. Without
+// retrieval, the content is gone — the agent knows something was there but
+// cannot read it again. These two tools provide the way back.
 package runtime
 
 import (
@@ -19,33 +19,33 @@ import (
 	"github.com/ruanbarroso/barroso-harness/internal/tools"
 )
 
-const limitePadraoBusca = 10
-const tetoPadraoRetrieve = 8 << 10 // 8 KiB: retrieve não pode estourar a janela
+const defaultSearchLimit = 10
+const defaultRetrieveLimit = 8 << 10 // 8 KiB: retrieve must not blow the window
 
-// SessaoSpecs devolve as tools de sessão para a Sessão dada. Sem persistência
-// elas continuam na lista (o schema é o mesmo), mas devolvem uma mensagem
-// explicando que o log não está ativo — melhor que a tool não existir e o
-// modelo tentar de novo.
+// SessaoSpecs returns the session tools for the given Session. Without
+// persistence they stay in the list (the schema is the same), but they return
+// a message explaining that the log is not active — better than the tool not
+// existing and the model retrying.
 func SessaoSpecs(s *Session) []tools.Spec {
 	return []tools.Spec{
-		specSessaoBusca(s),
-		specSessaoRetrieve(s),
+		sessionSearchSpec(s),
+		sessionRetrieveSpec(s),
 	}
 }
 
-func specSessaoBusca(s *Session) tools.Spec {
+func sessionSearchSpec(s *Session) tools.Spec {
 	return tools.Spec{
 		Name: "session_search",
-		Description: "Procura no histórico da sessão atual (substring, ignora maiúsculas) e devolve " +
-			"os trechos que casam, com o número do evento (seq). Use para reencontrar conteúdo " +
-			"que a compactação do guardrail tirou da janela ou que saiu do transcript: saídas " +
-			"grandes de tool, decisões antigas, caminhos já lidos. Combinado com session_retrieve " +
-			"recupera o texto inteiro. Só enxerga esta sessão.",
+		Description: "Searches the current session's history (substring, case-insensitive) and returns " +
+			"the matching excerpts, with the event number (seq). Use it to find again content " +
+			"that guardrail compaction removed from the window or that left the transcript: large " +
+			"tool outputs, old decisions, paths already read. Combined with session_retrieve it " +
+			"recovers the whole text. Only sees this session.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"query": map[string]any{"type": "string", "description": "texto a procurar (substring, sem distinguir maiúsculas)"},
-				"limit": map[string]any{"type": "integer", "description": "quantos eventos devolver; padrão 10"},
+				"query": map[string]any{"type": "string", "description": "text to search for (substring, case-insensitive)"},
+				"limit": map[string]any{"type": "integer", "description": "how many events to return; default 10"},
 			},
 			"required": []string{"query"},
 		},
@@ -55,24 +55,24 @@ func specSessaoBusca(s *Session) tools.Spec {
 				Limit int    `json:"limit"`
 			}
 			if err := json.Unmarshal(raw, &c); err != nil {
-				return "", fmt.Errorf("entrada inválida: %w", err)
+				return "", fmt.Errorf("invalid input: %w", err)
 			}
 			if strings.TrimSpace(c.Query) == "" {
-				return "", fmt.Errorf("query vazio")
+				return "", fmt.Errorf("empty query")
 			}
 			if !s.Persistente() {
-				return "(sessão sem persistência: o log não está gravando, não há o que procurar)", nil
+				return "(session without persistence: the log is not recording, there is nothing to search)", nil
 			}
-			limite := c.Limit
-			if limite <= 0 {
-				limite = limitePadraoBusca
+			limit := c.Limit
+			if limit <= 0 {
+				limit = defaultSearchLimit
 			}
-			hits := s.Search(c.Query, limite)
+			hits := s.Search(c.Query, limit)
 			if len(hits) == 0 {
-				return fmt.Sprintf("nenhum trecho com %q no histórico desta sessão", c.Query), nil
+				return fmt.Sprintf("no excerpt with %q in this session's history", c.Query), nil
 			}
 			var sb strings.Builder
-			fmt.Fprintf(&sb, "%d trecho(s) com %q — use session_retrieve com o seq para o texto inteiro:\n", len(hits), c.Query)
+			fmt.Fprintf(&sb, "%d excerpt(s) with %q — use session_retrieve with the seq for the whole text:\n", len(hits), c.Query)
 			for _, h := range hits {
 				fmt.Fprintf(&sb, "seq %d [%s] %s\n", h.Seq, h.Kind, h.Snippet)
 			}
@@ -81,18 +81,18 @@ func specSessaoBusca(s *Session) tools.Spec {
 	}
 }
 
-func specSessaoRetrieve(s *Session) tools.Spec {
+func sessionRetrieveSpec(s *Session) tools.Spec {
 	return tools.Spec{
 		Name: "session_retrieve",
-		Description: "Devolve UM evento do histórico da sessão atual pelo número (seq), com o " +
-			"conteúdo completo — inclusive saídas de tool grandes que foram arquivadas em blob " +
-			"durante a compactação. O seq vem de session_search. Use quando um trecho não bastar " +
-			"e você precisar do texto inteiro de volta.",
+		Description: "Returns ONE event of the current session's history by number (seq), with its " +
+			"full content — including large tool outputs that were archived in a blob " +
+			"during compaction. The seq comes from session_search. Use it when an excerpt is not " +
+			"enough and you need the whole text back.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"seq":   map[string]any{"type": "integer", "description": "número do evento (seq), como devolvido por session_search"},
-				"limit": map[string]any{"type": "integer", "description": "teto de bytes do conteúdo devolvido; padrão 8192"},
+				"seq":   map[string]any{"type": "integer", "description": "event number (seq), as returned by session_search"},
+				"limit": map[string]any{"type": "integer", "description": "byte limit of the returned content; default 8192"},
 			},
 			"required": []string{"seq"},
 		},
@@ -102,29 +102,29 @@ func specSessaoRetrieve(s *Session) tools.Spec {
 				Limit int `json:"limit"`
 			}
 			if err := json.Unmarshal(raw, &c); err != nil {
-				return "", fmt.Errorf("entrada inválida: %w", err)
+				return "", fmt.Errorf("invalid input: %w", err)
 			}
 			if !s.Persistente() {
-				return "(sessão sem persistência: o log não está gravando, não há evento para recuperar)", nil
+				return "(session without persistence: the log is not recording, there is no event to retrieve)", nil
 			}
 			if c.Seq <= 0 {
-				return "", fmt.Errorf("seq inválido: %d", c.Seq)
+				return "", fmt.Errorf("invalid seq: %d", c.Seq)
 			}
-			limite := c.Limit
-			if limite <= 0 {
-				limite = tetoPadraoRetrieve
+			limit := c.Limit
+			if limit <= 0 {
+				limit = defaultRetrieveLimit
 			}
 			e, err := s.Retrieve(c.Seq)
 			if err != nil {
-				return "", fmt.Errorf("evento %d não recuperado: %w", c.Seq, err)
+				return "", fmt.Errorf("event %d not retrieved: %w", c.Seq, err)
 			}
 			var sb strings.Builder
 			fmt.Fprintf(&sb, "seq %d [%s] %s\n", e.Seq, e.Kind, e.Ts)
-			corpo := e.Payload
-			if len(corpo) > limite {
-				corpo = corpo[:limite] + fmt.Sprintf("\n\n[cortado em %d de %d bytes; peça um limit maior]", limite, len(e.Payload))
+			body := e.Payload
+			if len(body) > limit {
+				body = body[:limit] + fmt.Sprintf("\n\n[truncated at %d of %d bytes; ask for a larger limit]", limit, len(e.Payload))
 			}
-			sb.WriteString(corpo)
+			sb.WriteString(body)
 			return sb.String(), nil
 		},
 	}
