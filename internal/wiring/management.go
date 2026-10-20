@@ -13,9 +13,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ruanbarroso/barroso-harness/internal/config"
 	"github.com/ruanbarroso/barroso-harness/internal/mcp"
@@ -40,6 +43,8 @@ type mcpManager struct {
 	states map[string]*mcpState
 	order  []string
 	save   func([]config.MCPServidor) error // persists the list; injectable in tests
+	// seen is config.json's mtime at the last reconcile (zero = not yet).
+	seen time.Time
 }
 
 func newMCPManager(ctx context.Context, sess *runtime.Session) *mcpManager {
@@ -377,4 +382,73 @@ func (m *mcpManager) withdraw(e *mcpState) {
 		_ = e.client.Fecha()
 		e.client = nil
 	}
+}
+
+// reconcile brings this process's MCP clients in line with config.json, which
+// another bh process (or the user) may have changed: new servers connect,
+// edited ones reconnect, removed ones close. It is the session's Watcher, run
+// at every request boundary; the stat keeps the common case (nothing changed)
+// to one syscall. Each returned line becomes a [system update].
+func (m *mcpManager) reconcile() []string {
+	info, err := os.Stat(filepath.Join(config.Dir(), "config.json"))
+	if err != nil {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if info.ModTime().Equal(m.seen) {
+		return nil
+	}
+	first := m.seen.IsZero()
+	m.seen = info.ModTime()
+	if first {
+		return nil
+	}
+	c, err := config.Load()
+	if err != nil {
+		return nil
+	}
+	want := map[string]config.MCPServidor{}
+	var lines []string
+	for _, s := range c.MCPServidores {
+		name := strings.TrimSpace(s.Nome)
+		if name == "" {
+			continue
+		}
+		want[name] = s
+		old := m.states[name]
+		if old != nil && sameServer(old.cfg, s) {
+			continue
+		}
+		verb := "added"
+		if old != nil {
+			m.withdraw(old)
+			verb = "edited"
+		}
+		e := m.connect(s)
+		m.register(e)
+		lines = append(lines, "MCP "+describe(e, verb))
+	}
+	for _, n := range append([]string(nil), m.order...) {
+		if _, ok := want[n]; ok {
+			continue
+		}
+		m.withdraw(m.states[n])
+		delete(m.states, n)
+		for i, o := range m.order {
+			if o == n {
+				m.order = append(m.order[:i], m.order[i+1:]...)
+				break
+			}
+		}
+		lines = append(lines, fmt.Sprintf("MCP server %q was removed; its tools are gone", n))
+	}
+	return lines
+}
+
+// sameServer compares two server configs by their serialized form.
+func sameServer(a, b config.MCPServidor) bool {
+	ja, _ := json.Marshal(a)
+	jb, _ := json.Marshal(b)
+	return string(ja) == string(jb)
 }

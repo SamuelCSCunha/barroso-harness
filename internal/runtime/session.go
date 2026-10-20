@@ -56,6 +56,12 @@ type Session struct {
 	// request: a prompt that changed at midnight would drop the provider's
 	// prompt cache for the rest of a long session.
 	day time.Time
+
+	// baroMD is the BARROSO.md frozen into the system prompt at the first
+	// request; later changes arrive as [system update] messages (updates.go).
+	baroMD    *string
+	resources *resourceState
+	watchers  []Watcher
 }
 
 // Steer is a message sent into a running turn.
@@ -207,10 +213,14 @@ func (s *Session) SendWithImages(ctx context.Context, r Renderer, cwd, prompt st
 		defer cancel()
 	}
 	start := time.Now()
-	baroMD, err := instructions.Resolve(cwd)
-	if err != nil {
-		return err
+	if s.baroMD == nil {
+		b, err := instructions.Resolve(cwd)
+		if err != nil {
+			return err
+		}
+		s.baroMD = &b
 	}
+	baroMD := *s.baroMD
 	working := append([]dealer.Mensagem(nil), s.history...)
 	working = append(working, dealer.Mensagem{Role: "user", Conteudo: prompt, Images: images})
 	floor := 0
@@ -242,6 +252,15 @@ func (s *Session) SendWithImages(ctx context.Context, r Renderer, cwd, prompt st
 		// Built only once, a freshly connected tool stayed invisible until the
 		// next prompt — the model saw the server in mcp_list and could not call
 		// its tool.
+		// Request boundary: changes to skills, BARROSO.md or MCP made since the
+		// last request (here or in another process) join the history.
+		if upd := s.pendingUpdate(cwd); upd != "" {
+			working = append(working, dealer.Mensagem{Role: "user", Conteudo: upd})
+			s.record("user_message", map[string]any{"role": "user", "content": upd, "update": true})
+			if ru, ok := r.(RendererUpdate); ok {
+				ru.Atualizado(upd)
+			}
+		}
 		list := s.toolCatalog(cwd)
 		schemas := toolSchemas(list)
 		if s.day.IsZero() {

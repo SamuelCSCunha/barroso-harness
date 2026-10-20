@@ -94,6 +94,8 @@ func Montar(ctx context.Context, cfg config.Config, sess *runtime.Session, cwd s
 		}
 	}
 	sess.Injetar(mm.specs()...)
+	mm.reconcile() // baseline: config.json as it is now
+	sess.Observar(mm.reconcile)
 
 	// ── sub-agents ─────────────────────────────────────────────────────────
 	// ALWAYS on, no config flag: delegating is part of the main session's base

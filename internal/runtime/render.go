@@ -46,6 +46,12 @@ type RendererDetalhado interface {
 	Contexto(promptTokens int)
 }
 
+// RendererUpdate is OPTIONAL: it receives each [system update] message the
+// runtime appends (skills, BARROSO.md or MCP changed mid-session).
+type RendererUpdate interface {
+	Atualizado(text string)
+}
+
 // RendererCache is OPTIONAL: it receives, per request, how many of the prompt
 // tokens the provider served from its prompt cache (the TUI shows "cache N%").
 type RendererCache interface {

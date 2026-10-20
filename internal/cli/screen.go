@@ -2306,7 +2306,8 @@ func isWorkingState(s string) bool {
 func sessionTitle(h []dealer.Mensagem) string {
 	for _, m := range h {
 		if m.Role != "user" || isWorkingState(m.Conteudo) ||
-			strings.HasPrefix(m.Conteudo, "[subagents]") || strings.HasPrefix(m.Conteudo, "[output limit]") {
+			strings.HasPrefix(m.Conteudo, "[subagents]") || strings.HasPrefix(m.Conteudo, "[output limit]") ||
+			strings.HasPrefix(m.Conteudo, runtime.UpdatePrefix) {
 			continue
 		}
 		t := strings.Join(strings.Fields(m.Conteudo), " ")
@@ -2344,6 +2345,22 @@ func (r *screenTurn) Contexto(n int) {
 	r.t.state.ctxTokens = n
 	r.t.drawLocked()
 	r.t.mu.Unlock()
+}
+
+// Atualizado draws a [system update] (skills, BARROSO.md or MCP changed
+// mid-session) as event rows, not as user speech.
+func (r *screenTurn) Atualizado(text string) { r.t.updateLines(text) }
+
+// updateLines draws one "↻" row per update line: only its first line, the
+// rest (a whole new BARROSO.md) is for the model.
+func (t *screen) updateLines(text string) {
+	for _, part := range strings.Split(text, runtime.UpdatePrefix) {
+		line := strings.TrimSpace(strings.SplitN(strings.TrimSpace(part), "\n", 2)[0])
+		if line == "" {
+			continue
+		}
+		t.Adicionar("  " + grayf("↻ "+line))
+	}
 }
 
 // Cache arrives with Contexto: the share of the prompt served from the
@@ -2469,6 +2486,8 @@ func replayHistory(t *screen, h []dealer.Mensagem) {
 				t.AvisoSubagentes(m.Conteudo)
 			case strings.HasPrefix(m.Conteudo, "[output limit]"):
 				t.Adicionar("  " + yellowf("⚠") + " " + grayf("response cut at the output limit; continued"))
+			case strings.HasPrefix(m.Conteudo, runtime.UpdatePrefix):
+				t.updateLines(m.Conteudo)
 			default:
 				t.UsuarioCom(strings.TrimSpace(m.Conteudo), m.Images)
 			}
