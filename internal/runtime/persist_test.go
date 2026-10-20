@@ -5,6 +5,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -378,39 +379,58 @@ func TestSessionSpecsSearchAndRetrieve(t *testing.T) {
 	})
 
 	specs := SessaoSpecs(s)
-	if len(specs) != 2 {
-		t.Fatalf("SessaoSpecs returned %d specs; expected 2", len(specs))
+	if len(specs) != 3 {
+		t.Fatalf("SessaoSpecs returned %d specs; expected 3", len(specs))
 	}
 	byName := map[string]tools.Spec{}
 	for _, sp := range specs {
 		byName[sp.Name] = sp
 	}
-	search, ok := byName["session_search"]
+	search, ok := byName["log_search"]
 	if !ok {
-		t.Fatal("session_search is not in the specs")
+		t.Fatal("log_search is not in the specs")
 	}
 	if !strings.Contains(strings.ToLower(search.Description), "compact") {
-		t.Fatalf("session_search description does not mention compaction:\n%s", search.Description)
+		t.Fatalf("log_search description does not mention compaction:\n%s", search.Description)
 	}
-	rtr, ok := byName["session_retrieve"]
+	rtr, ok := byName["log_retrieve"]
 	if !ok {
-		t.Fatal("session_retrieve is not in the specs")
+		t.Fatal("log_retrieve is not in the specs")
+	}
+	list, ok := byName["sessions_list"]
+	if !ok {
+		t.Fatal("sessions_list is not in the specs")
+	}
+	if !strings.Contains(strings.ToLower(list.Description), "metadata only") {
+		t.Fatalf("sessions_list description must say it lists metadata only:\n%s", list.Description)
 	}
 	if !strings.Contains(strings.ToLower(rtr.Description), "seq") {
-		t.Fatalf("session_retrieve description does not mention seq:\n%s", rtr.Description)
+		t.Fatalf("log_retrieve description does not mention seq:\n%s", rtr.Description)
 	}
 	// Schemas with the promised parameters.
 	if _, ok := search.Schema["properties"].(map[string]any)["query"]; !ok {
-		t.Fatal("session_search without query parameter")
+		t.Fatal("log_search without query parameter")
 	}
 	if _, ok := search.Schema["properties"].(map[string]any)["limit"]; !ok {
 		t.Fatal("session_search without limit parameter")
 	}
 	if _, ok := rtr.Schema["properties"].(map[string]any)["seq"]; !ok {
-		t.Fatal("session_retrieve without seq parameter")
+		t.Fatal("log_retrieve without seq parameter")
+		// Optional session_id: omitted means THIS session. The scope must be
+		// stated in the parameter, not left to the tool name.
+		for _, sp := range []tools.Spec{search, rtr} {
+			p, ok := sp.Schema["properties"].(map[string]any)["session_id"]
+			if !ok {
+				t.Fatalf("%s without session_id parameter", sp.Name)
+			}
+			desc, _ := p.(map[string]any)["description"].(string)
+			if !strings.Contains(strings.ToLower(desc), "this session") {
+				t.Fatalf("%s session_id must say it defaults to this session: %q", sp.Name, desc)
+			}
+		}
 	}
 	if _, ok := rtr.Schema["properties"].(map[string]any)["limit"]; !ok {
-		t.Fatal("session_retrieve without limit parameter")
+		t.Fatal("log_retrieve without limit parameter")
 	}
 
 	// Exec of session_search finds the recorded content.
@@ -436,10 +456,12 @@ func TestSessionSpecsWithoutPersistenceExplain(t *testing.T) {
 	s := NewSession(config.Config{})
 	for _, sp := range SessaoSpecs(s) {
 		args := `{}`
-		if sp.Name == "session_search" {
+		if sp.Name == "log_search" {
 			args = `{"query":"x"}`
-		} else if sp.Name == "session_retrieve" {
+		} else if sp.Name == "log_retrieve" {
 			args = `{"seq":1}`
+		} else if sp.Name == "sessions_list" {
+			args = `{}`
 		}
 		output, err := sp.Exec(nil, t.TempDir(), json.RawMessage(args))
 		if err != nil {
@@ -453,7 +475,7 @@ func TestSessionSpecsWithoutPersistenceExplain(t *testing.T) {
 
 // Send includes the session tools in the catalog sent to the provider.
 func TestSendExposesSessionToolsInSchema(t *testing.T) {
-	var sawSearch, sawRetrieve bool
+	var sawSearch, sawRetrieve, sawList bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Tools []struct {
@@ -465,10 +487,12 @@ func TestSendExposesSessionToolsInSchema(t *testing.T) {
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		for _, tl := range req.Tools {
 			switch tl.Function.Name {
-			case "session_search":
+			case "log_search":
 				sawSearch = true
-			case "session_retrieve":
+			case "log_retrieve":
 				sawRetrieve = true
+			case "sessions_list":
+				sawList = true
 			}
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -479,8 +503,8 @@ func TestSendExposesSessionToolsInSchema(t *testing.T) {
 	st := testStore(t)
 	s := NewSessionWithStore(fakeConfig(t, srv.URL), st, "bh-20240101130000-0002")
 	_ = s.Send(context.Background(), RendererDe(&strings.Builder{}), t.TempDir(), "hi")
-	if !sawSearch || !sawRetrieve {
-		t.Fatalf("provider did not see the session tools (search=%v retrieve=%v)", sawSearch, sawRetrieve)
+	if !sawSearch || !sawRetrieve || !sawList {
+		t.Fatalf("provider did not see the session tools (search=%v retrieve=%v list=%v)", sawSearch, sawRetrieve, sawList)
 	}
 }
 
@@ -509,5 +533,78 @@ func TestLargeResultWithoutStoreDoesNotCrash(t *testing.T) {
 	s := NewSession(config.Config{})
 	if p := s.recordResult("c1", "file_read", strings.Repeat("x", blobThreshold+10), false); p != nil {
 		t.Fatalf("without store it should not record: %v", p)
+	}
+}
+
+// ── cross-session log tools ───────────────────────────────────────────────
+
+// log_search/log_retrieve read another session when given its id, and
+// sessions_list returns the ids (metadata only) that make that possible.
+func TestLogToolsReadAnotherSession(t *testing.T) {
+	st := testStore(t)
+	// Two sessions, each with one event to find.
+	other := NewSessionWithStore(config.Config{}, st, "bh-20240102090000-aaaa")
+	other.record("user_message", map[string]any{"role": "user", "content": "the connector was restarted"})
+	mine := NewSessionWithStore(config.Config{}, st, "bh-20240103090000-bbbb")
+	mine.record("user_message", map[string]any{"role": "user", "content": "my own note about the mitra connector"})
+
+	specs := SessaoSpecs(mine)
+	byName := map[string]tools.Spec{}
+	for _, sp := range specs {
+		byName[sp.Name] = sp
+	}
+	run := func(name, args string) string {
+		out, err := byName[name].Exec(context.Background(), t.TempDir(), json.RawMessage(args))
+		if err != nil {
+			t.Fatalf("%s(%s): %v", name, args, err)
+		}
+		return out
+	}
+
+	// sessions_list names the other session and marks mine.
+	list := run("sessions_list", `{}`)
+	if !strings.Contains(list, "bh-20240102090000-aaaa") || !strings.Contains(list, "[current]") {
+		t.Fatalf("sessions_list must list the other id and mark the current one:\n%s", list)
+	}
+	if strings.Contains(list, "connector was restarted") {
+		t.Fatal("sessions_list returns metadata only: no conversation content")
+	}
+
+	// Default (omitted id) searches MY session only.
+	def := run("log_search", `{"query":"connector"}`)
+	if !strings.Contains(def, "my own note") || strings.Contains(def, "was restarted") {
+		t.Fatalf("omitting session_id must search this session:\n%s", def)
+	}
+	if !strings.Contains(def, "current") {
+		t.Fatalf("a result must name the session it came from:\n%s", def)
+	}
+
+	// With the id, the other session's log is reachable, and the full event
+	// comes back from log_retrieve with the same id.
+	cross := run("log_search", `{"query":"connector","session_id":"bh-20240102090000-aaaa"}`)
+	if !strings.Contains(cross, "was restarted") || strings.Contains(cross, "my own note") {
+		t.Fatalf("session_id must read that session:\n%s", cross)
+	}
+	// The seq comes from a "seq N [...]" line, not from the header.
+	seq := 0
+	for _, line := range strings.Split(cross, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "seq ") {
+			fmt.Sscanf(line[4:], "%d", &seq)
+			break
+		}
+	}
+	if seq == 0 {
+		t.Fatalf("could not read the seq back:\n%s", cross)
+	}
+	got := run("log_retrieve", fmt.Sprintf(`{"seq":%d,"session_id":"bh-20240102090000-aaaa"}`, seq))
+	if !strings.Contains(got, "connector was restarted") {
+		t.Fatalf("log_retrieve of another session:\n%s", got)
+	}
+
+	// A wrong id is an honest "no session", not a crash.
+	bad := run("log_search", `{"query":"x","session_id":"nope"}`)
+	if !strings.Contains(bad, "no session with id") {
+		t.Fatalf("unknown id:\n%s", bad)
 	}
 }

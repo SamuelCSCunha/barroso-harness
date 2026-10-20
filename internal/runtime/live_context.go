@@ -353,7 +353,7 @@ func ctxReadSpec(cx *liveContext) tools.Spec {
 // ctxWriteSpec REPLACES the whole body. The description carries the recipe of
 // what to keep and the provenance notice: since the file is replaceable, an
 // event that only existed in the log needs its seq/path noted HERE to be found
-// again later through session_search/session_retrieve.
+// again later through log_search/log_retrieve.
 func ctxWriteSpec(cx *liveContext) tools.Spec {
 	return tools.Spec{
 		Name: "ctx_write",
@@ -363,8 +363,8 @@ func ctxWriteSpec(cx *liveContext) tools.Spec {
 			"(file path, event seq in the log); decisions and their rationale; constraints " +
 			"discovered; relevant artifacts and IDs; progress; pending items and open questions. " +
 			"References matter because the log is append-only and large results may leave the " +
-			"window: noting the seq/path lets you find everything again with session_search and " +
-			"session_retrieve. Also rewrite to COMPACT — drop what no longer matters — whenever " +
+			"window: noting the seq/path lets you find everything again with log_search and " +
+			"log_retrieve. Also rewrite to COMPACT — drop what no longer matters — whenever " +
 			"the file grows.",
 		Schema: map[string]any{
 			"type": "object",

@@ -1,5 +1,5 @@
 // Extended turn catalog: everything that is NOT a built-in and NOT part of the
-// session subsystem (session_search/session_retrieve, which live in
+// session subsystem (log_search/log_retrieve/sessions_list, which live in
 // tools_session.go because they close over the store).
 //
 // The split of responsibility is:
@@ -218,7 +218,7 @@ func noShadow(base, external []tools.Spec) []tools.Spec {
 // The order matters for dedup and for the provider:
 //
 //  1. built-ins (terminal, files, list_dir) — the base;
-//  2. log retrieval (session_search/session_retrieve) — closes over the
+//  2. log retrieval (log_search/log_retrieve/sessions_list) — closes over the
 //     session, so it enters here and not in package tools;
 //  3. live context (ctx_read/ctx_write/ctx_append) — replaces the ctx_read
 //     placeholder that comes with the built-ins;

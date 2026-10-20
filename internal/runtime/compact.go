@@ -66,7 +66,7 @@ func compactSpec() tools.Spec {
 			"working state you write. Use it at a natural milestone of the task (e.g. you found the cause and are " +
 			"about to edit; you finished exploring) — do not wait for the context to fill up. The state must be " +
 			"enough to carry on: goal, decisions, discovered facts (paths, signatures, values), what has " +
-			"already been changed and the next step. The full log remains retrievable through session_search.",
+			"already been changed and the next step. The full log remains retrievable through log_search.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

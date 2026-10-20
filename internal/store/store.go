@@ -396,6 +396,16 @@ func (s *Store) ListEvents(sessionID string, fromSeq, limit int) ([]Event, error
 	return out, nil
 }
 
+// Known reports whether a session id exists (a wrong id from a model is
+// reported as "no session with id", not as an internal error).
+func (s *Store) Known(id string) bool {
+	if strings.TrimSpace(id) == "" {
+		return false
+	}
+	_, err := s.GetSession(id)
+	return err == nil
+}
+
 // GetEvent returns ONE event by seq (full-content retrieve).
 func (s *Store) GetEvent(sessionID string, seq int) (*Event, error) {
 	row := s.db.QueryRow(
