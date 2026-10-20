@@ -47,8 +47,8 @@ func TestScreenHasNoTitleLine(t *testing.T) {
 	}
 }
 
-// On open, with no messages yet, the tab already shows "BH | New session".
-func TestTabShowsNewSessionOnOpen(t *testing.T) {
+// On open, with no messages yet, the tab shows the harness name.
+func TestTabShowsHarnessNameOnOpen(t *testing.T) {
 	colorsOn = true
 	defer func() { colorsOn = false }()
 	before := screenSize
@@ -58,8 +58,15 @@ func TestTabShowsNewSessionOnOpen(t *testing.T) {
 	var sb strings.Builder
 	tl := &screen{out: &sb}
 	tl.Estado(panelState{model: "m"})
-	if !strings.Contains(sb.String(), "\033]0;BH | New session\a") {
-		t.Fatal("tab should open as 'BH | New session'")
+	if !strings.Contains(sb.String(), "\033]0;BH | BarrosoHarness\a") {
+		t.Fatal("tab should open as 'BH | BarrosoHarness'")
+	}
+
+	// After the first message the tab shows the session title again.
+	tl.Usuario("hello")
+	tl.Estado(panelState{model: "m", title: "my session"})
+	if !strings.Contains(sb.String(), "\033]0;BH | my session\a") {
+		t.Fatal("a titled session must put its title on the tab")
 	}
 }
 

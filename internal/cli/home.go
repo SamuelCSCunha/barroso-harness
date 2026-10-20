@@ -33,6 +33,10 @@ const (
 // homePromptMax is the prompt box's max width on the home screen (maxWidth 75).
 const homePromptMax = 75
 
+// homeTabTitle is what the terminal tab shows on the home screen: the harness
+// name, as OpenCode shows its own wordmark.
+const homeTabTitle = "BarrosoHarness"
+
 // logoRows renders one word of the wordmark in the given foreground; bold
 // marks the right half, as OpenCode's Logo does.
 func logoRows(word, fg string, bold bool) [4]string {
@@ -208,9 +212,9 @@ func (t *screen) drawHomeLocked(fullClear bool) {
 	if fullClear {
 		sb.WriteString(escClear)
 	}
-	if t.lastTabTitle != "New session" {
-		t.lastTabTitle = "New session"
-		sb.WriteString(tabTitle("New session"))
+	if t.lastTabTitle != homeTabTitle {
+		t.lastTabTitle = homeTabTitle
+		sb.WriteString(tabTitle(homeTabTitle))
 	}
 	f := t.drawHome(&sb)
 	t.drawAC(&sb, f)
