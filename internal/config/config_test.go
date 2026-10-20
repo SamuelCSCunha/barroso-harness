@@ -15,6 +15,8 @@ func home(t *testing.T) (string, func()) {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("BARROSO_HARNESS_HOME", dir)
+	t.Setenv(EnvBaseURL, "")
+	t.Setenv(EnvAuthToken, "")
 	return dir, func() {}
 }
 

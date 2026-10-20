@@ -1,9 +1,11 @@
 // Package config holds the harness's persistent configuration. Source of
 // truth on disk: ~/.barroso-harness/config.json, with the active provider in
 // current_provider + providers (a map, so switching never erases credentials).
-// Credentials live in THIS file, with restricted permissions — never in
-// environment variables, code, README or logs. BARROSO_HARNESS_HOME remains
-// valid only to relocate the data directory.
+// Credentials live in THIS file, with restricted permissions — never in code,
+// README or logs. BARROSO_HARNESS_HOME relocates the data directory, and
+// BARROSO_BASE_URL / BARROSO_AUTH_TOKEN override the active provider for the
+// process (like ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN in Claude Code)
+// without ever being written to disk.
 package config
 
 import (
@@ -13,6 +15,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+)
+
+// Environment variables that override the active provider. The token goes
+// out as "Authorization: Bearer <token>", like every other key.
+const (
+	EnvBaseURL   = "BARROSO_BASE_URL"
+	EnvAuthToken = "BARROSO_AUTH_TOKEN"
 )
 
 // DefaultBaseURL is the in-house default gateway (OpenAI Chat Completions
@@ -48,6 +57,11 @@ type Config struct {
 	BaseURL         string               `json:"-"`                               // resolved from the active provider
 	APIKey          string               `json:"-"`                               // resolved from the active provider; never log
 	Home            string               `json:"-"`
+
+	// envOverride is the provider built from BARROSO_BASE_URL /
+	// BARROSO_AUTH_TOKEN. It wins over providers/current_provider and lives
+	// only in memory: Save never sees it, so the env never leaks to disk.
+	envOverride *Provider
 
 	// SearchURL is an optional SearXNG endpoint with the JSON API enabled.
 	// When set, web_search tries it FIRST; empty does not disable anything —
@@ -153,6 +167,9 @@ func (c *Config) Provider(name string) *Provider {
 // BaseURL/APIKey fields keep compatibility with older callers; they are never
 // serialized and the disk keeps using providers/current_provider.
 func (c *Config) Ativo() *Provider {
+	if c.envOverride != nil {
+		return c.envOverride
+	}
 	if p := c.Provider(c.CurrentProvider); p != nil {
 		return p
 	}
@@ -206,6 +223,9 @@ func (c Config) Resumo() string {
 		base = p.BaseURL
 	}
 	line := fmt.Sprintf("provider %q @ %s", c.CurrentProvider, base)
+	if c.envOverride != nil {
+		line = fmt.Sprintf("provider (env %s/%s) @ %s", EnvBaseURL, EnvAuthToken, base)
+	}
 	if c.Effort != "" {
 		line += " · effort " + c.Effort
 	}
@@ -231,15 +251,16 @@ func windowSource(s string) string {
 // medium measured fastest in bh's effort bench without extra rounds.
 const DefaultEffort = "medium"
 
-// Load reads config.json. A missing file is NOT an error: it returns an empty
-// config (the interactive path starts onboarding; a one-shot turn reports what
-// is missing).
+// Load reads config.json and overlays BARROSO_BASE_URL / BARROSO_AUTH_TOKEN.
+// A missing file is NOT an error: it returns an empty config (the interactive
+// path starts onboarding; a one-shot turn reports what is missing).
 func Load() (Config, error) {
 	c := Config{Home: Dir()}
 	path := filepath.Join(c.Home, "config.json")
 	b, err := os.ReadFile(path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
+		c.applyEnv()
 		return c, nil
 	case err != nil:
 		return c, err
@@ -260,7 +281,38 @@ func Load() (Config, error) {
 	if p := c.Provider(c.CurrentProvider); p != nil {
 		c.BaseURL, c.APIKey = p.BaseURL, p.APIKey
 	}
+	c.applyEnv()
 	return c, nil
+}
+
+// FromEnv reports whether the active provider comes from BARROSO_BASE_URL /
+// BARROSO_AUTH_TOKEN instead of config.json.
+func (c Config) FromEnv() bool { return c.envOverride != nil }
+
+// applyEnv overlays BARROSO_BASE_URL / BARROSO_AUTH_TOKEN on the active
+// provider. Either one alone is enough: a missing URL falls back to the
+// configured provider (or DefaultBaseURL), a missing token to its key.
+func (c *Config) applyEnv() {
+	base := strings.TrimSpace(os.Getenv(EnvBaseURL))
+	token := strings.TrimSpace(os.Getenv(EnvAuthToken))
+	if base == "" && token == "" {
+		return
+	}
+	p := Provider{BaseURL: DefaultBaseURL}
+	if cur := c.Ativo(); cur != nil {
+		p = *cur
+		if p.BaseURL == "" {
+			p.BaseURL = DefaultBaseURL
+		}
+	}
+	if base != "" {
+		p.BaseURL = strings.TrimSuffix(base, "/")
+	}
+	if token != "" {
+		p.APIKey = token
+	}
+	c.envOverride = &p
+	c.BaseURL, c.APIKey = p.BaseURL, p.APIKey
 }
 
 // migrateLegacyShape converts the slice-0 config ({base_url, model?} at the

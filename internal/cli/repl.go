@@ -151,6 +151,19 @@ func Onboarding(io IO, cfg *config.Config) error {
 	if io.reader == nil {
 		io.reader = bufio.NewReader(io.In)
 	}
+	if cfg.FromEnv() {
+		// Provider comes from BARROSO_BASE_URL / BARROSO_AUTH_TOKEN: only the
+		// model is asked, so the env credential never lands in config.json.
+		fmt.Fprintf(io.Out, "provider from %s/%s; only the model is missing.\n", config.EnvBaseURL, config.EnvAuthToken)
+		if err := selectModel(io, cfg); err != nil {
+			return err
+		}
+		if err := cfg.Save(); err != nil {
+			return fmt.Errorf("save config: %w", err)
+		}
+		fmt.Fprintln(io.Out, cfg.Resumo())
+		return nil
+	}
 	base := config.DefaultBaseURL
 	if p := cfg.Ativo(); p != nil && p.BaseURL != "" {
 		base = p.BaseURL
@@ -820,6 +833,9 @@ func handleEffort(io IO, cfg *config.Config, sess *runtime.Session, arg string) 
 // cmdProvider asks for base URL and key (hidden), validates /models and persists.
 // On validation failure the error propagates: neither memory nor disk changes.
 func cmdProvider(io IO, cfg *config.Config) error {
+	if cfg.FromEnv() {
+		return fmt.Errorf("provider is set by %s/%s; unset them to use /provider", config.EnvBaseURL, config.EnvAuthToken)
+	}
 	base := config.DefaultBaseURL
 	if p := cfg.Ativo(); p != nil && p.BaseURL != "" {
 		base = p.BaseURL
