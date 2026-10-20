@@ -390,26 +390,26 @@ func (m *mcpManager) withdraw(e *mcpState) {
 // at every request boundary; the stat keeps the common case (nothing changed)
 // to one syscall. Each returned line becomes a [system update].
 func (m *mcpManager) reconcile() []string {
+	lines := m.refreshChanged()
 	info, err := os.Stat(filepath.Join(config.Dir(), "config.json"))
 	if err != nil {
-		return nil
+		return lines
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if info.ModTime().Equal(m.seen) {
-		return nil
+		return lines
 	}
 	first := m.seen.IsZero()
 	m.seen = info.ModTime()
 	if first {
-		return nil
+		return lines
 	}
 	c, err := config.Load()
 	if err != nil {
-		return nil
+		return lines
 	}
 	want := map[string]config.MCPServidor{}
-	var lines []string
 	for _, s := range c.MCPServidores {
 		name := strings.TrimSpace(s.Nome)
 		if name == "" {
@@ -451,4 +451,30 @@ func sameServer(a, b config.MCPServidor) bool {
 	ja, _ := json.Marshal(a)
 	jb, _ := json.Marshal(b)
 	return string(ja) == string(jb)
+}
+
+// refreshChanged refetches the tools of servers that sent tools/list_changed.
+// A failed refresh keeps the previous tools (as Claude Code does).
+func (m *mcpManager) refreshChanged() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var lines []string
+	for _, n := range m.order {
+		e := m.states[n]
+		if e.client == nil || !e.client.ToolsChanged() {
+			continue
+		}
+		specs, err := e.client.Ferramentas(m.ctx)
+		if err != nil {
+			continue
+		}
+		m.sess.Retirar(e.tools...)
+		e.tools = e.tools[:0]
+		for _, sp := range specs {
+			e.tools = append(e.tools, sp.Name)
+		}
+		m.sess.Injetar(specs...)
+		lines = append(lines, "MCP "+describe(e, "refreshed its tools"))
+	}
+	return lines
 }

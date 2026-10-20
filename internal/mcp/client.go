@@ -210,6 +210,9 @@ type Cliente struct {
 	nextID    int64
 	timeout   time.Duration
 	closeOnce sync.Once
+
+	// toolsChanged is set when the server sends tools/list_changed.
+	toolsChanged atomic.Bool
 }
 
 // shutdown closes the done channel exactly ONCE — called both by Fecha (local
@@ -244,6 +247,10 @@ func Novo(s Servidor) (*Cliente, error) {
 
 // Fonte returns Servidor.Nome — the server name, for prefixing/namespacing.
 func (c *Cliente) Fonte() string { return c.source }
+
+// ToolsChanged reports (and clears) whether the server announced that its
+// tool list changed since the last call.
+func (c *Cliente) ToolsChanged() bool { return c.toolsChanged.Swap(false) }
 
 // Falhou reports whether the connection broke after opening (the stdio
 // reader saw the subprocess end or a read error). The UI shows such a server
@@ -361,7 +368,12 @@ func (c *Cliente) readLoopStdio(r io.Reader) {
 			continue // non-JSON noise: ignored, does not kill the session
 		}
 		if !m.HasID() {
-			continue // notification: no id to correlate
+			// notifications/tools/list_changed: the server's tools changed; the
+			// owner refetches them at its next check (ToolsChanged).
+			if m.Method == "notifications/tools/list_changed" {
+				c.toolsChanged.Store(true)
+			}
+			continue // other notifications: no id to correlate
 		}
 		// Route by id: the message goes straight to its owner, without a
 		// shared channel (other concurrent calls never pick it up).
