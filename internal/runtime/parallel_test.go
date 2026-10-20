@@ -143,7 +143,7 @@ func TestMutatingToolForcesSequentialRound(t *testing.T) {
 }
 
 func TestSystemPromptFacts(t *testing.T) {
-	p := systemPrompt(`C:\work`, "project rule", true, time.Date(2026, 10, 19, 0, 0, 0, 0, time.UTC))
+	p := systemPrompt(`C:\work`, "project rule", true, time.Date(2026, 10, 19, 0, 0, 0, 0, time.UTC), "")
 	for _, want := range []string{
 		runtime.GOOS + "/" + runtime.GOARCH,
 		"ISSUE THEM ALL IN THE SAME RESPONSE",
@@ -159,7 +159,7 @@ func TestSystemPromptFacts(t *testing.T) {
 	if runtime.GOOS == "windows" && !strings.Contains(p, "cmd.exe") {
 		t.Fatalf("windows prompt must name cmd.exe:\n%s", p)
 	}
-	if strings.Contains(systemPrompt("x", "", false, time.Now()), "task_spawn") {
+	if strings.Contains(systemPrompt("x", "", false, time.Now(), ""), "task_spawn") {
 		t.Fatal("task_spawn line must only appear when the tool exists")
 	}
 }

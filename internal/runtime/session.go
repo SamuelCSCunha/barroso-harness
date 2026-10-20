@@ -62,6 +62,10 @@ type Session struct {
 	baroMD    *string
 	resources *resourceState
 	watchers  []Watcher
+
+	// progressive and deferredCatalog: see disclosure.go.
+	progressive     bool
+	deferredCatalog *string
 }
 
 // Steer is a message sent into a running turn.
@@ -261,12 +265,12 @@ func (s *Session) SendWithImages(ctx context.Context, r Renderer, cwd, prompt st
 				ru.Atualizado(upd)
 			}
 		}
-		list := s.toolCatalog(cwd)
-		schemas := toolSchemas(list)
+		direct, list, deferred := s.disclose(s.toolCatalog(cwd))
+		schemas := toolSchemas(direct)
 		if s.day.IsZero() {
 			s.day = time.Now()
 		}
-		system := systemPrompt(cwd, baroMD, hasTool(list, "task_spawn"), s.day)
+		system := systemPrompt(cwd, baroMD, hasTool(list, "task_spawn"), s.day, deferred)
 
 		// Measured without the image bytes: see dealer.CorpoEstimativa.
 		body, err := s.dealer.CorpoEstimativa(system, working, schemas)
@@ -527,17 +531,19 @@ func (s *Session) runRound(ctx context.Context, r Renderer, list []tools.Spec, c
 		// Outputs above blobThreshold become blob + preview.
 		s.recordResult(o.call.ID, o.call.Nome, o.output, o.isErr)
 		if rr, ok := r.(RendererResultado); ok {
-			rr.ToolResultado(o.call.Nome, o.call.Args, o.output, o.dur, o.isErr)
+			name, args := shownCall(o.call.Nome, o.call.Args)
+			rr.ToolResultado(name, args, o.output, o.dur, o.isErr)
 			return
 		}
-		r.Tool(o.call.Nome, o.dur, o.isErr)
+		name, _ := shownCall(o.call.Nome, o.call.Args)
+		r.Tool(name, o.dur, o.isErr)
 		r.Eco(echoExcerpt(o.output))
 	}
 	rd, detailed := r.(RendererDetalhado)
 
 	parallel := len(calls) > 1
 	for _, c := range calls {
-		if sequentialTools[c.Nome] {
+		if name, _ := shownCall(c.Nome, c.Args); sequentialTools[name] {
 			parallel = false
 			break
 		}
@@ -545,7 +551,7 @@ func (s *Session) runRound(ctx context.Context, r Renderer, list []tools.Spec, c
 	if !parallel {
 		for i, c := range calls {
 			if detailed {
-				rd.ToolInicio(c.Nome, c.Args)
+				rd.ToolInicio(shownCall(c.Nome, c.Args))
 			}
 			run(i)
 			report(i)
@@ -557,7 +563,7 @@ func (s *Session) runRound(ctx context.Context, r Renderer, list []tools.Spec, c
 	var wg sync.WaitGroup
 	for i, c := range calls {
 		if detailed {
-			rd.ToolInicio(c.Nome, c.Args)
+			rd.ToolInicio(shownCall(c.Nome, c.Args))
 		}
 		done[i] = make(chan struct{})
 		wg.Add(1)
@@ -586,7 +592,7 @@ func hasTool(list []tools.Spec, name string) bool {
 
 // systemPrompt builds the turn's system message: identity, real environment
 // facts, tool policy and working style, then BARROSO.md.
-func systemPrompt(cwd, baroMD string, canSpawn bool, now time.Time) string {
+func systemPrompt(cwd, baroMD string, canSpawn bool, now time.Time, deferred string) string {
 	// Order matters for the provider's prompt cache, which matches the request
 	// prefix byte for byte: the text that never changes goes first, BARROSO.md
 	// next, and the environment (cwd, date) last. The date is the session's
@@ -616,6 +622,12 @@ func systemPrompt(cwd, baroMD string, canSpawn bool, now time.Time) string {
 		"- After changing code, verify it: build and run the relevant tests, and fix what you broke.\n" +
 		"- Use tools to act and TEXT to talk to the user. When the task is done, reply with a short plain-text answer: what changed and what the user must know. No long recaps.\n" +
 		"- Messages starting with [system update] come from the harness, not the user: they announce changes to instructions, skills or tools during the session. The latest update wins over anything earlier, including this prompt's BARROSO.md section.\n")
+
+	if deferred != "" {
+		sb.WriteString("\n## Deferred tools\n" +
+			"These tools are not in your function list. Get a tool's full parameter schema with tool_search, then run it with tool_call " +
+			"(skip the search when the line below is enough to fill its arguments). Tools added later are announced by [system update].\n" + deferred)
+	}
 
 	if baroMD != "" {
 		sb.WriteString("\n## BARROSO.md (system instructions)\n" + baroMD + "\n")

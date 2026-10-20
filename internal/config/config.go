@@ -69,6 +69,11 @@ type Config struct {
 	// safety net) or "limiar" (threshold: only the guardrail, when the window
 	// overflows). These values are part of the on-disk format.
 	PoliticaContexto string `json:"context_policy,omitempty"`
+
+	// ToolDisclosure: "auto" (default; progressive past ~8k tokens of tool
+	// schemas), "full" (every tool in every request) or "progressive" (MCP
+	// and management tools behind tool_search/tool_call).
+	ToolDisclosure string `json:"tool_disclosure,omitempty"`
 }
 
 // MCPServidor mirrors mcp.Servidor without importing the package — config is
