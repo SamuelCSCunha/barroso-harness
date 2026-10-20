@@ -45,6 +45,9 @@ type item struct {
 	id   int
 	kind string // "user", "thought", "tool", "shell", "block", "group", "sub"
 	open bool
+	// pending marks a steer message the model has not received yet: its box
+	// bar is border.base instead of the primary colour (queue.go).
+	pending bool
 
 	text   string   // user: the message; thought: the reasoning body
 	images []string // user: attached image paths
@@ -107,7 +110,9 @@ func (t *screen) toggle(it *item) { t.mutate(func() { it.open = !it.open }) }
 // clickable reports whether an item answers a click.
 func (t *screen) clickable(it *item) bool {
 	switch it.kind {
-	case "user", "thought", "sub":
+	case "user":
+		return !it.pending
+	case "thought", "sub":
 		return true
 	case "group":
 		// A lone member draws as itself, so it clicks as itself.
@@ -161,7 +166,7 @@ func (t *screen) openMessageDialog(it *item) {
 func (t *screen) renderItem(it *item, width int, hover, full bool) []string {
 	switch it.kind {
 	case "user":
-		return renderUser(it, width, hover)
+		return renderUser(it, width, hover && !it.pending)
 	case "thought":
 		return renderThought(it, width, hover)
 	case "shell":
@@ -183,12 +188,16 @@ func renderUser(it *item, width int, hover bool) []string {
 	if hover {
 		bg = bgUserHover
 	}
-	blank := withBg(bluef(bar), bg, width)
+	edge := bluef(bar)
+	if it.pending {
+		edge = color(fgBorder, bar)
+	}
+	blank := withBg(edge, bg, width)
 	rows := []string{blank}
 	text := strings.TrimSpace(tokenRe.ReplaceAllString(it.text, ""))
 	if text != "" {
 		for _, l := range strings.Split(wrap(text, width-5), "\n") {
-			rows = append(rows, withBg(bluef(bar)+"  "+color(colorText, l), bg, width))
+			rows = append(rows, withBg(edge+"  "+color(colorText, l), bg, width))
 		}
 	}
 	if len(it.images) > 0 {
@@ -199,7 +208,7 @@ func renderUser(it *item, width int, hover bool) []string {
 		for _, p := range it.images {
 			chips = append(chips, chip("file", filepath.Base(p)))
 		}
-		rows = append(rows, withBg(bluef(bar)+"  "+strings.Join(chips, " "), bg, width))
+		rows = append(rows, withBg(edge+"  "+strings.Join(chips, " "), bg, width))
 	}
 	return append(rows, blank)
 }

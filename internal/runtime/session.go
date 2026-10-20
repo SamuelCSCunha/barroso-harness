@@ -44,6 +44,35 @@ type Session struct {
 	// slice, and never while talking to the provider.
 	muExtras sync.Mutex
 	injected []tools.Spec
+
+	// inbox holds messages the user sent while a turn runs (steer). They are
+	// delivered at the next safe boundary — after a tool round, before the next
+	// request — in arrival order, without cancelling the turn. Messages still
+	// in the inbox when the turn ends are the caller's (TakeInbox).
+	muInbox sync.Mutex
+	inbox   []Steer
+}
+
+// Steer is a message sent into a running turn.
+type Steer struct {
+	Text   string
+	Images []string
+}
+
+// AddSteer queues a message for the running turn. Safe from any goroutine.
+func (s *Session) AddSteer(m Steer) {
+	s.muInbox.Lock()
+	s.inbox = append(s.inbox, m)
+	s.muInbox.Unlock()
+}
+
+// TakeInbox returns and clears the messages not delivered to a turn.
+func (s *Session) TakeInbox() []Steer {
+	s.muInbox.Lock()
+	defer s.muInbox.Unlock()
+	out := s.inbox
+	s.inbox = nil
+	return out
 }
 
 // NewSession creates an empty session over the given configuration.
@@ -375,6 +404,19 @@ func (s *Session) SendWithImages(ctx context.Context, r Renderer, cwd, prompt st
 				"estado_bytes": len(state),
 				"estado":       state,
 			})
+		}
+		// Safe boundary: the round's calls and results are complete, the next
+		// request has not gone out. Steer messages join the conversation here.
+		for _, m := range s.TakeInbox() {
+			working = append(working, dealer.Mensagem{Role: "user", Conteudo: m.Text, Images: m.Images})
+			ev := map[string]any{"role": "user", "content": m.Text, "steer": true}
+			if len(m.Images) > 0 {
+				ev["images"] = m.Images
+			}
+			s.record("user_message", ev)
+			if rs, ok := r.(RendererSteer); ok {
+				rs.Entregue(m.Text)
+			}
 		}
 	}
 }

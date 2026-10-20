@@ -181,6 +181,14 @@ type screen struct {
 	src       *dialogSource
 	files     []string
 	filesRoot string
+	// queued are prompts waiting for the turn to end (ctrl+x Enter, or steer
+	// messages the turn ended without delivering); queuePaused holds them after
+	// an interrupt until Enter. replReady is set while the REPL waits for its
+	// next line (Estado is drawn right before it reads), so a queued prompt is
+	// never typed into a question like /model's.
+	queued      []queuedPrompt
+	queuePaused bool
+	replReady   bool
 	// sidebarHidden is OpenCode's <leader>b toggle.
 	sidebarHidden bool
 	// leaderAt is when ctrl+x was pressed; while the leader waits for its second
@@ -379,6 +387,7 @@ func (t *screen) Limpar() {
 func (t *screen) Estado(e panelState) {
 	t.mu.Lock()
 	t.state = e
+	t.replReady = true
 	t.drawLocked()
 	t.mu.Unlock()
 }
@@ -539,6 +548,7 @@ type frame struct {
 	convRow    int // first transcript row
 	convHeight int // number of transcript rows
 	statusRow  int
+	dockRow    int // first row of the queued dock (0 when there is none)
 	boxTop     int // the padding row above the text
 	boxTextRow int // first text row
 	boxTextN   int // number of text lines
@@ -572,6 +582,11 @@ func (t *screen) frameFor() frame {
 	f.boxTextRow = f.boxGapRow - boxN
 	f.boxTop = f.boxTextRow - 1
 	f.statusRow = f.boxTop - 1
+	if len(t.queued) > 0 {
+		// OpenCode's queued dock sits between the status row and the prompt.
+		f.dockRow = f.boxTop - dockRows
+		f.statusRow = f.dockRow - 1
+	}
 	f.convRow = 2
 	f.convHeight = max(3, f.statusRow-f.convRow)
 	f.boxTextN = boxN
@@ -682,6 +697,7 @@ func (t *screen) drawLocked() {
 	}
 
 	t.drawBox(&sb, f)
+	t.drawDock(&sb, f)
 	t.drawFooter(&sb, f)
 	if t.panelVisible() {
 		t.drawPanel(&sb, f)
@@ -1550,6 +1566,7 @@ func runScreen(io IO) int {
 			t.partial = ""
 		}
 		t.ed, t.boxTop = newEditor(), 0
+		t.replReady = false
 		t.drawLocked()
 		t.mu.Unlock()
 		output <- s
@@ -1592,6 +1609,17 @@ func runScreen(io IO) int {
 			if noticePending && idle {
 				noticePending = false
 				output <- subagentsLine
+			}
+			t.mu.Lock()
+			q, ok := t.nextQueued()
+			if ok {
+				t.queueSent(q.sent, q.images)
+				t.replReady = false
+				t.drawLocked()
+			}
+			t.mu.Unlock()
+			if ok {
+				output <- encodeLine(q.sent)
 			}
 			edit(func() {
 				if t.toast != nil && time.Since(t.toast.at) > toastLife && !t.toastHovered {
@@ -1701,6 +1729,16 @@ func runScreen(io IO) int {
 				case "q":
 					cancelTurn()
 					output <- "/exit"
+				case keyEnter:
+					// OpenCode's queue: sent after the current turn, not into it.
+					edit(func() {
+						if awaitingReply || strings.TrimSpace(t.editor().Text()) == "" {
+							return
+						}
+						entry, sent, imgs := t.takeInput()
+						history, histPos = append(history, entry), -1
+						t.enqueue(queuedPrompt{entry: entry, sent: sent, images: imgs})
+					})
 				}
 				continue
 			}
@@ -1722,6 +1760,16 @@ func runScreen(io IO) int {
 					continue
 				}
 				if strings.TrimSpace(t.editor().Text()) == "" {
+					// Empty Enter: while a turn runs it promotes the first queued
+					// prompt to a steer; after an interrupt it resumes the queue.
+					switch {
+					case busy && len(t.queued) > 0 && t.steerTo(t.queued[0].sent, t.queued[0].images):
+						t.queued = t.queued[1:]
+						t.drawLocked()
+					case t.queuePaused:
+						t.queuePaused = false
+						t.drawLocked()
+					}
 					t.mu.Unlock()
 					continue
 				}
@@ -1734,14 +1782,28 @@ func runScreen(io IO) int {
 					continue
 				}
 				entry, sent, imgs := t.takeInput()
+				if busy {
+					// OpenCode's steer: the message joins the running turn at the
+					// next tool-round boundary instead of cancelling it.
+					history, histPos = append(history, entry), -1
+					if !t.steerTo(sent, imgs) {
+						t.enqueue(queuedPrompt{entry: entry, sent: sent, images: imgs})
+					}
+					t.drawLocked()
+					t.mu.Unlock()
+					continue
+				}
+				if len(t.queued) > 0 {
+					// Prompts already waiting go first: keep the order.
+					t.enqueue(queuedPrompt{entry: entry, sent: sent, images: imgs})
+					t.queuePaused = false
+					history, histPos = append(history, entry), -1
+					t.drawLocked()
+					t.mu.Unlock()
+					continue
+				}
 				t.queueSent(sent, imgs)
 				t.mu.Unlock()
-				if busy {
-					// New message mid-turn: interrupts the thinking or the running
-					// tool; the message goes in as soon as the canceled turn hands
-					// control back to the REPL.
-					cancelTurn()
-				}
 				history = append(history, entry)
 				histPos = -1
 				send(encodeLine(sent))
@@ -1931,7 +1993,12 @@ func runScreen(io IO) int {
 				armed := t.interruptArmed && time.Since(t.escAt) < escInterruptWindow
 				t.mu.Unlock()
 				if armed {
-					edit(func() { t.interruptArmed = false })
+					edit(func() {
+						t.interruptArmed = false
+						if len(t.queued) > 0 {
+							t.queuePaused = true
+						}
+					})
 					cancelTurn()
 					continue
 				}

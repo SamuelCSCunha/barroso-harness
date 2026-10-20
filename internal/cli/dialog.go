@@ -88,6 +88,8 @@ type dialogSource struct {
 	db      *store.Store
 	gerente *subagent.Gerente
 	cwd     string
+	// steer delivers a message into the running turn (Session.AddSteer).
+	steer func(runtime.Steer)
 }
 
 func (s *dialogSource) update(cfg config.Config, sessID string) {

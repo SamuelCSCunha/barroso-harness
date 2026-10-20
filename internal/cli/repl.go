@@ -430,7 +430,7 @@ func repl(io IO, cfg *config.Config) {
 	// through this handle; it is refreshed before every prompt.
 	var src *dialogSource
 	if io.screen != nil {
-		src = &dialogSource{db: db, gerente: wired.Gerente(), cwd: cwd}
+		src = &dialogSource{db: db, gerente: wired.Gerente(), cwd: cwd, steer: sess.AddSteer}
 		io.screen.bindSource(src)
 	}
 
@@ -695,6 +695,8 @@ func repl(io IO, cfg *config.Config) {
 				io.screen.stopSpin()
 				// The screen ends the turn itself: an interrupt gets
 				// " · interrupted" on the footer, a failure an "Error:" row.
+				// Steer messages the turn did not reach go back to the queue.
+				io.screen.requeue(sess.TakeInbox())
 				if errTurn != nil && !tt.ended {
 					io.screen.TurnoFim(cfg.Model, time.Since(turnStart), errors.Is(errTurn, context.Canceled), errTurn)
 					errTurn = nil

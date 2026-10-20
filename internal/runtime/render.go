@@ -60,6 +60,12 @@ type RendererResultado interface {
 	ToolResultado(name, args, output string, dur time.Duration, failed bool)
 }
 
+// RendererSteer is OPTIONAL: it is told when a message sent during the turn
+// (Session.AddSteer) was delivered to the model.
+type RendererSteer interface {
+	Entregue(text string)
+}
+
 // RendererCorte is OPTIONAL: it reports that the response was cut at the
 // output limit. gaveUp=false: the turn will continue on its own; true: it
 // stopped.
