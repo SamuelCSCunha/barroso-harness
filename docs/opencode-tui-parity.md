@@ -425,3 +425,18 @@ Session tabs (strip/rail), vertical-tab resize, terminal panes & pane resize, pl
 | 62 | Leader key `ctrl+x` (2 s) | missing — implement | needed for 7, 39-42, 61 |
 | 63 | Tabs, agents, themes, LSP, share, undo/redo, permissions, terminal panes, shell mode | omit — no bh functionality | §11 |
 | 64 | OSC 0 terminal title | exists and matches (bh-specific `BH | name`) | OpenCode `OC | name` |
+
+---
+
+## 13. Implementation status (2026-10-20, commits 3cec208 → ff49a07, not pushed)
+
+Rows of §12 by state. "done" = implemented and covered by row-grid / interaction tests; nothing here has passed the real-terminal acceptance gate yet.
+
+| State | Rows |
+|---|---|
+| done | 1, 2, 4, 5 (click → MCP dialog, collapse >2), 6, 7 (`<leader>b`, no narrow overlay), 8, 9, 10, 11, 12, 13, 14, 15 (`ctrl+p commands`), 16, 17, 18, 19, 20, 21 (hover, click → Message Actions: Copy), 22, 24 (`· interrupted`, `Error:` row), 25, 26, 27, 28 (edit unified only, from the call's arguments), 29, 30, 31 (click → `/tasks <id>`), 32, 33, 35, 36, 37, 38, 39, 40 (no Favorites/Recent: bh has no store for them), 41, 42 (no delete/pin: no store API), 43, 44, 45, 46 (read-only, no toggle), 47 (dialog; no `down`-on-empty shortcut), 48, 50, 51, 52, 53, 55, 56, 57, 58, 59, 62 |
+| partial | 3 (fallback is `New session`, no date), 23 (markdown colours not re-checked), 54 (in-app drag selection and right-click/ctrl+c copy exist; selection stays inside the transcript), 61 (`<leader>y` and timeline not done) |
+| not done | 49 (`/provider` still asks on the transcript line), 60 (home screen) |
+| omitted | 34, 63 (§11) |
+
+Steer/queue (§10) is backed by `runtime.Session.AddSteer`; queued prompts never go into a command's question, Esc-twice pauses them. Edit diffs are always unified (no split view at >120).
