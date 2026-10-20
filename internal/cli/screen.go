@@ -333,6 +333,12 @@ func tabTitle(session string) string {
 	return "\033]0;" + name + "\a"
 }
 
+// rawTabTitle sets the tab to exactly name, without the "BH | " prefix (the
+// home screen shows the harness name alone).
+func rawTabTitle(name string) string {
+	return "\033]0;" + name + "\a"
+}
+
 // ── API used by the REPL and by the turn renderer ─────────────────────────
 
 // Adicionar appends lines to the conversation. While the view is pinned to the

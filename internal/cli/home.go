@@ -214,7 +214,7 @@ func (t *screen) drawHomeLocked(fullClear bool) {
 	}
 	if t.lastTabTitle != homeTabTitle {
 		t.lastTabTitle = homeTabTitle
-		sb.WriteString(tabTitle(homeTabTitle))
+		sb.WriteString(rawTabTitle(homeTabTitle))
 	}
 	f := t.drawHome(&sb)
 	t.drawAC(&sb, f)

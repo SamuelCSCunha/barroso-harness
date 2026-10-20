@@ -58,8 +58,8 @@ func TestTabShowsHarnessNameOnOpen(t *testing.T) {
 	var sb strings.Builder
 	tl := &screen{out: &sb}
 	tl.Estado(panelState{model: "m"})
-	if !strings.Contains(sb.String(), "\033]0;BH | BarrosoHarness\a") {
-		t.Fatal("tab should open as 'BH | BarrosoHarness'")
+	if !strings.Contains(sb.String(), "\033]0;BarrosoHarness\a") {
+		t.Fatal("tab should open as 'BarrosoHarness'")
 	}
 
 	// After the first message the tab shows the session title again.
