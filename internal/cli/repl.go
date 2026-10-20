@@ -6,6 +6,7 @@ package cli
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -674,7 +675,7 @@ func repl(io IO, cfg *config.Config) {
 				tt = &screenTurn{t: io.screen, model: cfg.Model}
 				rend = tt
 			} else if io.screen != nil {
-				io.screen.Usuario(strings.TrimSpace(line))
+				io.screen.UsuarioCom(strings.TrimSpace(line), io.screen.peekImages(line))
 				io.screen.Ocupado(true)
 				tt = &screenTurn{t: io.screen, model: cfg.Model}
 				rend = tt
@@ -688,9 +689,16 @@ func repl(io IO, cfg *config.Config) {
 			if io.screen != nil && subNotice == "" {
 				images = io.screen.takeImages(line)
 			}
+			turnStart := time.Now()
 			errTurn := sess.SendWithImages(ctx, rend, cwd, request, images)
 			if tt != nil {
 				io.screen.stopSpin()
+				// The screen ends the turn itself: an interrupt gets
+				// " · interrupted" on the footer, a failure an "Error:" row.
+				if errTurn != nil && !tt.ended {
+					io.screen.TurnoFim(cfg.Model, time.Since(turnStart), errors.Is(errTurn, context.Canceled), errTurn)
+					errTurn = nil
+				}
 				io.screen.Ocupado(false)
 				if tt.ctxTokens > 0 {
 					lastContext = tt.ctxTokens

@@ -19,6 +19,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -159,11 +160,16 @@ type screen struct {
 	// promptCol is where the text starts inside the input box (1-based), saved
 	// by the frame so a click moves the caret to the matching input column.
 	promptCol int
-	// thinking is the open/closed state of the "+ Thought" lines, keyed by the
-	// line index in t.lines; thoughtBodies holds the reasoning text each of
-	// them expands to.
-	thinking      map[int]bool
-	thoughtBodies map[int]string
+	// items are the interactive transcript parts (transcript.go), keyed by a
+	// stable id that a marker line in t.lines points at; hoverItem is the one
+	// under the pointer; rowOwner maps each row of the last wrapped() to the
+	// item it belongs to (0 for plain lines). pendingCmd is a slash command a
+	// click asked for (a sub-agent row opens /tasks <id>).
+	items      map[int]*item
+	nextItem   int
+	hoverItem  int
+	rowOwner   []int
+	pendingCmd string
 	// mcpOpen is the sidebar's MCP collapse state (open by default).
 	mcpOpen bool
 	// dlg is the open dialog (dialog.go); ac the prompt's autocomplete popup
@@ -263,7 +269,7 @@ func itoa(v int) string {
 
 func newScreen(out io.Writer) *screen {
 	fmt.Fprint(out, escAlt+escMouseOn+escFocusOn+escPasteOn+escClear)
-	return &screen{out: out, hits: newHits(), mcpOpen: true, thinking: map[int]bool{}, thoughtBodies: map[int]string{}}
+	return &screen{out: out, hits: newHits(), mcpOpen: true}
 }
 
 // takeImages returns (and forgets) the images sent with line: the REPL reads
@@ -362,53 +368,10 @@ func (t *screen) appendLocked(lines ...string) {
 	t.drawLocked()
 }
 
-// Usuario draws the sent message as a dark-background block with the blue
-// bar, like OpenCode.
-func (t *screen) Usuario(text string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	// Same width and same text column as the input box: both boxes line up,
-	// like in OpenCode. The bar is ┃ in the agent (primary blue) colour and the
-	// box background is raised.base #141414, with one padding line above and
-	// below; text two columns inside the bar.
-	avail := t.conversationWidth()
-	blank := withBg(bluef(bar), bgUser, avail)
-	grown := []string{}
-	if len(t.lines) > 0 {
-		grown = append(grown, "")
-	}
-	grown = append(grown, blank)
-	for _, l := range strings.Split(wrap(text, avail-5), "\n") {
-		grown = append(grown, withBg(bluef(bar)+"  "+highlightImages(l, colorText), bgUser, avail))
-	}
-	grown = append(grown, blank, "")
-	t.appendLocked(grown...)
-}
-
-// AvisoSubagentes shows, in place of the user box, one line per finished
-// sub-agent ("⚑ t1 completed · t2 failed").
-func (t *screen) AvisoSubagentes(text string) {
-	t.Adicionar("")
-	t.Adicionar("  " + bluef("⚑") + " " + grayf(summarizeSubNotice(text)))
-}
-
-// summarizeSubNotice extracts the "## t1 completed (11s)" lines from the notice.
-func summarizeSubNotice(text string) string {
-	var parts []string
-	for _, l := range strings.Split(text, "\n") {
-		if strings.HasPrefix(l, "## ") {
-			parts = append(parts, strings.TrimPrefix(l, "## "))
-		}
-	}
-	if len(parts) == 0 {
-		return "sub-agents finished"
-	}
-	return "sub-agents finished: " + strings.Join(parts, " · ")
-}
-
 func (t *screen) Limpar() {
 	t.mu.Lock()
 	t.lines, t.partial, t.scroll = nil, "", 0
+	t.items, t.hoverItem = nil, 0
 	t.drawLocked()
 	t.mu.Unlock()
 }
@@ -646,12 +609,6 @@ func (t *screen) ensure() {
 	if t.hits == nil {
 		t.hits = newHits()
 	}
-	if t.thinking == nil {
-		t.thinking = map[int]bool{}
-	}
-	if t.thoughtBodies == nil {
-		t.thoughtBodies = map[int]string{}
-	}
 }
 
 // drawLocked paints the whole frame and rebuilds the hit regions. Called with
@@ -768,9 +725,32 @@ func (t *screen) drawLocked() {
 // colored), the way the frame shows it.
 func (t *screen) wrapped(width int) []string {
 	var all []string
+	owner := t.rowOwner[:0]
 	for _, l := range t.lines {
-		all = append(all, wrapVis(l, width)...)
+		if strings.HasPrefix(l, itemMark) {
+			it := t.itemOf(l)
+			if it == nil {
+				continue
+			}
+			hover := it.id == t.hoverItem && t.clickable(it)
+			if it.kind == "user" || it.kind == "shell" || it.kind == "block" {
+				// Boxes span the pane from the bar's column; they are sized here
+				// and never re-wrapped.
+				for _, r := range t.renderItem(it, t.conversationWidth(), hover, false) {
+					all, owner = append(all, r), append(owner, it.id)
+				}
+				continue
+			}
+			for _, r := range t.renderItem(it, width, hover, false) {
+				all, owner = append(all, "  "+r), append(owner, it.id)
+			}
+			continue
+		}
+		for _, r := range wrapVis(l, width) {
+			all, owner = append(all, r), append(owner, 0)
+		}
 	}
+	t.rowOwner = owner
 	if t.partial != "" {
 		all = append(all, wrapVis("  "+t.partial+t.visibleInput(), width)...)
 	}
@@ -803,30 +783,20 @@ func (t *screen) paintTranscript(sb *strings.Builder, f frame, vis []string, hei
 			s = conversationMargin(visRow) + visRow
 		}
 		line(row, s)
-		// A drag starts on any conversation cell; when the row holds a Thought
-		// line it also answers a click (and shows the hover variant).
+		// A drag starts on any conversation cell; a row of a clickable item also
+		// answers a click and shows the item's hover style (a full repaint: an
+		// item spans several rows).
 		region := &hitRegion{row: row, col: 1, width: f.paneCols, height: 1, id: "conv"}
-		idx := base + i
-		if idx >= 0 && idx < len(t.lines) {
-			if body, ok := t.thoughtBodies[idx]; ok && body != "" {
-				head := t.lines[idx]
-				region.id = "thought"
-				region.plain = conversationMargin(head) + head
-				region.hover = thoughtHover(head, t.thinking[idx])
-				region.action = func() { t.expandThought(idx) }
+		if idx := base + i; idx >= 0 && idx < len(t.rowOwner) && i < len(vis) {
+			if it := t.items[t.rowOwner[idx]]; it != nil && t.clickable(it) {
+				region.id = "item:" + strconv.Itoa(it.id)
+				region.itemID = it.id
+				region.plain, region.hover = s, s
+				region.action = t.itemAction(it)
 			}
 		}
 		t.hits.add(region)
 	}
-}
-
-// thoughtHover paints a Thought header's hover variant: the collapsed line
-// flips its "+" to "-" on hover, as OpenCode previews the expansion.
-func thoughtHover(head string, open bool) string {
-	if open {
-		return head
-	}
-	return strings.Replace(head, "+ Thought", "- Thought", 1)
 }
 
 // applySelection paints the selected segment of one wrapped line.
@@ -1130,7 +1100,7 @@ func padding(width int) string { return strings.Repeat(" ", max(1, width)) }
 // the rest of the conversation starts at the column of the TEXT inside them,
 // like in OpenCode.
 func conversationMargin(l string) string {
-	if colorsOn && strings.HasPrefix(l, bgUser) {
+	if colorsOn && (strings.HasPrefix(l, bgRaised) || strings.HasPrefix(l, bgBox)) {
 		return "  "
 	}
 	return "   "
@@ -1241,10 +1211,19 @@ func (t *screen) mouseHover(row, col int) {
 	// A held press owns the pointer: the region pressed keeps the highlight and
 	// hover motion over it must not repaint the conversation underneath.
 	if mouse.active() {
-		t.repaintHoverRegions(nil)
 		return
 	}
-	t.repaintHoverRegions(t.hits.hoverRegion(row, col))
+	changed := t.hits.hoverRegion(row, col)
+	id := 0
+	if at := t.hits.at(row, col); at != nil {
+		id = at.itemID
+	}
+	if id != t.hoverItem {
+		t.hoverItem = id
+		t.drawLocked()
+		return
+	}
+	t.repaintHoverRegions(changed)
 }
 
 // repaintHoverRegions writes just the given regions of the last frame instead
@@ -1252,12 +1231,18 @@ func (t *screen) mouseHover(row, col int) {
 // back under the cursor afterwards — a partial repaint moved the terminal cursor,
 // and the frame had it on the input box's caret.
 func (t *screen) repaintHoverRegions(regions []*hitRegion) {
-	if len(regions) == 0 {
+	var own []*hitRegion
+	for _, r := range regions {
+		if r.itemID == 0 { // item rows are painted by the full frame
+			own = append(own, r)
+		}
+	}
+	if len(own) == 0 {
 		return
 	}
 	var sb strings.Builder
 	sb.WriteString(escHideCursor)
-	for _, r := range regions {
+	for _, r := range own {
 		r.paint(&sb)
 	}
 	sb.WriteString(escShowCursor)
@@ -1867,6 +1852,13 @@ func runScreen(io IO) int {
 						t.scrollPage(2, false)
 					}
 				})
+				// A click that asked for a command (a sub-agent row opens
+				// /tasks <id>) hands it to the REPL.
+				t.mu.Lock()
+				pc := t.pendingCmd
+				t.pendingCmd = ""
+				t.mu.Unlock()
+				command(pc)
 			case "ctrl+alt+b", "ctrl+alt+f", "ctrl+alt+u", "ctrl+alt+d", "ctrl+alt+y", "ctrl+alt+e":
 				edit(func() {
 					switch name {
@@ -2211,17 +2203,19 @@ func sessionTitle(h []dealer.Mensagem) string {
 // ── turn renderer in full-screen mode ─────────────────────────────────────
 
 type screenTurn struct {
-	t           *screen
-	model       string
-	pendingArgs string
-	ctxTokens   int
+	t         *screen
+	model     string
+	ctxTokens int
+	// ended is set once the turn's footer is drawn (Tokens); a turn that
+	// stops without it was interrupted or failed (see the REPL).
+	ended bool
 }
 
 func (r *screenTurn) Pensando() { r.t.Pensar("Thinking") }
 
 func (r *screenTurn) ToolInicio(name, args string) {
-	r.pendingArgs = summarizeArgs(args)
-	r.t.Pensar(strings.TrimSpace(name + " " + r.pendingArgs))
+	icon, label := toolLabel(name, args, "", false)
+	r.t.Pensar(icon + " " + label)
 }
 
 // Contexto arrives on every request of the turn: the panel and footer update
@@ -2234,69 +2228,22 @@ func (r *screenTurn) Contexto(n int) {
 	r.t.mu.Unlock()
 }
 
-func (r *screenTurn) Tool(name string, dur time.Duration, failed bool) {
+// Tool and Eco are the plain Renderer path; the full screen gets ToolResultado
+// (the whole result and the arguments) instead, so these only stop the spinner.
+func (r *screenTurn) Tool(string, time.Duration, bool) { r.t.stopSpin() }
+func (r *screenTurn) Eco(string)                       {}
+
+// ToolResultado draws the finished call the way OpenCode does for its kind.
+func (r *screenTurn) ToolResultado(name, args, output string, _ time.Duration, failed bool) {
 	r.t.stopSpin()
-	mark := greenf("✓")
-	if failed {
-		mark = redf("✗")
-	}
-	args := r.pendingArgs
-	r.pendingArgs = ""
-	r.t.Adicionar("  " + mark + " " + color(colorText, name) + " " + grayf(args) + " " + grayf(fmtDur(dur)))
+	r.t.toolResult(name, args, output, failed)
 }
 
-func (r *screenTurn) Eco(output string) {
-	output = strings.TrimRight(output, "\n")
-	if output == "" {
-		return
-	}
-	// Compact like OpenCode: ONE preview line, truncated to the width. The
-	// whole output already went to the model; on screen, a 2 KB JSON became a
-	// wall of text.
-	first := ""
-	total := 0
-	for _, l := range strings.Split(output, "\n") {
-		if strings.TrimSpace(l) == "" {
-			continue
-		}
-		total++
-		if first == "" {
-			first = strings.Join(strings.Fields(l), " ")
-		}
-	}
-	if first == "" {
-		return
-	}
-	r.t.mu.Lock()
-	avail := r.t.conversationWidth() - 10
-	r.t.mu.Unlock()
-	if total > 1 {
-		first += fmt.Sprintf("  (+%d lines)", total-1)
-	}
-	r.t.Adicionar("  " + grayf("› "+truncateVis(first, avail)))
-}
-
-// Pensou closes "Thinking" like OpenCode: a "+ Thought: <title> · 8.1s" line
-// in place of the spinner, clickable to expand the reasoning.
+// Pensou closes "Thinking" with a collapsed "+ Thought: <title> · 8.1s" that a
+// click expands.
 func (r *screenTurn) Pensou(text string, dur time.Duration) {
 	r.t.stopSpin()
 	r.t.thought(dur, text)
-}
-
-// thought appends the collapsed Thought line and remembers the reasoning text
-// so a click can expand it: OpenCode's reasoningSummary turns a "**Title**"
-// prefix into "Thought: Title".
-func (t *screen) thought(dur time.Duration, reasoning string) {
-	title, body := reasoningSummary(reasoning)
-	t.mu.Lock()
-	t.thoughtBodies[len(t.lines)] = strings.TrimRight(body, "\n")
-	t.mu.Unlock()
-	mid := ""
-	label := "+ Thought"
-	if title != "" {
-		label, mid = "+ Thought: "+title, " · "
-	}
-	t.Adicionar("  " + orangef(label) + mid + grayf(fmtDur(dur)))
 }
 
 // reasoningSummary mirrors OpenCode's context/thinking.ts: a leading
@@ -2322,38 +2269,6 @@ func reasoningSummary(text string) (title, body string) {
 	return title, body
 }
 
-// expandThought toggles a Thought line's body in place, the way OpenCode's
-// click does: the "+"/"-" prefix flips and the reasoning shows below the header,
-// indented, all in the muted colour.
-//
-// It does NOT take t.mu: a click reaches it from the key loop's edit(), which
-// already holds the lock.
-func (t *screen) expandThought(idx int) {
-	if idx < 0 || idx >= len(t.lines) {
-		return
-	}
-	body, ok := t.thoughtBodies[idx]
-	if !ok {
-		return
-	}
-	open := t.thinking[idx]
-	t.thinking[idx] = !open
-	head := t.lines[idx]
-	switch {
-	case open: // collapse: "+ Thought[: title] · dur"
-		t.lines[idx] = strings.Replace(head, "- Thought", "+ Thought", 1)
-	case strings.HasPrefix(stripANSI(head), "  + Thought"):
-		t.lines[idx] = strings.Replace(head, "+ Thought", "- Thought", 1)
-		width := t.conversationWidth() - 2
-		var shown []string
-		for _, l := range strings.Split(body, "\n") {
-			shown = append(shown, wrapVis("     "+grayf(l), width)...)
-		}
-		t.lines = append(t.lines[:idx+1], append(shown, t.lines[idx+1:]...)...)
-	}
-	t.drawLocked()
-}
-
 func (r *screenTurn) Cortada(ceiling int, gaveUp bool) {
 	r.t.stopSpin()
 	msg := fmt.Sprintf("response cut at the output limit (%s tokens); continuing", thousands(ceiling))
@@ -2365,11 +2280,8 @@ func (r *screenTurn) Cortada(ceiling int, gaveUp bool) {
 
 func (r *screenTurn) Guardrail(proactive bool) {
 	r.t.stopSpin()
-	msg := "context compacted by the guardrail (provider rejected the request size)"
-	if proactive {
-		msg = "context compacted"
-	}
-	r.t.Adicionar("  " + purplef("◆") + " " + grayf(msg))
+	_ = proactive
+	r.t.compactionRule()
 }
 
 func (r *screenTurn) Resposta(text string) {
@@ -2381,17 +2293,14 @@ func (r *screenTurn) Resposta(text string) {
 	r.t.Adicionar(renderMarkdown(text, avail))
 }
 
-func (r *screenTurn) Tokens(_, output int, dur time.Duration, compacted bool) {
+func (r *screenTurn) Tokens(_, output int, dur time.Duration, _ bool) {
 	r.t.stopSpin()
-	parts := []string{color(colorText, r.model), fmtDur(dur)}
+	r.ended = true
+	var extra []string
 	if output > 0 && dur > 0 {
-		parts = append(parts, fmt.Sprintf("%.1f tok/s", float64(output)/dur.Seconds()))
+		extra = append(extra, fmt.Sprintf("%.1f tok/s", float64(output)/dur.Seconds()))
 	}
-	if compacted {
-		parts = append(parts, purplef("compacted"))
-	}
-	r.t.Adicionar("")
-	r.t.Adicionar("  " + strings.Join(parts, grayf(" · ")))
+	r.t.turnFooter(r.model, dur, extra...)
 }
 
 // currentTitle is the session name: the stored one (/rename, /save) or,
@@ -2416,40 +2325,30 @@ func currentTitle(db *store.Store, sess *runtime.Session) string {
 	return sessionTitle(sess.History())
 }
 
-// replayHistory redraws a resumed session's conversation on screen in the
-// same format as a live turn: user box, tools with the result preview and
-// the answer in markdown. Tool durations are not in the log, so the tool
-// line has none. In the transcript a round's calls all come before the
-// results; each tool is drawn next to its result, as live.
+// replayHistory redraws a resumed session's conversation the way a live turn
+// draws it: user boxes, per-tool rows built from each call's arguments and its
+// result, compaction rules and the answers. Calls come before their results in
+// the log; each one is drawn when its result arrives, as live.
 func replayHistory(t *screen, h []dealer.Mensagem) {
 	calls := map[string]dealer.Mensagem{}
 	r := &screenTurn{t: t}
 	for _, m := range h {
 		switch m.Role {
 		case "user":
-			if isWorkingState(m.Conteudo) {
-				t.Adicionar("  " + purplef("◆") + " " + grayf("context compacted"))
-				continue
-			}
-			if strings.HasPrefix(m.Conteudo, "[subagents]") {
+			switch {
+			case isWorkingState(m.Conteudo):
+				t.compactionRule()
+			case strings.HasPrefix(m.Conteudo, "[subagents]"):
 				t.AvisoSubagentes(m.Conteudo)
-				continue
-			}
-			if strings.HasPrefix(m.Conteudo, "[output limit]") {
+			case strings.HasPrefix(m.Conteudo, "[output limit]"):
 				t.Adicionar("  " + yellowf("⚠") + " " + grayf("response cut at the output limit; continued"))
-				continue
+			default:
+				t.UsuarioCom(strings.TrimSpace(m.Conteudo), m.Images)
 			}
-			t.Usuario(strings.TrimSpace(m.Conteudo))
 		case "tool_call":
 			calls[m.ToolID] = m
 		case "tool_result":
-			mark := greenf("✓")
-			if m.IsErro {
-				mark = redf("✗")
-			}
-			c := calls[m.ToolID]
-			t.Adicionar("  " + mark + " " + color(colorText, m.ToolName) + " " + grayf(summarizeArgs(c.ToolArgs)))
-			r.Eco(m.Conteudo)
+			t.toolResult(m.ToolName, calls[m.ToolID].ToolArgs, m.Conteudo, m.IsErro)
 		case "assistant":
 			if strings.TrimSpace(m.Conteudo) != "" {
 				r.Resposta(m.Conteudo)

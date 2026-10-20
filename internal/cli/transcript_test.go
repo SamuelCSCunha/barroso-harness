@@ -1,0 +1,196 @@
+// Transcript tests: the OpenCode rows bh's real events turn into, and the
+// item identity that keeps clicks pointing at the right thing.
+package cli
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+)
+
+func clickItem(t *testing.T, sc *screen, kind string) *item {
+	t.Helper()
+	sc.frame()
+	for _, r := range sc.hits.regions {
+		if it := sc.items[r.itemID]; it != nil && it.kind == kind && r.action != nil {
+			r.action()
+			return it
+		}
+	}
+	t.Fatalf("no clickable %s row", kind)
+	return nil
+}
+
+// A shell call is a "$ command" block keeping the TAIL of its output, with
+// "(N earlier lines)"; a click shows everything.
+func TestShellBlockCollapse(t *testing.T) {
+	colorsOn = true
+	defer func() { colorsOn = false }()
+	sc, _ := newTestScreen(t, 100, 60, panelState{model: "m"})
+	var out []string
+	for i := 1; i <= 30; i++ {
+		out = append(out, fmt.Sprintf("out %d", i))
+	}
+	sc.toolResult("terminal_run", `{"command":"make test"}`, "exit_code: 0\nstdout+stderr:\n"+strings.Join(out, "\n"), false)
+	txt := sc.transcriptText()
+	if !strings.Contains(txt, "$ make test") || !strings.Contains(txt, "out 30") || strings.Contains(txt, "out 5\n") {
+		t.Fatalf("collapsed:\n%s", txt)
+	}
+	if !strings.Contains(txt, "earlier lines)") {
+		t.Fatalf("missing the dropped-lines count:\n%s", txt)
+	}
+	clickItem(t, sc, "shell")
+	if txt := sc.transcriptText(); !strings.Contains(txt, "out 1\n") {
+		t.Fatalf("expanded:\n%s", txt)
+	}
+	// A failing command names the exit code; a short output is not clickable.
+	sc.toolResult("terminal_run", `{"command":"false"}`, "exit_code: 2\nstdout+stderr:\n", false)
+	if !strings.Contains(sc.transcriptText(), "Command exited with code 2") {
+		t.Fatal("exit code line")
+	}
+}
+
+// Consecutive reads/searches collapse into "→ Explored: …", expandable; a lone
+// one draws as itself.
+func TestExplorationGroup(t *testing.T) {
+	colorsOn = true
+	defer func() { colorsOn = false }()
+	sc, _ := newTestScreen(t, 100, 40, panelState{model: "m"})
+	sc.toolResult("file_read", `{"path":"a.go"}`, "package a", false)
+	if txt := sc.transcriptText(); !strings.Contains(txt, "→ Read a.go") || strings.Contains(txt, "package a") {
+		t.Fatalf("single read (no output shown):\n%s", txt)
+	}
+	sc.toolResult("grep", `{"pattern":"func"}`, "a.go:1:func x\nb.go:2:func y", false)
+	sc.toolResult("file_read", `{"path":"b.go","start":10,"limit":5}`, "x", false)
+	txt := sc.transcriptText()
+	if !strings.Contains(txt, "→ Explored: 2 reads, 1 search") {
+		t.Fatalf("group:\n%s", txt)
+	}
+	clickItem(t, sc, "group")
+	txt = sc.transcriptText()
+	if !strings.Contains(txt, `✱ Grep "func" (2 matches)`) || !strings.Contains(txt, "→ Read b.go:10-14") {
+		t.Fatalf("expanded group:\n%s", txt)
+	}
+	// A non-exploration tool ends the group.
+	sc.toolResult("edit", `{"path":"a.go","old_string":"x","new_string":"y"}`, "ok: 1 replacement(s) in a.go", false)
+	sc.toolResult("file_read", `{"path":"c.go"}`, "c", false)
+	if n := strings.Count(sc.transcriptText(), "Explored"); n != 1 {
+		t.Fatalf("a new run starts a new group: %d", n)
+	}
+}
+
+// Expanding one Thought must not change which item the other rows belong to
+// (the old line-index keying broke exactly here).
+func TestThoughtStableIdentity(t *testing.T) {
+	colorsOn = true
+	defer func() { colorsOn = false }()
+	sc, _ := newTestScreen(t, 100, 60, panelState{model: "m"})
+	sc.thought(time.Second, "**One**\n\nfirst body\nmore")
+	sc.thought(2*time.Second, "**Two**\n\nsecond body")
+	var first, second *item
+	for _, it := range sc.items {
+		if it.title == "One" {
+			first = it
+		}
+		if it.title == "Two" {
+			second = it
+		}
+	}
+	sc.mu.Lock()
+	sc.toggle(first)
+	sc.mu.Unlock()
+	sc.frame()
+	// Click the row that now shows "Two": it must open the second Thought.
+	rows := visualize(sc.frame(), 100, 60)
+	for _, r := range sc.hits.regions {
+		if strings.Contains(rowAt(rows, r.row), "Thought: Two") && r.action != nil {
+			r.action()
+		}
+	}
+	if !second.open || !first.open {
+		t.Fatalf("first open=%v second open=%v", first.open, second.open)
+	}
+	if txt := sc.transcriptText(); !strings.Contains(txt, "first body") || !strings.Contains(txt, "second body") {
+		t.Fatalf("bodies:\n%s", txt)
+	}
+}
+
+// An edit draws the diff from its arguments; a write the file with numbers.
+func TestEditAndWriteBlocks(t *testing.T) {
+	colorsOn = true
+	defer func() { colorsOn = false }()
+	sc, _ := newTestScreen(t, 100, 40, panelState{model: "m"})
+	sc.toolResult("edit", `{"path":"x.go","old_string":"old line","new_string":"new line"}`, "ok", false)
+	sc.toolResult("file_write", `{"path":"y.txt","content":"l1\nl2"}`, "ok", false)
+	txt := sc.transcriptText()
+	for _, want := range []string{"← Edit x.go", "- old line", "+ new line", "# Wrote y.txt", "  1 l1", "  2 l2"} {
+		if !strings.Contains(txt, want) {
+			t.Errorf("missing %q:\n%s", want, txt)
+		}
+	}
+}
+
+// A failed inline tool is red and its error shows on click.
+func TestFailedToolExpandsError(t *testing.T) {
+	colorsOn = true
+	defer func() { colorsOn = false }()
+	sc, _ := newTestScreen(t, 100, 40, panelState{model: "m"})
+	sc.toolResult("web_fetch", `{"url":"https://x"}`, "error: 404 not found", true)
+	if strings.Contains(sc.transcriptText(), "404") {
+		t.Fatal("the error is behind a click")
+	}
+	clickItem(t, sc, "group")
+	if !strings.Contains(sc.transcriptText(), "404 not found") {
+		t.Fatalf("expanded:\n%s", sc.transcriptText())
+	}
+}
+
+// Finished sub-agents get one row each; a click asks for /tasks <id>.
+func TestSubagentRows(t *testing.T) {
+	colorsOn = true
+	defer func() { colorsOn = false }()
+	sc, _ := newTestScreen(t, 100, 40, panelState{model: "m"})
+	sc.AvisoSubagentes("[subagents] Sub-agents finished:\n\n## t1 completed (11s)\nok\n\n## t2 failed (3s)\nerror: x\n")
+	txt := sc.transcriptText()
+	if !strings.Contains(txt, "↳ Subagent finished · t1 · 11s") || !strings.Contains(txt, "! Subagent failed · t2") {
+		t.Fatalf("rows:\n%s", txt)
+	}
+	clickItem(t, sc, "sub")
+	if sc.pendingCmd != "/tasks t1" {
+		t.Fatalf("pending = %q", sc.pendingCmd)
+	}
+}
+
+// Compaction is a centered rule; an interrupted turn says so on its footer and a
+// failed one gets an Error line.
+func TestCompactionAndTurnEnd(t *testing.T) {
+	colorsOn = true
+	defer func() { colorsOn = false }()
+	sc, _ := newTestScreen(t, 100, 40, panelState{model: "m"})
+	sc.compactionRule()
+	sc.TurnoFim("kimi", 3*time.Second, true, errors.New("context canceled"))
+	sc.TurnoFim("kimi", time.Second, false, errors.New("provider 500"))
+	txt := sc.transcriptText()
+	for _, want := range []string{"── Compaction ──", "kimi · 3.0s · interrupted", "Error: provider 500"} {
+		if !strings.Contains(txt, want) {
+			t.Errorf("missing %q:\n%s", want, txt)
+		}
+	}
+	if strings.Contains(txt, "Error: context canceled") {
+		t.Error("an interrupt is not an error")
+	}
+}
+
+// The user box shows images as "file" chips, not the [Image N] text.
+func TestUserAttachmentChips(t *testing.T) {
+	colorsOn = true
+	defer func() { colorsOn = false }()
+	sc, _ := newTestScreen(t, 100, 40, panelState{model: "m"})
+	sc.UsuarioCom("look [Image 1]", []string{`C:\tmp\shot.png`})
+	txt := sc.transcriptText()
+	if !strings.Contains(txt, "look") || strings.Contains(txt, "[Image 1]") || !strings.Contains(txt, " file  shot.png") {
+		t.Fatalf("box:\n%s", txt)
+	}
+}

@@ -435,6 +435,10 @@ func (s *Session) runRound(ctx context.Context, r Renderer, list []tools.Spec, c
 		o := outcomes[i]
 		// Outputs above blobThreshold become blob + preview.
 		s.recordResult(o.call.ID, o.call.Nome, o.output, o.isErr)
+		if rr, ok := r.(RendererResultado); ok {
+			rr.ToolResultado(o.call.Nome, o.call.Args, o.output, o.dur, o.isErr)
+			return
+		}
 		r.Tool(o.call.Nome, o.dur, o.isErr)
 		r.Eco(echoExcerpt(o.output))
 	}

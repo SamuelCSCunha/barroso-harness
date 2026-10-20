@@ -52,6 +52,14 @@ type RendererRaciocinio interface {
 	Pensou(text string, dur time.Duration)
 }
 
+// RendererResultado is OPTIONAL: it receives each tool's call and its WHOLE
+// result in place of Tool+Eco, which only carry the name and the first lines.
+// The full screen draws per-tool rows from it (a shell block keeps the tail of
+// the output, an edit block shows the diff from the arguments).
+type RendererResultado interface {
+	ToolResultado(name, args, output string, dur time.Duration, failed bool)
+}
+
 // RendererCorte is OPTIONAL: it reports that the response was cut at the
 // output limit. gaveUp=false: the turn will continue on its own; true: it
 // stopped.

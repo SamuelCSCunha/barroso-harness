@@ -179,8 +179,10 @@ func TestReplayHistory(t *testing.T) {
 		{Role: "tool_result", ToolID: "2", ToolName: "file_read", Conteudo: "package a", IsErro: true},
 		{Role: "assistant", Conteudo: "done, two files"},
 	})
-	joined := strings.Join(tl.lines, "\n")
-	order := []string{"list the files", "terminal_run", "exit_code: 0", "file_read", "package a", "done, two files"}
+	// The shell call is a "$ command" block with its output; the failed read is
+	// an inline row (red, its error behind a click), as OpenCode draws them.
+	joined := tl.transcriptText()
+	order := []string{"list the files", "$ dir", "x", "→ Read a.go", "done, two files"}
 	pos := 0
 	for _, s := range order {
 		i := strings.Index(joined[pos:], s)
@@ -189,7 +191,15 @@ func TestReplayHistory(t *testing.T) {
 		}
 		pos += i + len(s)
 	}
-	if !strings.Contains(joined, "✗") {
-		t.Fatal("a failed tool should show ✗")
+	failed := false
+	for _, it := range tl.items {
+		for _, m := range append([]*item{it}, it.members...) {
+			if m.name == "file_read" && m.failed {
+				failed = true
+			}
+		}
+	}
+	if !failed {
+		t.Fatal("the failed read must be marked as failed")
 	}
 }

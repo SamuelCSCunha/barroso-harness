@@ -91,6 +91,9 @@ type hitRegion struct {
 	id           string
 	action       func()
 	hovered      bool
+	// itemID is the transcript item the row belongs to (0 for none): those rows
+	// are repainted by the full frame, not by the region itself.
+	itemID int
 }
 
 // hitList is the set of regions of the last frame, later ones on top: the

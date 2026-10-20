@@ -515,16 +515,16 @@ func TestThoughtLine(t *testing.T) {
 		t.Errorf("a titled Thought should read \"Thought: Reasoning title\": %q", frame)
 	}
 	// Clicking the header expands the reasoning below it.
-	var line int
+	var th *item
 	for _, r := range sc.hits.regions {
-		if r.id == "thought" && r.action != nil {
-			line = len(sc.lines) - 1
+		if it := sc.items[r.itemID]; it != nil && it.kind == "thought" && r.action != nil {
+			th = it
 			r.action()
 			break
 		}
 	}
-	if !sc.thinking[line] {
-		t.Errorf("the click must expand the reasoning on line %d", line)
+	if th == nil || !th.open {
+		t.Fatal("the click must expand the reasoning")
 	}
 	if !strings.Contains(stripANSI(sb.String()), "body text") {
 		t.Error("the expanded body must appear in the transcript")
