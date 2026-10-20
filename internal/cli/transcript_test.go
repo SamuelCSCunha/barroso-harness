@@ -194,3 +194,26 @@ func TestUserAttachmentChips(t *testing.T) {
 		t.Fatalf("box:\n%s", txt)
 	}
 }
+
+// A command's Windows output (CRLF) is painted inside the shell block: a stray
+// \r would send the cursor back to column 1 and the block background would
+// paint over the line (the date of a Get-Date call disappeared that way).
+func TestShellBlockCRLFOutput(t *testing.T) {
+	colorsOn = true
+	defer func() { colorsOn = false }()
+	sc, sb := newTestScreen(t, 120, 30, panelState{model: "m"})
+	sc.Usuario("que horas são")
+	sc.toolResult("terminal_run", `{"command":"Get-Date"}`,
+		"exit_code: 0\r\nstdout+stderr:\r\n2026-10-20 02:01:34\r\n", false)
+	sb.Reset()
+	sc.mu.Lock()
+	sc.w = 0
+	sc.drawLocked()
+	sc.mu.Unlock()
+	if strings.Contains(sb.String(), "\r") {
+		t.Fatal("a carriage return reached the frame")
+	}
+	if all := strings.Join(visualize(sb.String(), 120, 30), "\n"); !strings.Contains(all, "2026-10-20 02:01:34") {
+		t.Fatalf("output line missing:\n%s", all)
+	}
+}

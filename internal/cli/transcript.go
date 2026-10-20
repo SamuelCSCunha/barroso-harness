@@ -640,7 +640,7 @@ func (t *screen) thought(dur time.Duration, reasoning string) {
 func (t *screen) toolResult(name, args, out string, failed bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	it := &item{kind: "tool", name: name, args: args, out: out, failed: failed}
+	it := &item{kind: "tool", name: name, args: args, out: cleanOutput(out), failed: failed}
 	switch name {
 	case "terminal_run":
 		it.kind = "shell"
@@ -754,4 +754,21 @@ func (t *screen) peekImages(line string) []string {
 		return nil
 	}
 	return q[0]
+}
+
+// cleanOutput makes tool output safe to paint inside a box: Windows CRLF and
+// lone carriage returns become plain newlines (a \r moves the cursor back to
+// column 1 and the box's background then paints over the line), tabs become
+// spaces, and other control characters (ESC included: a program's own colour
+// codes would break the box) are dropped.
+func cleanOutput(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	s = strings.ReplaceAll(s, "\t", "    ")
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r >= 32 && r != 127 {
+			return r
+		}
+		return -1
+	}, s)
 }
