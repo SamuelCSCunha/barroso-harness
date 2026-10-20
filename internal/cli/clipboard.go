@@ -16,7 +16,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	goruntime "runtime"
 	"strconv"
 	"strings"
@@ -160,37 +159,7 @@ func pasteClipboard(n int) (path, text string, err error) {
 	return "", res.text, nil
 }
 
-// pastedImage is an image pasted into the input box, shown as [Image n].
-type pastedImage struct {
-	n    int
-	path string
-}
-
 func imageLabel(n int) string { return "[Image " + strconv.Itoa(n) + "]" }
-
-// placeholderRe matches the [Image N] placeholders in the typed text.
-var placeholderRe = regexp.MustCompile(`\[Image \d+\]`)
-
-// selectImages returns the paths of the images whose [Image N] placeholder is
-// still in the text, in placeholder order (a deleted placeholder drops its image).
-func selectImages(text string, imgs []pastedImage) []string {
-	var out []string
-	used := map[int]bool{}
-	for _, m := range placeholderRe.FindAllString(text, -1) {
-		n, err := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(m, "[Image "), "]"))
-		if err != nil || used[n] {
-			continue
-		}
-		for _, im := range imgs {
-			if im.n == n {
-				used[n] = true
-				out = append(out, im.path)
-				break
-			}
-		}
-	}
-	return out
-}
 
 // pasteText normalizes a text paste for the single-line input box: line
 // breaks become spaces (a pasted newline must not send the message) and other
@@ -212,7 +181,7 @@ func pasteText(s string) string {
 // background.base on bg feedback.warning, bold — the inverted "chip" used for
 // [Image N], [PDF N] and [Pasted ~N lines].
 func highlightImages(s, base string) string {
-	locs := placeholderRe.FindAllStringIndex(s, -1)
+	locs := tokenRe.FindAllStringIndex(s, -1)
 	if len(locs) == 0 || !colorsOn {
 		return color(base, s)
 	}
@@ -227,6 +196,28 @@ func highlightImages(s, base string) string {
 	}
 	if prev < len(s) {
 		sb.WriteString(color(base, s[prev:]))
+	}
+	return sb.String()
+}
+
+// highlightTokens paints every attachment token of the prompt box as a chip —
+// [Image N] and [Pasted ~N lines] alike — over text.base.
+func highlightTokens(s string) string {
+	locs := tokenRe.FindAllStringIndex(s, -1)
+	if len(locs) == 0 || !colorsOn {
+		return color(colorText, s)
+	}
+	var sb strings.Builder
+	prev := 0
+	for _, l := range locs {
+		if l[0] > prev {
+			sb.WriteString(color(colorText, s[prev:l[0]]))
+		}
+		sb.WriteString(boldf(bgWarning + fgSelected + s[l[0]:l[1]]))
+		prev = l[1]
+	}
+	if prev < len(s) {
+		sb.WriteString(color(colorText, s[prev:]))
 	}
 	return sb.String()
 }

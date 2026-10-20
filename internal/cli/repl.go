@@ -465,6 +465,8 @@ func repl(io IO, cfg *config.Config) {
 			farewell(io.Out)
 			return
 		}
+		// A multiline prompt from the full screen crosses the pipe on one line.
+		line = decodeLine(line)
 		// Sub-agents finished: the result becomes a model turn, without the
 		// user having to ask.
 		subNotice := ""

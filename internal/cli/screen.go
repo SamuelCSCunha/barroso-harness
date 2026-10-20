@@ -124,17 +124,18 @@ type screen struct {
 	// view down again.
 	scroll int
 
-	w, h   int
-	state  panelState
-	input  string
+	w, h  int
+	state panelState
+	// ed is the prompt buffer (editor.go); boxTop is the first wrapped row the
+	// box shows once the text is taller than the box (it scrolls with the caret).
+	ed     *editor
+	boxTop int
 	masked bool // the typed answer is a secret (API key)
 	busy   bool // model turn in progress
 	notice string
 	// noticeAt is when notice was set; it clears after 2s.
 	noticeAt time.Time
-	// images pasted into the current input ([Image N]); imageCount numbers
-	// them per message.
-	images     []pastedImage
+	// imageCount numbers the [Image N] tokens of the current prompt.
 	imageCount int
 	// sentImages holds the images of lines already sent and not yet taken by
 	// the REPL, keyed by the trimmed line (see takeImages).
@@ -166,6 +167,11 @@ type screen struct {
 	thoughtBodies map[int]string
 	// mcpOpen is the sidebar's MCP collapse state (open by default).
 	mcpOpen bool
+	// sidebarHidden is OpenCode's <leader>b toggle.
+	sidebarHidden bool
+	// leaderAt is when ctrl+x was pressed; while the leader waits for its second
+	// key the prompt bar turns border.base, as OpenCode shows it.
+	leaderAt time.Time
 	// panelOff is the sidebar's own scroll offset in lines (its content can grow
 	// taller than the pane). It is independent of the transcript's scroll: the two
 	// scroll separately, as OpenCode's do, and the offset is clamped per frame.
@@ -523,7 +529,7 @@ func (t *screen) measure() bool {
 }
 
 // panelVisible implements OpenCode's only breakpoint: wide = width > 120.
-func (t *screen) panelVisible() bool { return t.w > panelThreshold }
+func (t *screen) panelVisible() bool { return t.w > panelThreshold && !t.sidebarHidden }
 
 // panePadCols is the pane's left/right padding, halved below the floor width.
 func (t *screen) panePadCols() int {
@@ -616,33 +622,15 @@ func (t *screen) boxWidthCols() int {
 	return t.w - t.panePadCols()
 }
 
-// wrapInputLimit wraps the typed text at width n and keeps the last maxLines
-// lines (the box scrolls internally past its maximum height, caret visible).
-func wrapInputLimit(s string, n, maxLines int) []string {
-	out := wrapInput(s, n)
-	if len(out) > maxLines {
-		out = out[len(out)-maxLines:]
-	}
-	return out
-}
-
 // fmtTokens formats a count like JavaScript's toLocaleString in en-US:
 // 12345 -> "12,345" (OpenCode's sidebar and footer).
 func fmtTokens(n int) string {
 	return strings.ReplaceAll(thousands(n), ".", ",")
 }
 
-// boxLines wraps the visible input into the box's lines, capped at maxBox
-// (the last lines are kept: the caret stays visible).
-func (t *screen) boxLines(maxBox int) []string {
-	text := ""
-	if t.partial == "" {
-		text = t.visibleInput()
-	}
-	// The text starts two columns inside the ┃, and the box has 2 columns of
-	// right padding: that is the width the typed text wraps at.
-	return wrapInputLimit(text, t.boxWidthCols()-t.panePadCols()-4, maxBox)
-}
+// boxLines are the box's visible text rows, capped at maxBox (the window
+// follows the caret, see boxView).
+func (t *screen) boxLines(maxBox int) []string { return t.boxView(maxBox).lines }
 
 // ensure initializes the fields a zero-value screen (the tests build one
 // directly, without newScreen) needs.
@@ -737,8 +725,9 @@ func (t *screen) drawLocked() {
 	// cursor: in the box (also during the turn, to type the next message right
 	// away), or at the end of the command prompt line
 	if t.partial == "" {
-		t.promptCol = f.textCol + visWidth(t.boxLines(max(6, t.h/3))[len(t.boxLines(max(6, t.h/3)))-1])
-		fmt.Fprintf(&sb, "\033[%d;%dH", f.boxTextRow+f.boxTextN-1, t.promptCol)
+		row, col := t.caretScreen(f)
+		t.promptCol = col
+		fmt.Fprintf(&sb, "\033[%d;%dH", row, col)
 		sb.WriteString(escShowCursor)
 	} else if len(vis) > 0 {
 		last := vis[len(vis)-1]
@@ -845,7 +834,12 @@ func (t *screen) drawBox(sb *strings.Builder, f frame) {
 	line := func(r int, s string) {
 		fmt.Fprintf(sb, "\033[%d;1H%s%s%s", r, bgScreen, s, escClearLine)
 	}
+	// While the ctrl+x leader waits for its second key the bar turns
+	// border.base (#484848), as OpenCode shows a pending leader.
 	bar := bluef(bar)
+	if !t.leaderAt.IsZero() && time.Since(t.leaderAt) < leaderTimeout {
+		bar = color("[38;2;72;72;72m", "┃")
+	}
 	gutter := strings.Repeat(" ", f.barCol-1) + bar
 	blank := strings.Repeat(" ", f.barCol-1) + withBg(bar, bgBox, f.boxWidth-f.barCol+1)
 	// padding row above the text (paddingTop 1)
@@ -854,9 +848,9 @@ func (t *screen) drawBox(sb *strings.Builder, f frame) {
 	maxBox := max(6, t.h/3)
 	boxLines := t.boxLines(maxBox)
 	for i, l := range boxLines {
-		painted := l
+		painted := color(colorText, l)
 		if !t.masked {
-			painted = highlightImages(l, "")
+			painted = highlightTokens(l)
 		}
 		line(f.boxTextRow+i, gutter+"  "+withBg(painted, bgBox, f.boxWidth-f.textCol+1-2))
 	}
@@ -937,11 +931,14 @@ func (t *screen) footerParts(w int) (string, string) {
 	return left, strings.Join(right, grayf(" · "))
 }
 
+// visibleInput is the prompt text as shown on a command prompt's line: masked
+// with • while a secret is typed.
 func (t *screen) visibleInput() string {
+	text := t.editor().Text()
 	if t.masked {
-		return strings.Repeat("•", utf8.RuneCountInString(t.input))
+		return strings.Repeat("•", utf8.RuneCountInString(text))
 	}
-	return t.input
+	return text
 }
 
 // drawPanel paints the sidebar with its own independent scroll offset: the
@@ -1233,8 +1230,7 @@ func (t *screen) repaintHoverRegions(regions []*hitRegion) {
 // recomputePromptCol records the column of the caret for the given frame, the
 // same way drawLocked does, so a partial repaint can put the cursor back.
 func (t *screen) recomputePromptCol(f frame) {
-	box := t.boxLines(max(6, t.h/3))
-	t.promptCol = f.textCol + visWidth(box[len(box)-1])
+	_, t.promptCol = t.caretScreen(f)
 }
 
 // placeCursor puts the terminal cursor back on the caret of the input box (or
@@ -1243,8 +1239,9 @@ func (t *screen) placeCursor() {
 	f := t.frameFor()
 	switch {
 	case t.partial == "":
-		t.recomputePromptCol(f)
-		fmt.Fprint(t.out, fmt.Sprintf("\033[%d;%dH", f.boxTextRow+f.boxTextN-1, t.promptCol)+escShowCursor)
+		row, col := t.caretScreen(f)
+		t.promptCol = col
+		fmt.Fprint(t.out, fmt.Sprintf("\033[%d;%dH", row, col)+escShowCursor)
 	case f.convHeight > 0:
 		// A command prompt line is the last transcript row.
 		all := t.wrapped(f.paneCols - 2)
@@ -1362,133 +1359,6 @@ type keyEvent struct {
 	row   int
 }
 
-// readKeys decodes raw stdin into keys. Arrows and PgUp/PgDn arrive as escape
-// sequences (Windows raw mode enables ENABLE_VIRTUAL_TERMINAL_INPUT);
-// accented characters arrive as multi-byte UTF-8 and are reassembled.
-func readKeys(r *bufio.Reader, ch chan<- keyEvent) {
-	defer close(ch)
-	for {
-		b, err := r.ReadByte()
-		if err != nil {
-			return
-		}
-		switch {
-		case b == '\r' || b == '\n':
-			ch <- keyEvent{action: "enter"}
-		case b == 127 || b == 8:
-			ch <- keyEvent{action: "backspace"}
-		case b == 3:
-			ch <- keyEvent{action: "ctrl+c"}
-		case b == 4:
-			ch <- keyEvent{action: "ctrl+d"}
-		case b == 12:
-			ch <- keyEvent{action: "ctrl+l"}
-		case b == 21:
-			ch <- keyEvent{action: "ctrl+u"}
-		case b == 22:
-			// raw Ctrl+V (terminals without bracketed paste, or a keybinding
-			// that sends it): bh reads the clipboard itself.
-			ch <- keyEvent{action: "pasteimage"}
-		case b == 27:
-			if r.Buffered() == 0 {
-				ch <- keyEvent{action: "esc"}
-				continue
-			}
-			c, _ := r.ReadByte()
-			if c != '[' && c != 'O' {
-				continue
-			}
-			f, _ := r.ReadByte()
-			switch f {
-			case 'A':
-				ch <- keyEvent{action: "cima"}
-			case 'B':
-				ch <- keyEvent{action: "baixo"}
-			case '<':
-				// SGR mouse: "<code;col;rowM" (press) / "m" (release).
-				var seq []byte
-				for {
-					x, err := r.ReadByte()
-					if err != nil {
-						break
-					}
-					seq = append(seq, x)
-					if x == 'M' || x == 'm' {
-						break
-					}
-				}
-				if e, ok := parseMouseSeq(string(seq)); ok {
-					ch <- mouseEvent(e)
-				}
-			case '2':
-				// "[200~" opens a bracketed paste; other "2…" sequences
-				// (Insert, F9…) are discarded up to their final byte.
-				params := []byte{f}
-				for {
-					x, err := r.ReadByte()
-					if err != nil {
-						return
-					}
-					if x >= 0x40 && x <= 0x7e {
-						if x == '~' && string(params) == "200" {
-							content, ok := readPaste(r)
-							if !ok {
-								return
-							}
-							if content == "" {
-								// Windows Terminal < 1.25: an image-only clipboard
-								// arrives as an empty paste.
-								ch <- keyEvent{action: "pasteimage"}
-							} else {
-								ch <- keyEvent{action: "paste", text: content}
-							}
-						}
-						break
-					}
-					params = append(params, x)
-				}
-			case '5', '6':
-				_, _ = r.ReadByte() // '~'
-				if f == '5' {
-					ch <- keyEvent{action: "pgup"}
-				} else {
-					ch <- keyEvent{action: "pgdn"}
-				}
-			case 'H':
-				ch <- keyEvent{action: "home"}
-			case 'F':
-				ch <- keyEvent{action: "end"}
-			default:
-				// other sequences (left/right arrows, F1…): discard up to the final byte
-				for x := f; !(x >= 0x40 && x <= 0x7e) && r.Buffered() > 0; {
-					x, _ = r.ReadByte()
-				}
-			}
-		case b >= 0x80:
-			n := 1
-			switch {
-			case b&0xE0 == 0xC0:
-				n = 2
-			case b&0xF0 == 0xE0:
-				n = 3
-			case b&0xF8 == 0xF0:
-				n = 4
-			}
-			buf := []byte{b}
-			for i := 1; i < n; i++ {
-				c, err := r.ReadByte()
-				if err != nil {
-					return
-				}
-				buf = append(buf, c)
-			}
-			ch <- keyEvent{text: string(buf)}
-		case b >= 32 || b == '\t':
-			ch <- keyEvent{text: string(rune(b))}
-		}
-	}
-}
-
 // mouseEvent maps a decoded SGR event onto a keyEvent action, carrying the
 // cell it happened on for the dispatcher.
 func mouseEvent(e mouseSeq) keyEvent {
@@ -1540,27 +1410,10 @@ func (t *screen) applyPaste(p pasteResult) {
 			p.n = t.imageCount + 1 // the input was sent/cleared meanwhile
 		}
 		t.imageCount = p.n
-		t.images = append(t.images, pastedImage{n: p.n, path: p.path})
-		t.input += imageLabel(p.n)
+		t.editor().AddToken(token{kind: tokenImage, text: imageLabel(p.n), path: p.path})
 	default:
-		t.input += pasteText(p.text)
+		t.pasteInput(p.text)
 	}
-}
-
-// queueImages moves the pasted images still referenced by line to the queue
-// the REPL drains with takeImages, and resets the per-message numbering.
-// Called with t.mu held.
-func (t *screen) queueImages(line string) {
-	imgs := selectImages(line, t.images)
-	t.images, t.imageCount = nil, 0
-	if len(imgs) == 0 {
-		return
-	}
-	if t.sentImages == nil {
-		t.sentImages = map[string][][]string{}
-	}
-	key := strings.TrimSpace(line)
-	t.sentImages[key] = append(t.sentImages[key], imgs)
 }
 
 func oneLineErr(err error) string {
@@ -1648,9 +1501,9 @@ func runScreen(io IO) int {
 	defer tick.Stop()
 
 	var (
-		history   []string
-		histPos   = -1
-		lastCtrlC time.Time
+		history []historyEntry
+		histPos = -1
+		lead    leader
 		// noticePending: a sub-agent finished while a prompt was waiting.
 		noticePending bool
 	)
@@ -1674,7 +1527,7 @@ func runScreen(io IO) int {
 			t.lines = append(t.lines, t.partial+vis)
 			t.partial = ""
 		}
-		t.input = ""
+		t.ed, t.boxTop = newEditor(), 0
 		t.drawLocked()
 		t.mu.Unlock()
 		output <- s
@@ -1743,11 +1596,81 @@ func runScreen(io IO) int {
 			t.mu.Lock()
 			busy, awaitingReply := t.busy, t.partial != ""
 			t.mu.Unlock()
-			switch k.action {
+			name := keyName(k)
+			// command sends a slash command without touching the draft in the box.
+			// Only between turns: the REPL reads its next line after the turn ends,
+			// and a command typed now would silently wait until then.
+			command := func(c string) {
+				if !busy && !awaitingReply {
+					output <- c
+				}
+			}
+			cancelTurn := func() {
+				select {
+				case sub.cancelCh <- struct{}{}:
+				default:
+				}
+			}
+
+			// OpenCode's leader (ctrl+x): the next key within 2 s is a leader chord.
+			if !k.mouse && lead.take(time.Now()) {
+				edit(func() { t.leaderAt = time.Time{} })
+				switch name {
+				case "n":
+					command("/new")
+				case "l":
+					command("/resume")
+				case "m":
+					command("/model")
+				case "b":
+					edit(func() { t.sidebarHidden = !t.sidebarHidden })
+				case "q":
+					cancelTurn()
+					output <- "/exit"
+				}
+				continue
+			}
+			if name == "ctrl+x" && !awaitingReply {
+				lead.arm(time.Now())
+				edit(func() { t.leaderAt = time.Now() })
+				continue
+			}
+
+			switch name {
 			case "":
-				edit(func() { t.input += k.text })
+				continue
+			case keyEnter:
+				t.mu.Lock()
+				if awaitingReply {
+					l := t.editor().Text()
+					t.mu.Unlock()
+					send(l) // an empty Enter is a valid answer (e.g. keeps the model)
+					continue
+				}
+				if strings.TrimSpace(t.editor().Text()) == "" {
+					t.mu.Unlock()
+					continue
+				}
+				entry, sent, imgs := t.takeInput()
+				t.queueSent(sent, imgs)
+				t.mu.Unlock()
+				if busy {
+					// New message mid-turn: interrupts the thinking or the running
+					// tool; the message goes in as soon as the canceled turn hands
+					// control back to the REPL.
+					cancelTurn()
+				}
+				history = append(history, entry)
+				histPos = -1
+				send(encodeLine(sent))
+			case keyNewline:
+				edit(func() {
+					if !awaitingReply && !t.masked {
+						t.editor().Insert("\n")
+					}
+				})
 			case "paste":
-				edit(func() { t.input += pasteText(k.text) })
+				edit(func() { t.pasteInput(k.text) })
 			case "pasteimage":
 				if pasting {
 					continue
@@ -1760,59 +1683,54 @@ func runScreen(io IO) int {
 					path, text, err := pasteClipboard(n)
 					pasted <- pasteResult{n: n, path: path, text: text, err: err}
 				}()
-			case "backspace":
+			case keyUp:
+				// Up moves the caret up a line; only at the very start of the buffer
+				// does it walk the history, and only while the box is empty or still
+				// shows the entry Up brought back (OpenCode's rule).
 				edit(func() {
-					if _, n := utf8.DecodeLastRuneInString(t.input); n > 0 {
-						t.input = t.input[:len(t.input)-n]
+					e := t.editor()
+					if !e.caretAtStart() {
+						if e.row > 0 {
+							e.Up()
+						} else {
+							e.BufferStart()
+						}
+						return
 					}
-				})
-			case "ctrl+u":
-				edit(func() { t.input = "" })
-			case "enter":
-				t.mu.Lock()
-				l := t.input
-				t.mu.Unlock()
-				if awaitingReply {
-					send(l) // an empty Enter is a valid answer (e.g. keeps the model)
-					continue
-				}
-				if strings.TrimSpace(l) == "" {
-					continue
-				}
-				if busy {
-					// New message mid-turn: interrupts the thinking or the running
-					// tool; the message goes in as soon as the canceled turn hands
-					// control back to the REPL.
-					select {
-					case sub.cancelCh <- struct{}{}:
-					default:
+					if awaitingReply || len(history) == 0 || histPos == 0 {
+						return
 					}
-				}
-				history = append(history, l)
-				histPos = -1
-				t.mu.Lock()
-				t.queueImages(l)
-				t.mu.Unlock()
-				send(l)
-			case "cima", "baixo":
-				if len(history) == 0 {
-					continue
-				}
-				if k.action == "cima" {
+					if !e.empty() && (histPos < 0 || e.Text() != history[histPos].text) {
+						return
+					}
 					if histPos < 0 {
 						histPos = len(history) - 1
-					} else if histPos > 0 {
+					} else {
 						histPos--
 					}
-				} else if histPos >= 0 {
-					histPos++
-				}
+					t.recall(history[histPos], true)
+				})
+			case keyDown:
 				edit(func() {
-					if histPos >= 0 && histPos < len(history) {
-						t.input = history[histPos]
-					} else {
-						histPos, t.input = -1, ""
+					e := t.editor()
+					if !e.caretAtEnd() {
+						if e.row < len(e.lines)-1 {
+							e.Down()
+						} else {
+							e.BufferEnd()
+						}
+						return
 					}
+					if histPos < 0 || e.Text() != history[histPos].text {
+						return
+					}
+					histPos++
+					if histPos >= len(history) {
+						histPos = -1
+						t.ed = newEditor()
+						return
+					}
+					t.recall(history[histPos], false)
 				})
 			case "pgup", "pgdn", "rodacima", "rodabaixo", "mousedrag", "mousemove",
 				"mousedown", "mouseup", "mouserelease", "rightclick":
@@ -1821,11 +1739,11 @@ func runScreen(io IO) int {
 				t.mu.Lock()
 				selecting := t.hasSelection()
 				t.mu.Unlock()
-				if selecting && k.action != "mouseup" && k.action != "mouserelease" && k.action != "rightclick" {
+				if selecting && name != "mouseup" && name != "mouserelease" && name != "rightclick" {
 					continue
 				}
 				edit(func() {
-					switch k.action {
+					switch name {
 					case "rodacima":
 						t.wheelScroll(k.row, k.col, 1)
 					case "rodabaixo":
@@ -1833,14 +1751,17 @@ func runScreen(io IO) int {
 					case "mousemove":
 						t.mouseHover(k.row, k.col)
 					case "mousedown":
+						// A click in the box's text places the caret there.
+						if t.clickBox(k.row, k.col) {
+							return
+						}
 						t.mouseDown(k.row, k.col)
 					case "mousedrag":
 						t.mouseDrag(k.row, k.col)
 					case "mouseup":
 						t.mouseUp(k.row, k.col)
 					case "mouserelease":
-						// a region without an action only needs the hover
-						// cleared, which the next frame does
+						t.repaintHoverRegions(t.hits.unhover())
 					case "rightclick":
 						t.rightClick()
 					case "pgup": // half the visible height (OpenCode's page keys)
@@ -1849,86 +1770,134 @@ func runScreen(io IO) int {
 						t.scrollPage(2, false)
 					}
 				})
-			case "home", "end", "ctrl+g":
+			case "ctrl+alt+b", "ctrl+alt+f", "ctrl+alt+u", "ctrl+alt+d", "ctrl+alt+y", "ctrl+alt+e":
 				edit(func() {
-					// Home and ctrl+g jump to the first message; end and
-					// ctrl+alt+g to the last, as OpenCode binds them.
-					if k.action == "home" || k.action == "ctrl+g" {
-						t.setOffset(0)
-						return
+					switch name {
+					case "ctrl+alt+b":
+						t.scrollPage(2, true)
+					case "ctrl+alt+f":
+						t.scrollPage(2, false)
+					case "ctrl+alt+u": // OpenCode's "half page" is a quarter viewport
+						t.scrollPage(4, true)
+					case "ctrl+alt+d":
+						t.scrollPage(4, false)
+					case "ctrl+alt+y":
+						t.scrollUp(1)
+					case "ctrl+alt+e":
+						t.scrollDown(1)
 					}
-					t.setOffset(t.maxScroll())
+				})
+			case "ctrl+g", "alt+home":
+				edit(func() { t.setOffset(0) })
+			case "ctrl+alt+g", "alt+end":
+				edit(func() { t.toBottom() })
+			case "home", "end":
+				// With text in the box Home/End move its caret; with an empty box
+				// they jump to the first / last message.
+				edit(func() {
+					e := t.editor()
+					switch {
+					case !e.empty() && name == "home":
+						e.LineStart()
+					case !e.empty():
+						e.LineEnd()
+					case name == "home":
+						t.setOffset(0)
+					default:
+						t.toBottom()
+					}
 				})
 			case "ctrl+l":
 				edit(func() { t.w = 0 }) // forces a clear and repaint
-			case "esc", "ctrl+c":
+			case "ctrl+t":
+				// OpenCode's variant cycle: bh's variants are the effort levels.
+				t.mu.Lock()
+				cur := t.state.effort
+				t.mu.Unlock()
+				command("/effort " + nextEffort(cur))
+			case keyEsc:
 				// A selection cancels itself on Esc before any other action,
 				// as OpenCode does.
 				t.mu.Lock()
 				selecting := t.hasSelection()
 				t.mu.Unlock()
-				if selecting && k.action == "esc" {
+				if selecting {
 					edit(func() { t.clearSelection() })
 					continue
 				}
-				if k.action == "ctrl+c" && selecting {
-					edit(func() { t.copySelection() })
+				if !busy {
 					continue
 				}
-				if busy {
-					if k.action == "ctrl+c" {
-						select {
-						case sub.cancelCh <- struct{}{}:
-						default:
-						}
-						continue
-					}
-					// Esc arms the interrupt; a second press within the window
-					// actually interrupts, exactly as OpenCode does.
-					t.mu.Lock()
-					armed := t.interruptArmed && time.Since(t.escAt) < escInterruptWindow
-					t.mu.Unlock()
-					if armed {
-						t.mu.Lock()
-						t.interruptArmed = false
-						t.mu.Unlock()
-						select {
-						case sub.cancelCh <- struct{}{}:
-						default:
-						}
-						continue
-					}
-					edit(func() {
-						t.mu.Lock()
-						t.interruptArmed, t.escAt = true, time.Now()
-						t.mu.Unlock()
-					})
-					continue
-				}
-				if k.action == "esc" {
-					continue
-				}
+				// Esc arms the interrupt; a second press within the window
+				// actually interrupts, exactly as OpenCode does.
 				t.mu.Lock()
-				blank := t.input == ""
+				armed := t.interruptArmed && time.Since(t.escAt) < escInterruptWindow
+				t.mu.Unlock()
+				if armed {
+					edit(func() { t.interruptArmed = false })
+					cancelTurn()
+					continue
+				}
+				edit(func() { t.interruptArmed, t.escAt = true, time.Now() })
+			case "ctrl+c":
+				// OpenCode: copy a selection; otherwise clear a non-empty prompt;
+				// on an empty prompt, exit.
+				t.mu.Lock()
+				selecting := t.hasSelection()
+				blank := t.editor().empty()
+				t.mu.Unlock()
+				switch {
+				case selecting:
+					edit(func() { t.copySelection() })
+				case !blank:
+					edit(func() { t.ed, t.imageCount, t.boxTop = newEditor(), 0, 0 })
+				case awaitingReply:
+					send("") // backs out of the question (an empty answer)
+				default:
+					if busy {
+						cancelTurn()
+					}
+					output <- "/exit"
+				}
+			case "ctrl+d":
+				// Delete forward; on an empty prompt, exit (OpenCode's app.exit).
+				t.mu.Lock()
+				blank := t.editor().empty()
 				t.mu.Unlock()
 				if !blank {
-					edit(func() { t.input = "" })
+					edit(func() { t.editor().DeleteForward() })
 					continue
 				}
-				if time.Since(lastCtrlC) < 2*time.Second {
-					send("/exit")
-					continue
-				}
-				lastCtrlC = time.Now()
-				edit(func() { t.notice, t.noticeAt = "press ctrl+c again to exit", lastCtrlC })
-			case "ctrl+d":
 				if busy {
-					continue // deleting forward / exiting is OpenCode's; bh keeps exiting
+					cancelTurn()
 				}
-				send("/exit")
+				output <- "/exit"
+			default:
+				edit(func() {
+					if t.editKey(name) {
+						return
+					}
+					if k.action == "" && k.text != "" {
+						t.editor().Insert(k.text)
+					}
+				})
 			}
 		}
 	}
+}
+
+// nextEffort is the effort level ctrl+t moves to: the next of Esforcos, then
+// back to off ("-"), as OpenCode cycles a model's variants.
+func nextEffort(cur string) string {
+	for i, e := range Esforcos {
+		if e == cur {
+			if i == len(Esforcos)-1 {
+				return "-"
+			}
+			return Esforcos[i+1]
+		}
+	}
+	return Esforcos[0]
 }
 
 // ── colored text: visible width, truncation, wrapping, background ─────────

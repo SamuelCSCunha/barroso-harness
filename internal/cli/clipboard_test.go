@@ -42,18 +42,6 @@ func TestEmptyPasteAndCtrlVRequestImage(t *testing.T) {
 	}
 }
 
-// Only images whose placeholder is still in the text are sent, in text order.
-func TestSelectImages(t *testing.T) {
-	imgs := []pastedImage{{1, "a.png"}, {2, "b.png"}, {3, "c.png"}}
-	got := selectImages("see [Image 3] and [Image 1] and [Image 2", imgs)
-	if !reflect.DeepEqual(got, []string{"c.png", "a.png"}) {
-		t.Fatalf("selected = %v", got)
-	}
-	if got := selectImages("no images", imgs); got != nil {
-		t.Fatalf("selected = %v", got)
-	}
-}
-
 // The clipboard reader is injectable: an image becomes [Image N] in the
 // input and travels with the sent line; text goes in as typed; a failure
 // becomes a footer notice.
@@ -68,15 +56,22 @@ func TestPasteImageIntoInput(t *testing.T) {
 	if err != nil || path == "" || text != "" {
 		t.Fatalf("paste = %q %q %v", path, text, err)
 	}
-	tl.input = "look "
+	tl.editor().Insert("look ")
 	tl.applyPaste(pasteResult{n: 1, path: path})
 	tl.applyPaste(pasteResult{n: 2, path: "other.png"})
-	if tl.input != "look [Image 1][Image 2]" {
-		t.Fatalf("input = %q", tl.input)
+	if got := tl.editor().Text(); got != "look [Image 1][Image 2]" {
+		t.Fatalf("input = %q", got)
 	}
-	tl.queueImages("look [Image 2]")
-	if tl.imageCount != 0 || tl.images != nil {
-		t.Fatal("numbering should reset after send")
+	// Deleting [Image 1] drops its image from the message (atomic backspace).
+	tl.editor().LineStart()
+	for range len("look [Image 1]") {
+		tl.editor().Right()
+	}
+	tl.editor().Backspace()
+	_, sent, imgs := tl.takeInput()
+	tl.queueSent(sent, imgs)
+	if tl.imageCount != 0 || !tl.editor().empty() {
+		t.Fatal("the prompt and its numbering reset after send")
 	}
 	if got := tl.takeImages(" look [Image 2]\n"); !reflect.DeepEqual(got, []string{"other.png"}) {
 		t.Fatalf("taken = %v", got)
@@ -85,12 +80,12 @@ func TestPasteImageIntoInput(t *testing.T) {
 		t.Fatalf("taken twice = %v", got)
 	}
 
-	clipboardRead = func(string) (clipboardResult, error) { return clipboardResult{text: "hi\nthere"}, nil }
+	// A two-line clipboard text keeps its line break in the prompt.
+	clipboardRead = func(string) (clipboardResult, error) { return clipboardResult{text: "hi\r\nthere"}, nil }
 	_, text, _ = pasteClipboard(1)
-	tl.input = ""
 	tl.applyPaste(pasteResult{n: 1, text: text})
-	if tl.input != "hi there" {
-		t.Fatalf("text paste = %q", tl.input)
+	if got := tl.editor().Text(); got != "hi\nthere" {
+		t.Fatalf("text paste = %q", got)
 	}
 
 	tl.applyPaste(pasteResult{err: errors.New("boom")})

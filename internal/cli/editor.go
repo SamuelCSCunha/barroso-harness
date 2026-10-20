@@ -41,10 +41,14 @@ type token struct {
 // bytes breaks on the first accented character or emoji, and combining marks
 // then split from their base.
 type editor struct {
-	lines  [][]rune
-	row    int // caret line
-	col    int // caret column, in runes, within lines[row]
-	tokens map[int][]tokenAt
+	lines [][]rune
+	row   int // caret line
+	col   int // caret column, in runes, within lines[row]
+	// toks is the registry of attachment tokens ever added to this prompt. A
+	// token is "present" while its placeholder text is in the buffer, so no
+	// position has to be kept in step with edits: typing before a token, an
+	// undo, or a line join can never make it point at the wrong text.
+	toks []token
 	// undo/redo stacks carry whole-buffer snapshots: the prompt is a few KB at
 	// most, and a snapshot is the only history model that cannot corrupt itself
 	// when an operation rewrites several lines at once.
@@ -57,14 +61,14 @@ type editor struct {
 	hasWantCol bool
 }
 
-// editSnap is one undoable state of the buffer.
+// editSnap is one undoable state of the buffer. The token registry is not
+// part of it: it only grows, and presence is decided by the text.
 type editSnap struct {
 	lines [][]rune
-	toks  map[int][]tokenAt
 }
 
 func newEditor() *editor {
-	e := &editor{tokens: map[int][]tokenAt{}}
+	e := &editor{}
 	e.lines = [][]rune{{}}
 	return e
 }
@@ -75,11 +79,7 @@ func (e *editor) snapshot() editSnap {
 	for i, l := range e.lines {
 		cp[i] = append([]rune(nil), l...)
 	}
-	toks := make(map[int][]tokenAt, len(e.tokens))
-	for k, v := range e.tokens {
-		toks[k] = append([]tokenAt(nil), v...)
-	}
-	return editSnap{lines: cp, toks: toks}
+	return editSnap{lines: cp}
 }
 
 // pushUndo records the state before a mutation and clears the redo stack:
@@ -119,7 +119,6 @@ func (e *editor) Redo() bool {
 
 func (e *editor) restore(s editSnap) {
 	e.lines = s.lines
-	e.tokens = s.toks
 	e.clamp()
 }
 
@@ -156,15 +155,6 @@ func (e *editor) SetText(s string) {
 	e.pushUndo()
 	e.lines = splitRunes(strings.ReplaceAll(s, "\r\n", "\n"))
 	e.clamp()
-}
-
-// RuneCount is the caret's absolute offset in runes, from the start.
-func (e *editor) RuneCount() int {
-	n := 0
-	for _, l := range e.lines {
-		n += len(l) + 1 // the newline itself
-	}
-	return n - 1
 }
 
 // runeAt is the absolute caret offset: every line before the caret's line, plus
@@ -383,7 +373,6 @@ func (e *editor) Backspace() bool {
 		prev := e.lines[e.row-1]
 		e.col = len(prev)
 		e.lines[e.row-1] = append(prev, e.lines[e.row]...)
-		e.shiftTokens(e.row, -1)
 		e.lines = append(e.lines[:e.row], e.lines[e.row+1:]...)
 		e.row--
 		return true
@@ -435,7 +424,6 @@ func (e *editor) DeleteForward() bool {
 		}
 		e.pushUndo()
 		e.lines[e.row] = append(r, e.lines[e.row+1]...)
-		e.shiftTokens(e.row+1, -1)
 		e.lines = append(e.lines[:e.row+1], e.lines[e.row+2:]...)
 		return true
 	}
@@ -464,7 +452,6 @@ func (e *editor) deleteRange(from, to int) {
 				break
 			}
 			e.lines[e.row] = append(e.lines[e.row], e.lines[e.row+1]...)
-			e.shiftTokens(e.row+1, -1)
 			e.lines = append(e.lines[:e.row+1], e.lines[e.row+2:]...)
 			to--
 			continue
@@ -480,44 +467,45 @@ func (e *editor) deleteRange(from, to int) {
 // AddToken inserts an atomic token at the caret. The visible placeholder is what
 // the box shows and what is deleted whole; body/path are what travels to the model.
 func (e *editor) AddToken(tk token) {
+	e.toks = append(e.toks, tk)
 	e.Insert(tk.text)
-	row := e.row
-	start := e.col - len([]rune(tk.text))
-	e.tokens[row] = append(e.tokens[row], tokenAt{start: start, token: tk})
 }
 
-// tokenAt places a token inside one line.
-type tokenAt struct {
-	start int
-	token token
-}
-
-// tokensOnLine returns the tokens of a line whose start column survived every
-// edit, re-anchored against the line's actual text.
-func (e *editor) tokensOnLine(row int) []token {
-	// Tokens are matched against the live line text so an undo (which restores a
-	// stale map) or a paste that shifted the columns still finds the right ones.
-	var out []token
-	for _, at := range e.tokens[row] {
-		offset := at.start
-		if offset < 0 || offset > len(e.lines[row]) {
-			continue
-		}
-		if offset+len([]rune(at.token.text)) > len(e.lines[row]) {
-			continue
-		}
-		if string(e.lines[row][offset:offset+len([]rune(at.token.text))]) == at.token.text {
-			out = append(out, at.token)
+// AllTokens returns the tokens whose placeholder is still in the buffer, in
+// reading order. Each occurrence in the text claims one registered token with
+// that placeholder, so two pastes with the same label stay two tokens.
+func (e *editor) AllTokens() []token {
+	text := e.Text()
+	type hit struct {
+		at int
+		tk token
+	}
+	var hits []hit
+	used := map[int]bool{} // byte offsets already claimed
+	for _, tk := range e.toks {
+		from := 0
+		for {
+			i := strings.Index(text[from:], tk.text)
+			if i < 0 {
+				break
+			}
+			at := from + i
+			if !used[at] {
+				used[at] = true
+				hits = append(hits, hit{at, tk})
+				break
+			}
+			from = at + 1
 		}
 	}
-	return out
-}
-
-// AllTokens returns every token in the buffer, in reading order.
-func (e *editor) AllTokens() []token {
-	var out []token
-	for row := range e.lines {
-		out = append(out, e.tokensOnLine(row)...)
+	for i := 1; i < len(hits); i++ { // insertion sort: a prompt holds a handful
+		for j := i; j > 0 && hits[j].at < hits[j-1].at; j-- {
+			hits[j], hits[j-1] = hits[j-1], hits[j]
+		}
+	}
+	out := make([]token, len(hits))
+	for i, h := range hits {
+		out[i] = h.tk
 	}
 	return out
 }
@@ -534,14 +522,29 @@ func (e *editor) SelectTokens(kind tokenKind) []string {
 	return out
 }
 
+// Expand returns the buffer with every pasted-block placeholder replaced by the
+// text it stands for: what the model receives on submit.
+func (e *editor) Expand() string {
+	text := e.Text()
+	for _, tk := range e.AllTokens() {
+		if tk.kind == tokenPasted {
+			text = strings.Replace(text, tk.text, tk.body, 1)
+		}
+	}
+	return text
+}
+
 // deleteTokenBefore removes the whole token that ends at the caret, if any.
 func (e *editor) deleteTokenBefore() bool {
-	for _, at := range e.tokens[e.row] {
-		end := at.start + len([]rune(at.token.text))
-		if end == e.col {
+	head := string(e.lines[e.row][:e.col])
+	for _, tk := range e.toks {
+		if tk.text != "" && strings.HasSuffix(head, tk.text) {
+			n := len([]rune(tk.text))
 			e.pushUndo()
-			e.deleteRange(at.start, e.col)
-			e.removeTokenAt(e.row, at.start)
+			r := e.lines[e.row]
+			e.lines[e.row] = append(append([]rune{}, r[:e.col-n]...), r[e.col:]...)
+			e.col -= n
+			e.wantCol, e.hasWantCol = e.col, true
 			return true
 		}
 	}
@@ -550,40 +553,17 @@ func (e *editor) deleteTokenBefore() bool {
 
 // deleteTokenAfter removes the whole token that starts at the caret, if any.
 func (e *editor) deleteTokenAfter() bool {
-	for _, at := range e.tokens[e.row] {
-		if at.start == e.col {
+	tail := string(e.lines[e.row][e.col:])
+	for _, tk := range e.toks {
+		if tk.text != "" && strings.HasPrefix(tail, tk.text) {
+			n := len([]rune(tk.text))
 			e.pushUndo()
-			e.deleteRange(e.col, e.col+len([]rune(at.token.text)))
-			e.removeTokenAt(e.row, at.start)
+			r := e.lines[e.row]
+			e.lines[e.row] = append(append([]rune{}, r[:e.col]...), r[e.col+n:]...)
 			return true
 		}
 	}
 	return false
-}
-
-func (e *editor) removeTokenAt(row, start int) {
-	kept := e.tokens[row][:0]
-	for _, at := range e.tokens[row] {
-		if at.start != start {
-			kept = append(kept, at)
-		}
-	}
-	e.tokens[row] = kept
-}
-
-// shiftTokens moves every token at lines >= from by delta rows, so a line join
-// or split keeps the map aligned with the text.
-func (e *editor) shiftTokens(from, delta int) {
-	next := make(map[int][]tokenAt, len(e.tokens))
-	for row, toks := range e.tokens {
-		if row >= from && delta < 0 {
-			row += delta
-		} else if row >= from && delta > 0 {
-			row += delta
-		}
-		next[row] = toks
-	}
-	e.tokens = next
 }
 
 // splitRunes splits text into lines of runes, guaranteeing at least one line.
