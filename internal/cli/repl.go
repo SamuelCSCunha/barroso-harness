@@ -184,7 +184,12 @@ func Onboarding(io IO, cfg *config.Config) error {
 	if err := cfg.Save(); err != nil {
 		return fmt.Errorf("save config: %w", err)
 	}
-	fmt.Fprintln(io.Out, "saved to "+config.Dir()+"\\config.json — effort is off for now (/effort turns it on).")
+	// Report the effort actually saved (a fresh config gets DefaultEffort).
+	effort := "effort is off (/effort turns it on)"
+	if e := strings.TrimSpace(cfg.Effort); e != "" && e != "none" {
+		effort = "effort " + e + " (/effort changes it)"
+	}
+	fmt.Fprintln(io.Out, "saved to "+config.Dir()+"\\config.json — "+effort+".")
 	fmt.Fprintln(io.Out, cfg.Resumo())
 	return nil
 }
