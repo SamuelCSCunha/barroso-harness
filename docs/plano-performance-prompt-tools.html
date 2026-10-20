@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BH — plano de ajustes de performance: prompt, cache e tools</title>
+<style>
+:root{color-scheme:dark;--bg:#0a0a0a;--panel:#141414;--raised:#1e1e1e;--text:#eee;--muted:#aaa;--line:#343434;--blue:#6db5ff;--orange:#f5a742;--green:#7fd88f;--purple:#b79af0;--red:#e06c75}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.65 system-ui,-apple-system,"Segoe UI",sans-serif}header{padding:54px max(24px,calc((100vw - 1120px)/2)) 38px;background:linear-gradient(130deg,#101a24,#0a0a0a 65%);border-bottom:1px solid var(--line)}.eyebrow{color:var(--blue);font-weight:700;letter-spacing:.12em;text-transform:uppercase;font-size:12px}h1{font-size:clamp(30px,5vw,50px);line-height:1.08;margin:14px 0}header p{max-width:860px;color:#bbb;font-size:18px;margin:0}.wrap{max-width:1120px;padding:30px 24px 76px;margin:auto}h2{font-size:25px;margin:44px 0 14px}h3{font-size:18px;margin:0 0 10px;color:var(--blue)}.callout{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--blue);padding:18px 20px;border-radius:8px;margin:18px 0}.callout.warn{border-left-color:var(--orange)}.callout.ok{border-left-color:var(--green)}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px}.phase{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:20px 22px;margin:16px 0}.phase h3{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.tag{display:inline-block;border-radius:999px;padding:2px 9px;background:var(--raised);color:var(--green);font-size:12px;font-weight:700}.tag.warn{color:var(--orange)}.tag.p{color:var(--purple)}table{width:100%;border-collapse:collapse;margin:15px 0 24px;background:#101010}th,td{text-align:left;vertical-align:top;padding:11px 12px;border:1px solid var(--line)}th{background:var(--panel);color:var(--blue)}code{font-family:ui-monospace,Consolas,monospace;color:#f2bd78;background:#1b1b1b;padding:2px 5px;border-radius:4px}pre{font-family:ui-monospace,Consolas,monospace;white-space:pre-wrap;background:#101010;padding:14px;border:1px solid var(--line);border-radius:8px;color:#ddd}.small{font-size:13px;color:var(--muted)}li{margin:6px 0}a{color:var(--blue)}footer{border-top:1px solid var(--line);padding-top:20px;color:var(--muted);margin-top:48px}@media(max-width:720px){.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header><div class="eyebrow">Plano de ajustes · Barroso Harness v0.1.0-bh.56 · 2026-10-20</div><h1>Performance: prompt, cache e tools</h1><p>O que as fontes oficiais e as harnesses maduras recomendam, onde o BH está hoje e uma sequência de mudanças em fases. Copiamos do OpenCode o que dá ganho mensurável, sem replicar a arquitetura inteira.</p></header>
+<main class="wrap">
+
+<div class="callout"><b>Resumo.</b> A lentidão medida vem quase toda do tempo de pensamento do modelo: ~2199 s de modelo contra ~26 s de tools numa sessão real. Isso vem do número de rodadas e do tamanho de cada request, não de tool faltando. Há três alavancas, em ordem de retorno:
+<ol>
+<li><b>Prefixo estável e cache visível.</b> Cada rodada deve reaproveitar o prefixo já processado.</li>
+<li><b>Catálogo de tools enxuto.</b> Divulgação progressiva das tools MCP e de gestão.</li>
+<li><b>Menos rodadas.</b> Esforço adequado, tools que resolvem em uma chamada e saídas curtas.</li>
+</ol>
+Tudo começa por medir, porque hoje o BH não lê os tokens em cache que o provider devolve.<br><br>Além da performance, o plano cobre:
+<ul>
+<li>Gestão completa pelo agente: criar, editar e remover skills, MCP e BARROSO.md (Fase 5).</li>
+<li>Propagação imediata dessas mudanças para todas as sessões abertas, via eventos <code>[system update]</code> append-only (Fase 6).</li>
+</ul></div>
+
+<h2>0. Validação final (2026-10-20)</h2>
+<div class="callout ok"><p>Conferi cada ponto contra a documentação oficial e contra o que o Claude Code faz. Também testei direto no provider em uso (Nous, <code>z-ai/glm-5.3-flash</code>). A linha geral se confirma, mas <b>três pontos mudaram</b> por causa das medições.</p>
+<table><thead><tr><th>Teste no provider atual</th><th>Resultado</th><th>Consequência no plano</th></tr></thead><tbody>
+<tr><td>Mesmo request repetido</td><td><code>cached_tokens</code> 2816 de 2823, custo ~4,5× menor e primeiro token um pouco mais cedo (4,4 s → 2,8 s, amostra pequena)</td><td>O cache existe, é automático e o BH ignora o campo. A Fase 0 e a Fase 1 valem a pena.</td></tr>
+<tr><td>Uma tool <b>acrescentada no fim</b> da lista</td><td>Cache <b>0</b>. Nesse provider as tools entram no início do prompt.</td><td><b>Muda a Fase 2:</b> a lista de tools não pode crescer durante a sessão. A tool descoberta é chamada por um proxy, e a lista de functions não muda.</td></tr>
+<tr><td>System editado (só a data)</td><td>Cache <b>0</b></td><td>Confirma a Fase 1 (data congelada) e os eventos <code>[system update]</code> no fim do histórico (Fases 4 e 6).</td></tr>
+<tr><td><code>prompt_cache_key</code></td><td>Aceito, mas a primeira chamada perdeu o cache já existente; nenhum ganho visto</td><td><b>Sai da Fase 1.</b> O cache casa pelo prefixo, sem precisar de chave.</td></tr>
+<tr><td>Effort (max / high / medium / omitido)</td><td>Tokens de raciocínio de 24–246 / 24–42 / 3–7 / 318–375. <b>Omitir o effort pensou mais</b> que <code>max</code>.</td><td><b>Muda a Fase 4:</b> não troco o padrão às cegas. O bench decide entre <code>medium</code> e <code>high</code>.</td></tr>
+</tbody></table>
+<p><b>Confirmado nas fontes:</b></p>
+<ul>
+<li><b>Claude Code:</b>
+<ul>
+<li>Por padrão adia <i>todas</i> as tools MCP: no início vão só os nomes e as instruções de cada servidor.</li>
+<li>Tem um modo <code>auto</code> que só adia acima de 10% da janela de contexto.</li>
+<li>Avisa o modelo quando um servidor falha.</li>
+<li>Reage a <code>list_changed</code> recarregando a lista do servidor.</li>
+<li>Salva em arquivo resultados de tool acima de 50k caracteres e devolve a referência.</li>
+</ul></li>
+<li><b>Anthropic:</b> a tool search reduziu ~85% dos tokens e subiu o acerto (Opus 4.5 de 79,5% para 88,1%). Abaixo de ~10 tools não compensa.</li>
+<li><b>Z.ai:</b> o cache do GLM é implícito e reportado em <code>prompt_tokens_details.cached_tokens</code>, e qualquer diferença de formatação o quebra.</li>
+<li><b>MCP spec:</b> servidores com <code>listChanged</code> enviam <code>notifications/tools/list_changed</code>, e o cliente deve chamar <code>tools/list</code> de novo. Isso entra na Fase 6.</li>
+</ul></div>
+
+<h2>1. O que dizem as fontes</h2>
+<table><thead><tr><th>Tema</th><th>Recomendação</th><th>Fonte</th></tr></thead><tbody>
+<tr><td>Ordem do prefixo</td><td>O cache casa o prefixo byte a byte na ordem <code>tools → system → messages</code>. O que é estável vai primeiro; data, hora e dados por request vão no fim. Mudar uma tool invalida todo o resto.</td><td>Anthropic, Prompt caching</td></tr>
+<tr><td>Invalidadores</td><td>Quebram o cache: mudar definição ou ordem das tools, editar o system, mudar <code>tool_choice</code>, mudar thinking/effort, ou trocar a ordem de chaves do JSON. Instruções no meio da conversa devem entrar como mensagem nova, sem editar o system.</td><td>Anthropic, Prompt caching</td></tr>
+<tr><td>OpenAI / compatíveis</td><td>Cache automático a partir de ~1024 tokens de prefixo idêntico. Recomendações:
+<ul>
+<li>Acrescentar mensagens em vez de reescrever o histórico.</li>
+<li>Manter tools e ordem fixas; desligar tools com <code>allowed_tools</code>/<code>tool_choice</code> em vez de removê-las.</li>
+<li>Usar um <code>prompt_cache_key</code> estável e medir <code>usage.prompt_tokens_details.cached_tokens</code>.</li>
+</ul></td><td>OpenAI, Prompt caching</td></tr>
+<tr><td>Tamanho do catálogo</td><td>A seleção de tool piora acima de 30–50 tools. Recomenda-se tool search quando há 10+ tools ou mais de 10k tokens de definições, com as 3–5 mais usadas sempre carregadas. Um setup MCP típico gasta ~55k tokens só em definições; com busca, a economia passa de 85%.</td><td>Anthropic, Tool search tool</td></tr>
+<tr><td>Qualidade das tools</td><td>
+<ul>
+<li>Poucas tools de alto impacto em vez de embrulhar cada endpoint.</li>
+<li>Prefixos de namespace (<code>github_</code>, <code>slack_</code>).</li>
+<li>Descrição escrita como para um novato, com parâmetros sem ambiguidade.</li>
+<li>Respostas curtas e de alto sinal, com paginação, opção concise/detailed e erros com orientação acionável.</li>
+</ul></td><td>Anthropic, Writing tools for agents</td></tr>
+<tr><td>Contexto just-in-time</td><td>Carregar contexto (skills, schemas, arquivos) sob demanda, por referência, em vez de despejar tudo no prompt.</td><td>Anthropic, Effective context engineering</td></tr>
+</tbody></table>
+
+<h2>2. Diagnóstico do BH hoje</h2>
+<div class="grid">
+<section class="card"><h3>Já está bom</h3><ul>
+<li>A ordem dos MCP é determinística (<code>mcpManager.order</code>). A injeção é append-only e o catálogo é montado em ordem fixa.</li>
+<li>O histórico é append-only (<code>Mensagem</code> é byte-determinística, sem maps).</li>
+<li>O system prompt tem só a data, sem hora, então muda no máximo uma vez por dia.</li>
+<li>Tools paralelas, grep/glob/edit e uma política de tools explícita já foram entregues.</li>
+</ul></section>
+<section class="card"><h3>Onde perde tempo e tokens</h3><ul>
+<li><b>Cache invisível.</b> <code>dealer.Usage</code> só lê <code>prompt_tokens</code>, então não dá para saber se há cache hit.</li>
+<li><b>Data e cwd no meio do system.</b> Ficam antes da política e do BARROSO.md, e a troca de dia invalida o system inteiro.</li>
+<li><b>Catálogo cheio a cada rodada.</b> Vão sempre built-ins, gestão (mcp_add/remove, skill_create/remove), contexto, web e todas as tools MCP (Playwright sozinho tem dezenas, com schemas grandes).</li>
+<li><b>Ordem de chaves no schema.</b> O <code>map[string]any</code> de <code>toolSchemas()</code> é ordenado pelo encoding/json, o que é estável. Os schemas MCP repassados do servidor também precisam continuar estáveis.</li>
+<li><b>Effort "max"</b> configurado como padrão: cada rodada pensa o máximo, inclusive rodadas triviais como ler arquivo.</li>
+<li>Não há <code>prompt_cache_key</code> e o catálogo muda quando um MCP cai ou volta.</li>
+</ul></section>
+</div>
+
+<h2>3. Plano em fases</h2>
+
+<div class="phase"><h3>Fase 0 — Medir antes de mexer <span class="tag">obrigatório</span> <span class="tag p">~0,5 dia</span></h3>
+<ul>
+<li>Em <code>dealer.go</code>, ler <code>usage.prompt_tokens_details.cached_tokens</code> (OpenAI e compatíveis) e <code>cache_read_input_tokens</code>/<code>cache_creation_input_tokens</code> quando vierem. Expor em <code>Usage.CachedTokens</code>.</li>
+<li>Registrar por rodada: tempo até o primeiro token (TTFT), tempo total, tokens de prompt/cache/saída, bytes de tools e bytes de system. Gravar no evento da sessão em SQLite e mostrar <code>cache NN%</code> no painel lateral, junto do contexto.</li>
+<li>Criar <code>bh bench</code>: 5 tarefas fixas (explorar repo, corrigir bug, rodar testes, editar multi-arquivo, pergunta simples) com relatório de rodadas, tempo e tokens. Toda fase seguinte é aceita ou rejeitada por esse número.</li>
+</ul>
+<p class="small">Aceite: hit rate de cache e TTFT visíveis por rodada; baseline salvo em <code>docs/bench/</code>.</p></div>
+
+<div class="phase"><h3>Fase 1 — Prefixo estável <span class="tag">ganho alto, risco baixo</span> <span class="tag p">~0,5 dia</span></h3>
+<ul>
+<li>Reordenar <code>systemPrompt()</code>: identidade e tool policy e working style (estáticos) → BARROSO.md global → BARROSO.md do projeto → <b>no fim</b> o ambiente (OS, shell, cwd, data).</li>
+<li>Congelar a data no início da sessão (não usar <code>time.Now()</code> a cada ciclo). Se o dia virar no meio de uma sessão longa, isso entra como mensagem de sistema nova, nunca editando o system.</li>
+<li>Garantir que o catálogo de tools seja byte-idêntico entre rodadas:
+<ul>
+<li>Ordenação fixa, já verdadeira.</li>
+<li>Serialização canônica dos schemas MCP com chaves ordenadas.</li>
+<li>Um MCP que cai mantém as tools no catálogo e devolve erro acionável ("server X disconnected"), em vez de sumir e reaparecer.</li>
+</ul></li>
+<li><s>Enviar <code>prompt_cache_key</code></s>: <b>removido</b> após o teste. Não deu ganho no provider atual.</li>
+<li>Nesse provider as tools vêm antes do system no prompt. Por isso a lista de tools <b>é o item mais sensível ao cache</b>: qualquer mudança nela zera o cache inteiro.</li>
+<li>Para providers Anthropic nativos (futuro): breakpoints <code>cache_control</code> no fim das tools, no fim do system e na última mensagem estável.</li>
+</ul>
+<p class="small">Aceite: rodadas 2+ de uma mesma tarefa com cache ≥ 80% dos tokens de prompt (quando o provider tem cache) e TTFT menor no bench.</p></div>
+
+<div class="phase"><h3>Fase 2 — Catálogo progressivo <span class="tag">ganho alto</span> <span class="tag warn">risco médio</span> <span class="tag p">~2 dias</span></h3>
+<p>É aqui que o BH se aproxima do OpenCode sem copiar o Code Mode. Fica em duas camadas:</p>
+<table><thead><tr><th>Camada</th><th>Conteúdo</th><th>Como vai ao modelo</th></tr></thead><tbody>
+<tr><td>Direta (sempre)</td><td>file_read, file_write, edit, grep, glob, terminal_run, task_spawn, skill_read, web_search/fetch e <code>tool_search</code></td><td>Function tool completa, como hoje.</td></tr>
+<tr><td>Sob demanda</td><td>Todas as tools MCP; gestão (mcp_add/remove/list, skill_create/remove); contexto vivo e compactação quando não usados</td><td>Linha compacta no catálogo do system (<code>nome — descrição ≤120 chars</code>, agrupada por servidor, orçamento de ~2k tokens). O schema completo vem por <code>tool_search</code>.</td></tr>
+</tbody></table>
+<ul>
+<li><b>Mecânica compatível com qualquer provider OpenAI-like:</b>
+<ul>
+<li><code>tool_search(query)</code> devolve nome, descrição e schema das tools que casam (BM25 simples em Go, sem dependência nova).</li>
+<li>O schema descoberto chega <b>como resultado de tool</b>, ou seja, no histórico, que é append-only.</li>
+<li>A chamada passa por <code>tool_call(name, args)</code>, um proxy fixo: o runtime valida os argumentos contra o schema e executa.</li>
+<li><b>A lista de functions nunca muda durante a sessão.</b> Isso foi validado no teste: acrescentar uma tool zera o cache. É o mesmo princípio do <code>execute</code> do OpenCode, sem o runtime JS.</li>
+</ul></li>
+<li><b>Atalho:</b> uma tool cuja linha compacta já basta para o modelo pode ser chamada direto via <code>tool_call</code>, sem uma rodada de busca.</li>
+<li><b>Limiar automático:</b> se o catálogo total couber em ~8k tokens, manda tudo direto, como hoje. Só ativa a camada sob demanda acima disso. Configurável e desligável (<code>tool_disclosure: auto|full|progressive</code>), sem teto artificial.</li>
+<li>Providers Anthropic nativos: usar <code>defer_loading: true</code> + <code>tool_search_tool_bm25</code> do servidor em vez da busca local.</li>
+</ul>
+<p class="small">Aceite: com Playwright + memory ligados, bytes de tools por rodada caem ≥ 70%, e o bench não tem queda de acerto nem aumento de rodadas acima de 10%.</p></div>
+
+<div class="phase"><h3>Fase 3 — Qualidade das tools <span class="tag">ganho médio</span> <span class="tag p">~1 dia</span></h3>
+<ul>
+<li>Revisar as descrições de built-ins no estilo "explicar a um novato". Para cada tool: quando usar, quando NÃO usar, formato de path, limites de saída, um exemplo.</li>
+<li>Saídas de tools mais curtas:
+<ul>
+<li>grep/glob paginados com contagem total e dica de refino.</li>
+<li>terminal_run guarda o output completo como blob e devolve as últimas N linhas mais o caminho do blob.</li>
+<li>file_read com ranges.</li>
+</ul>
+Erros sempre com a próxima ação sugerida.</li>
+<li>Prefixar tools MCP por servidor (<code>playwright_browser_click</code>), como o padrão de namespacing recomendado. Isso melhora a busca da Fase 2.</li>
+<li>Remover sobreposições, como tools de contexto vivo que duplicam grep/file_read.</li>
+</ul>
+<p class="small">Aceite: menos chamadas por tarefa no bench e nenhuma tool com descrição de uma linha só.</p></div>
+
+<div class="phase"><h3>Fase 4 — Menos rodadas e esforço adequado <span class="tag">ganho alto em latência</span> <span class="tag p">~1 dia</span></h3>
+<ul>
+<li><b>O effort é decidido pelo bench, não por suposição.</b> O teste mostrou que <code>medium</code> pensa ~10× menos que <code>high</code>/<code>max</code>, e que omitir o campo pensou mais que <code>max</code>. O bench roda as 5 tarefas em <code>medium</code>, <code>high</code> e <code>max</code>, e o padrão passa a ser o mais rápido que mantiver o mesmo acerto. O usuário continua escolhendo via <code>/effort</code>. O effort só muda entre turnos, nunca dentro do ciclo.</li>
+<li>Instruções de política já existentes ficam mais firmes no prompt estático: chamadas paralelas, batch de leituras e "planeje antes, depois aja".</li>
+<li>Instruções que mudam na sessão (skill ativada, BARROSO.md editado, MCP adicionado) entram como mensagem <code>[system update]</code> no fim do histórico, como os deltas do OpenCode. O system de topo não é editado.</li>
+<li>Compactação: preservar o prefixo e resumir só o miolo, para manter o cache do system e das tools.</li>
+</ul>
+<p class="small">Aceite: tempo total do bench menor, com o mesmo resultado.</p></div>
+
+<div class="phase"><h3>Fase 5 — Gestão completa de skills, MCP e BARROSO.md pelo agente <span class="tag">requisito</span> <span class="tag p">~1,5 dia</span></h3>
+<p>Hoje o BH tem <code>skill_create</code> (que também substitui) / <code>skill_remove</code> e <code>mcp_list</code> / <code>mcp_add</code> (que também substitui) / <code>mcp_remove</code>. Editar exige reescrever o recurso inteiro, e não há tool para o BARROSO.md. O conjunto final fica assim:</p>
+<table><thead><tr><th>Recurso</th><th>Tools</th><th>Comportamento</th></tr></thead><tbody>
+<tr><td>Skills</td><td><code>skill_create</code>, <code>skill_edit</code>, <code>skill_remove</code> (+ <code>skill_read</code>, <code>skills_list</code>)</td><td><code>skill_edit</code> é uma edição parcial:
+<ul>
+<li>Muda só o <code>description</code>, ou</li>
+<li>substitui um trecho exato do corpo (<code>old_string</code> → <code>new_string</code>, como a tool <code>edit</code>), ou</li>
+<li>troca o corpo inteiro.</li>
+</ul>
+Pode mudar o escopo (projeto ↔ global) e renomear. <code>skill_create</code> falha se a skill já existe, para evitar sobrescrita acidental; o erro aponta para <code>skill_edit</code>.</td></tr>
+<tr><td>MCP</td><td><code>mcp_add</code>, <code>mcp_edit</code>, <code>mcp_remove</code> (+ <code>mcp_list</code>)</td><td><code>mcp_edit</code> faz patch dos campos informados: command, args, env, url, headers, renomear. Também tem <code>enabled</code> e <code>reconnect: true</code>. Salva no config.json e reconecta só aquele servidor. <code>mcp_add</code> falha se o nome já existe. <code>mcp_list</code> mostra o estado (conectado/erro) e a contagem de tools.</td></tr>
+<tr><td>BARROSO.md</td><td><code>instructions_read</code>, <code>instructions_write</code>, <code>instructions_edit</code>, <code>instructions_delete</code></td><td>Escopo <code>global</code> (~/.barroso-harness/BARROSO.md) ou <code>project</code> (cwd ou o BARROSO.md ancestral mais próximo). <code>read</code> mostra os arquivos que se aplicam e a precedência. <code>write</code> cria ou reescreve. <code>edit</code> faz substituição exata de trecho. <code>delete</code> apaga o arquivo.</td></tr>
+</tbody></table>
+<ul>
+<li>Todas essas tools ficam na camada <b>sob demanda</b> da Fase 2, e continuam disponíveis ao modelo sem pesar no prefixo.</li>
+<li>Rodam sempre sequencialmente (como hoje em <code>sequentialTools</code>) e devolvem um diff curto do que mudou.</li>
+</ul>
+</div>
+
+<div class="phase"><h3>Fase 6 — Propagação imediata para todas as sessões <span class="tag">requisito</span> <span class="tag warn">risco médio</span> <span class="tag p">~2 dias</span></h3>
+<p>Qualquer alteração em skills, MCP ou BARROSO.md vale na <b>próxima rodada de todas as sessões abertas</b>, inclusive as de outros processos <code>bh</code> e o ACP. Sessões novas não são o único alvo. O histórico continua append-only: a mudança chega como evento na conversa, e o system prompt não é editado.</p>
+<ol>
+<li><b>Registro de revisões.</b>
+<ul>
+<li>Cada tool de gestão (e os comandos <code>/mcp</code>, <code>/skills</code> da UI) grava uma linha numa tabela <code>resource_changes</code> do SQLite compartilhado: revisão, recurso, ação, nome, escopo e cwd do projeto.</li>
+<li>Edições feitas à mão (o usuário abriu o BARROSO.md no editor, ou mudou o config.json) são detectadas por <b>fingerprint</b>: mtime, tamanho e hash dos arquivos relevantes, checados no início de cada rodada. A checagem custa microssegundos e não traz dependência nova.</li>
+</ul></li>
+<li><b>Checagem na fronteira de rodada.</b> Antes de cada request ao modelo, a sessão compara a última revisão vista e o fingerprint. Se algo mudou e é relevante para ela (global, ou o mesmo projeto):
+<ul>
+<li><b>BARROSO.md:</b> resolve de novo e acrescenta uma mensagem <code>[system update] BARROSO.md (project) changed:</code> com o diff ou o texto novo. O system de topo fica congelado no conteúdo do início da sessão; quem vale é o mais recente que aparece nos updates. O prompt fixo diz isso ao modelo.</li>
+<li><b>Skills:</b> atualiza a listagem e acrescenta <code>[system update] skill X created/edited/removed</code>. Um <code>/X</code> usa sempre o SKILL.md atual.</li>
+<li><b>MCP <code>list_changed</code>:</b> quando o próprio servidor avisa que suas tools mudaram, o BH chama <code>tools/list</code> de novo e segue o mesmo fluxo de evento. Se o refresh falhar, mantém as tools anteriores, como faz o Claude Code.</li>
+<li><b>MCP:</b> cada processo <b>reconcilia</b> os próprios clientes com o config.json: conecta os novos, reconecta os editados e fecha os removidos. Em seguida atualiza o catálogo sob demanda e acrescenta <code>[system update] MCP X added (N tools: …)</code>. Tools de servidor removido passam a devolver erro acionável. Com a Fase 2, a lista de tools diretas não muda, então o cache do prefixo é preservado. Antes da Fase 2, cada mudança de MCP custa <b>uma</b> rodada sem cache, porque a lista de functions muda. Isso é aceitável, já que mudanças de MCP são raras.</li>
+</ul></li>
+<li><b>Sessão ocupada.</b> O update entra na próxima fronteira de rodada do turno em andamento, no mesmo ponto seguro usado pelo steer da fila. Não interrompe uma tool rodando.</li>
+<li><b>Sessão ociosa e UI.</b> A tela mostra uma linha discreta na conversa (<code>↻ MCP playwright updated</code>) e atualiza o painel lateral (MCPs, skills) na hora, sem esperar o próximo envio. Isso usa notificação por polling leve da revisão (1–2 s) no processo da TUI.</li>
+<li><b>Resume.</b> Ao retomar uma sessão, o mesmo mecanismo compara a revisão salva na sessão com a atual e acrescenta um update único com tudo que mudou nesse meio-tempo.</li>
+<li><b>Persistência.</b> As mensagens <code>[system update]</code> ficam no histórico da sessão, como as demais. A tela as desenha como evento, não como fala do usuário.</li>
+</ol>
+<p class="small">Aceite (teste de integração com 2 processos):
+<ul class="small">
+<li>A sessão A cria, edita e remove uma skill, um MCP e o BARROSO.md.</li>
+<li>A sessão B, ociosa e depois ocupada, recebe o evento na rodada seguinte e usa o recurso novo sem reiniciar.</li>
+<li>Uma edição manual do BARROSO.md também propaga.</li>
+<li>O hit rate de cache do prefixo não cai após a mudança.</li>
+</ul></p></div>
+
+<h2>4. O que NÃO copiar do OpenCode</h2>
+<div class="callout warn"><ul>
+<li><b>Code Mode completo</b> (um runtime JS executando scripts de tools). É custo alto e risco alto. O ganho principal, o catálogo enxuto, vem da Fase 2 com muito menos código.</li>
+<li><b>Tirar do modelo a gestão de skills/MCP/instruções.</b> É uma vantagem do BH: ela é ampliada (Fase 5) e passa da camada direta para a sob demanda.</li>
+<li><b>Agents com system substituível, LSP, etc.</b> Fora do escopo de performance.</li>
+</ul></div>
+
+<h2>5. Ordem e risco</h2>
+<table><thead><tr><th>#</th><th>Fase</th><th>Esforço</th><th>Ganho esperado</th><th>Risco</th></tr></thead><tbody>
+<tr><td>0</td><td>Medição + bench</td><td>0,5 d</td><td>Habilita tudo</td><td>Nenhum</td></tr>
+<tr><td>1</td><td>Prefixo estável</td><td>0,5 d</td><td>TTFT e custo menores nas rodadas 2+</td><td>Baixo</td></tr>
+<tr><td>4</td><td>Effort/rodadas</td><td>1 d</td><td>Maior queda de tempo total</td><td>Baixo (qualidade é verificada no bench)</td></tr>
+<tr><td>2</td><td>Catálogo progressivo</td><td>2 d</td><td>−70% de tokens de tools com MCPs pesados; melhor seleção</td><td>Médio (rodada extra de busca)</td></tr>
+<tr><td>3</td><td>Qualidade das tools</td><td>1 d</td><td>Menos chamadas e erros</td><td>Baixo</td></tr>
+<tr><td>5</td><td>Tools de gestão completas (skills, MCP, BARROSO.md)</td><td>1,5 d</td><td>Agente edita sem reescrever tudo</td><td>Baixo</td></tr>
+<tr><td>6</td><td>Propagação imediata em todas as sessões</td><td>2 d</td><td>Mudança vale na próxima rodada de qualquer sessão</td><td>Médio (vários processos, reconexão de MCP)</td></tr>
+</tbody></table>
+<p>Sugestão:</p>
+<ul>
+<li><b>Release 1:</b> 0 → 1 → 4, e medir.</li>
+<li><b>Release 2:</b> 5 → 6. A Fase 6 depende do congelamento do system da Fase 1 e do mecanismo de <code>[system update]</code> da Fase 4.</li>
+<li><b>Release 3:</b> 2 → 3. O catálogo sob demanda faz a propagação de MCP não quebrar o cache.</li>
+</ul>
+
+<footer>Fontes:
+<a href="https://platform.claude.com/docs/en/build-with-claude/prompt-caching">Anthropic — Prompt caching</a> ·
+<a href="https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool">Anthropic — Tool search tool</a> ·
+<a href="https://www.anthropic.com/engineering/writing-tools-for-agents">Anthropic — Writing tools for agents</a> ·
+<a href="https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents">Anthropic — Effective context engineering</a> ·
+<a href="https://developers.openai.com/api/docs/guides/prompt-caching">OpenAI — Prompt caching</a> ·
+<a href="https://www.anthropic.com/engineering/advanced-tool-use">Anthropic — Advanced tool use</a> ·
+<a href="https://code.claude.com/docs/en/mcp">Claude Code — MCP (tool search, list_changed)</a> ·
+<a href="https://modelcontextprotocol.io/specification/2025-06-18/server/tools">MCP spec — Tools</a> ·
+<a href="https://docs.z.ai/guides/capabilities/cache">Z.ai — Context caching</a> ·
+testes diretos no provider Nous (<code>z-ai/glm-5.3-flash</code>) em 2026-10-20 ·
+análise local do OpenCode v2.0.32 (<code>docs/analise-opencode-vs-bh-system-prompt-tools.html</code>) e do código do BH (<code>internal/runtime/session.go</code>, <code>extras.go</code>, <code>internal/dealer/dealer.go</code>, <code>internal/wiring/management.go</code>).</footer>
+</main>
+</body>
+</html>
