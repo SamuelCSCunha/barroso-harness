@@ -128,3 +128,72 @@ func normalizeVersion(v string) string {
 	}
 	return v
 }
+
+// Plano is what Verificar found: either nothing to do (Current), or a newer
+// release ready to install (Release, Asset, Sum).
+type Plano struct {
+	Current bool   // installed version is the newest (or newer)
+	Message string // why there is nothing to do, in one line
+	Release Lancamento
+	Asset   Asset
+	Sum     string
+}
+
+// Verificar checks the channel without downloading anything: it is the first
+// half of Rodar, for a UI that asks before installing (the update dialog).
+func Verificar(ctx context.Context, currentVersion string) (Plano, error) {
+	rel, err := BuscarUltima(ctx)
+	if err != nil {
+		return Plano{}, fmt.Errorf("update channel unavailable: %w", err)
+	}
+	cmp, err := compareVersions(currentVersion, rel.Version)
+	if err != nil {
+		return Plano{}, fmt.Errorf("compare versions: %w", err)
+	}
+	switch cmp {
+	case 0:
+		return Plano{Current: true, Message: "already on the latest version (" + currentVersion + ")."}, nil
+	case 1:
+		return Plano{Current: true, Message: "installed version (" + currentVersion +
+			") is newer than the published one (" + rel.Version + ")."}, nil
+	}
+	asset, err := rel.AssetDaPlataforma()
+	if err != nil {
+		return Plano{}, err
+	}
+	sumsAsset, ok := rel.AssetSomas()
+	if !ok {
+		return Plano{}, errors.New("release did not publish SHA256SUMS; aborting for safety")
+	}
+	sums, err := ListarSomas(ctx, sumsAsset)
+	if err != nil {
+		return Plano{}, fmt.Errorf("could not read the release SHA256SUMS (%v); aborting for safety", err)
+	}
+	sum := sums[asset.Name]
+	if sum == "" {
+		return Plano{}, fmt.Errorf("SHA256SUMS of release %s does not list %s; aborting for safety", rel.Version, asset.Name)
+	}
+	return Plano{Release: rel, Asset: asset, Sum: sum}, nil
+}
+
+// Instalar downloads, verifies and installs what Verificar found: the second
+// half of Rodar. On a permission failure the error carries the commands the
+// person must run.
+func Instalar(ctx context.Context, p Plano) error {
+	staging := filepath.Join(stagingRoot(), p.Asset.Name)
+	defer removeIfExists(staging)
+	if _, err := Baixar(ctx, p.Asset, p.Sum, staging); err != nil {
+		return err
+	}
+	if err := verifyStaged(staging, p.Release.Version); err != nil {
+		return fmt.Errorf("new binary failed the exec check: %w", err)
+	}
+	result, err := installBinary(staging)
+	if err != nil {
+		if len(result.commands) > 0 {
+			return fmt.Errorf("%w; run: %s", err, strings.Join(result.commands, " && "))
+		}
+		return err
+	}
+	return nil
+}

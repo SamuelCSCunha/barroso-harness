@@ -38,7 +38,7 @@ func commands() []command {
 		{name: "/skills", usage: "/skills", cat: "Agents", desc: "list skills; /<name> [args] runs one", dialog: true},
 		{name: "/tasks", usage: "/tasks [id|cancel id]", cat: "Agents", desc: "list sub-agents, show one, cancel one", dialog: true},
 		{name: "/mcps", usage: "/mcps", cat: "Agents", desc: "MCP servers and their status", dialog: true},
-		{name: "/update", usage: "/update", cat: "System", desc: "download and install the latest release"},
+		{name: "/update", usage: "/update", cat: "System", desc: "download and install the latest release", dialog: true},
 		{name: "/help", usage: "/help", cat: "System", desc: "this help", dialog: true},
 		{name: "/exit", usage: "/exit, /quit", cat: "System", desc: "exit", key: "ctrl+x q"},
 	}

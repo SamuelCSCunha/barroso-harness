@@ -70,6 +70,9 @@ type dialog struct {
 	choose func(t *screen, it dialogItem) string
 	submit func(t *screen, text string) string
 
+	// upd is the update dialog's state (only set for /update).
+	upd *updateState
+
 	geo      dialogGeo
 	pressIdx int
 	pressOut bool
@@ -186,6 +189,8 @@ func (t *screen) runCommand(name string) string {
 		t.openMCPDialog()
 	case "/help":
 		t.openHelpDialog()
+	case "/update":
+		t.openUpdateDialog()
 	default:
 		return name
 	}
@@ -472,6 +477,9 @@ func (t *screen) dialogKey(k keyEvent) string {
 	name := keyName(k)
 	switch name {
 	case keyEsc:
+		if d.upd != nil && d.upd.cancel != nil {
+			d.upd.cancel()
+		}
 		t.closeDialog()
 		return ""
 	case "ctrl+c":
@@ -481,6 +489,9 @@ func (t *screen) dialogKey(k keyEvent) string {
 		}
 		t.closeDialog()
 		return ""
+	}
+	if d.upd != nil {
+		return t.updateKey(name)
 	}
 	if d.text != nil {
 		switch name {
@@ -564,6 +575,11 @@ func (t *screen) dialogMouse(k keyEvent) (string, bool) {
 	idx, onItem := g.rowItem[k.row]
 	onItem = onItem && inside
 	onEsc := k.row == g.titleRow && k.col >= g.escCol && k.col < g.escCol+3
+	if d.upd != nil && inside && !onEsc {
+		if cmd, repaint := t.updateMouse(k); repaint || cmd != "" {
+			return cmd, repaint
+		}
+	}
 	switch k.action {
 	case "mousemove", "mousedrag":
 		if onItem && idx != d.sel {
@@ -630,6 +646,11 @@ func (t *screen) drawDialog(sb *strings.Builder) (int, int) {
 	width := min(d.size, t.w-2)
 	left := (t.w-width)/2 + 1
 	top := t.h/4 + 1
+	if d.upd != nil {
+		// OpenCode's update dialog calls dialog.setCentered(true): it sits in
+		// the vertical middle (about 7 rows tall), not at a quarter height.
+		top = max(1, (t.h-7)/2+1)
+	}
 	inner := width - 6
 	row := top
 	put := func(s string) {
@@ -645,6 +666,12 @@ func (t *screen) drawDialog(sb *strings.Builder) (int, int) {
 	put("")
 
 	curRow, curCol := 0, 0
+	if d.upd != nil {
+		t.drawUpdateBody(put, &row, left, width, sb)
+		put("")
+		d.geo.bottom = row
+		return 0, 0
+	}
 	if d.text == nil {
 		field := grayf(d.placeholder)
 		if len(d.query) > 0 {
