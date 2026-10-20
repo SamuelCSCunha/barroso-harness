@@ -1,7 +1,7 @@
 package update
 
 import (
-	"context"
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -52,25 +52,20 @@ func TestCompareVersionsRejectsInvalidForm(t *testing.T) {
 
 // ── token ──────────────────────────────────────────────────────────────────
 
-// Without a token in the environment, the error must SAY what is missing. A
-// generic 404 from a private repo is indistinguishable from a missing repo —
-// that is what made the first version of this package look like a "dead
-// channel" when the channel existed.
-func TestMissingTokenExplains(t *testing.T) {
+// The repository is public: without a token in the environment, requests go
+// out with no Authorization header instead of an empty "Bearer ".
+func TestNoTokenSendsNoAuthorization(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("TOKEN_GITHUB", "")
-	if tok := envToken(); tok != "" {
-		t.Fatalf("envToken returned %q with an empty environment", tok)
+	req, _ := http.NewRequest(http.MethodGet, "https://example.invalid", nil)
+	setAuth(req)
+	if got := req.Header.Get("Authorization"); got != "" {
+		t.Fatalf("Authorization = %q without a token, want none", got)
 	}
-	_, err := BuscarUltima(context.Background())
-	if err == nil {
-		t.Fatal("BuscarUltima without a token should fail")
-	}
-	msg := err.Error()
-	for _, want := range []string{"token", "GITHUB_TOKEN", "private"} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("error message %q should mention %q", msg, want)
-		}
+	t.Setenv("GITHUB_TOKEN", "ghp_x")
+	setAuth(req)
+	if got := req.Header.Get("Authorization"); got != "Bearer ghp_x" {
+		t.Fatalf("Authorization = %q with a token, want Bearer ghp_x", got)
 	}
 }
 
@@ -134,22 +129,6 @@ func TestDownloadRejectsInvalidChecksum(t *testing.T) {
 }
 
 // ── Rodar: flow without a channel ──────────────────────────────────────────
-
-// Without a token, Rodar fails BEFORE touching any file. A failed update
-// never leaves the machine without a harness — the property the other tests
-// assume.
-func TestRunWithoutTokenInstallsNothing(t *testing.T) {
-	t.Setenv("GITHUB_TOKEN", "")
-	t.Setenv("TOKEN_GITHUB", "")
-	var out strings.Builder
-	err := Rodar(context.Background(), &out, "v0.1.0-bh.9", nil)
-	if err == nil {
-		t.Fatal("Rodar without a token should fail")
-	}
-	if !strings.Contains(err.Error(), "token") {
-		t.Errorf("error %q should mention token", err)
-	}
-}
 
 // A local "dev" version is a build without a release: any published version
 // is new and the comparison must neither hang nor refuse.

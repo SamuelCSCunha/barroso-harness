@@ -54,11 +54,11 @@ func Baixar(ctx context.Context, asset Asset, sum string, staging string) (strin
 		return "", fmt.Errorf("build download request for %s: %w", asset.Name, err)
 	}
 	// octet-stream is what the GitHub API wants in order to return BYTES
-	// instead of the asset's JSON metadata. The token goes in the header,
-	// NEVER in the query: a URL with credentials ends up in proxy and server
-	// logs.
+	// instead of the asset's JSON metadata. A token, when set, goes in the
+	// header, NEVER in the query: a URL with credentials ends up in proxy and
+	// server logs.
 	req.Header.Set("Accept", "application/octet-stream")
-	req.Header.Set("Authorization", "Bearer "+envToken())
+	setAuth(req)
 
 	resp, err := client.Do(req)
 	if err != nil {

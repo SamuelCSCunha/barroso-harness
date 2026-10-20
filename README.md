@@ -62,7 +62,7 @@ In-session commands:
 
 ### `/update`
 
-The channel is the **private repository's releases**, published by the deployer. Because they are private, `/update` requires a token **in the environment** — `GITHUB_TOKEN` (or `TOKEN_GITHUB`), in that order. The token never goes into `config.json` or the URL: it only travels in the `Authorization` header.
+The channel is the repository's GitHub Releases, published by the deployer. The repository is public, so `/update` needs no token; if `GITHUB_TOKEN` (or `TOKEN_GITHUB`) is set in the environment it is sent anyway to lift GitHub's anonymous rate limit. The token never goes into `config.json` or the URL: it only travels in the `Authorization` header.
 
 ```bash
 export GITHUB_TOKEN=ghp_...      # or TOKEN_GITHUB
@@ -170,3 +170,7 @@ The session name appears in the terminal tab (`BH | <name>`) and in the panel: i
 With the mouse wheel captured, selecting text to copy is `Shift` + drag (Windows Terminal and most terminals).
 
 `BH_SIMPLES=1 bh` goes back to scrolling mode. Pipes, redirection and `bh -p` never use full screen.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

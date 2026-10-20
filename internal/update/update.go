@@ -1,18 +1,14 @@
 // Package update queries the distribution channel and replaces the installed
 // binary with the newest release.
 //
-// CHANNEL. Distribution is a Release in a PRIVATE GitHub repository, published
-// by the deployer (see .deploy/release.json in the repo). There is no — and
-// there was no, when this package was written — dl.barroso.tec.br: the host
-// does not resolve in DNS, and the first version of this package pointed
-// there. Querying a dead host would yield "channel unavailable" on every
-// /update, so the source is the GitHub API.
+// CHANNEL. Distribution is a Release in the public GitHub repository
+// ruanbarroso/barroso-harness, published by the deployer (see
+// .deploy/release.json). There is no dl.barroso.tec.br: the host does not
+// resolve in DNS, so the source is the GitHub API.
 //
-// AUTHENTICATION. A private repository requires a token, and the token NEVER
-// lives in config.json or in the package: it comes from the environment
-// (GITHUB_TOKEN or TOKEN_GITHUB, in that order). Without a token, /update
-// explains what is missing instead of failing with a generic 404 — a 404 from
-// a private repo without a token is indistinguishable from a missing repo.
+// AUTHENTICATION. The repository is public, so no token is needed. When
+// GITHUB_TOKEN or TOKEN_GITHUB is set (in that order) it is sent anyway: it
+// lifts GitHub's anonymous rate limit. The token NEVER lives in config.json.
 //
 // VERIFICATION. Each binary's SHA256 comes from the SHA256SUMS published
 // alongside the release, and the downloaded asset is checked before touching
@@ -93,6 +89,14 @@ func envToken() string {
 	return ""
 }
 
+// setAuth sends the environment token when there is one. The repository is
+// public, so a request without it still works.
+func setAuth(req *http.Request) {
+	if token := envToken(); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+}
+
 // BuscarUltima fetches the most recent published release from the channel.
 //
 // Pre-releases and drafts are excluded: /update delivers a stable version,
@@ -100,19 +104,13 @@ func envToken() string {
 // pre-releases, the error message explains it — instead of installing
 // something unstable.
 func BuscarUltima(ctx context.Context) (Lancamento, error) {
-	token := envToken()
-	if token == "" {
-		return Lancamento{}, errors.New(
-			"update channel needs a token: set GITHUB_TOKEN (or TOKEN_GITHUB) " +
-				"in the environment — barroso-harness releases are private")
-	}
 	client := &http.Client{Timeout: httpTimeout}
 	u := originGitHub + "/repos/" + RepoSlug + "/releases?per_page=20"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return Lancamento{}, fmt.Errorf("build channel request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	setAuth(req)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 
@@ -123,10 +121,13 @@ func BuscarUltima(ctx context.Context) (Lancamento, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		if envToken() == "" {
+			return Lancamento{}, fmt.Errorf("channel refused the request (HTTP %s): GitHub's anonymous rate limit may be exhausted; set GITHUB_TOKEN to raise it", resp.Status)
+		}
 		return Lancamento{}, fmt.Errorf("channel rejected the token (HTTP %s): check the token permissions", resp.Status)
 	}
 	if resp.StatusCode == http.StatusNotFound {
-		return Lancamento{}, fmt.Errorf("channel not found (HTTP %s): token has no access to %s", resp.Status, RepoSlug)
+		return Lancamento{}, fmt.Errorf("channel not found (HTTP %s): %s has no releases", resp.Status, RepoSlug)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return Lancamento{}, fmt.Errorf("channel responded HTTP %s", resp.Status)
@@ -303,7 +304,7 @@ func ListarSomas(ctx context.Context, asset Asset) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+envToken())
+	setAuth(req)
 	req.Header.Set("Accept", "application/octet-stream")
 	resp, err := client.Do(req)
 	if err != nil {
