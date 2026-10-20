@@ -19,7 +19,14 @@ import (
 // program; with gcstoptheworld=1 (and GOGC=400, fewer collections) it stopped
 // crashing in the same test.
 //
-// Both settings are only read at process start, so the binary re-executes
+// The crashes that remained (SIGSEGV on addresses made of response text, like
+// 0x323b323b = ";2;2") come from iSH's madvise: it is a no-op that returns 0.
+// Go on Linux defaults to madvdontneed=1 and then trusts that pages it gave
+// back come back zeroed, so it skips clearing them; on iSH they still hold old
+// data and a fresh object starts with stale pointers. madvdontneed=0 makes Go
+// zero those pages itself.
+//
+// These settings are only read at process start, so the binary re-executes
 // itself once with them in the environment. GOMAXPROCS/GOGC the user already
 // set are kept; the marker variable stops a second re-exec.
 func init() {
@@ -44,7 +51,7 @@ func init() {
 		env = append(env, "GOGC=400")
 	}
 	d := os.Getenv("GODEBUG")
-	for _, setting := range []string{"asyncpreemptoff=1", "gcstoptheworld=1"} {
+	for _, setting := range []string{"asyncpreemptoff=1", "gcstoptheworld=1", "madvdontneed=0"} {
 		name := setting[:strings.IndexByte(setting, '=')+1]
 		if !strings.Contains(d, name) {
 			if d != "" {
