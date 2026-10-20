@@ -151,7 +151,7 @@ func TestFrameLayoutMatchesSpec(t *testing.T) {
 	if !strings.Contains(footer, "~/proj") {
 		t.Errorf("footer should start with the location: %q", footer)
 	}
-	if !strings.Contains(footer, "12,345 (38%)") || !strings.Contains(footer, "/help commands") {
+	if !strings.Contains(footer, "12,345 (38%)") || !strings.Contains(footer, "ctrl+p commands") {
 		t.Errorf("footer right half = %q", footer)
 	}
 	// The sidebar shows the title, the context block and its footer with the

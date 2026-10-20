@@ -425,6 +425,13 @@ func repl(io IO, cfg *config.Config) {
 	if g := wired.Gerente(); g != nil && io.inject != nil {
 		g.AoTerminar(func() { io.inject(subagentsLine) })
 	}
+	// The full screen's dialogs read the catalog, sessions and sub-agents
+	// through this handle; it is refreshed before every prompt.
+	var src *dialogSource
+	if io.screen != nil {
+		src = &dialogSource{db: db, gerente: wired.Gerente(), cwd: cwd}
+		io.screen.bindSource(src)
+	}
 
 	for {
 		// Exits requested by a turn (Ctrl+C twice) happen BEFORE drawing a new
@@ -438,6 +445,9 @@ func repl(io IO, cfg *config.Config) {
 		if exiting {
 			farewell(io.Out)
 			return
+		}
+		if src != nil {
+			src.update(*cfg, sess.ID())
 		}
 		if io.screen != nil {
 			var mcps []mcpEntry
@@ -512,19 +522,26 @@ func repl(io IO, cfg *config.Config) {
 				warnFmt(io.Out, "session not persisted: nothing to resume")
 				continue
 			}
-			list := loadSessionRows(db, 10)
-			if len(list) == 0 {
-				printSessionList(io.Out, nil)
-				continue
-			}
-			printSessionList(io.Out, list)
-			fmt.Fprint(io.Out, greenf("❯")+" "+dimf("number or id (enter cancels)")+" ")
-			choice, errRead := br.ReadString('\n')
-			if errRead != nil { // EOF midway: exit cleanly, as in the loop
-				fmt.Fprintln(io.Out)
-				_ = db.TouchSession(sess.ID())
-				farewell(io.Out)
-				return
+			// "/resume <id>" (the sessions dialog) resumes directly; bare
+			// "/resume" lists and asks.
+			list := loadSessionRows(db, 100)
+			choice := arg
+			if choice == "" {
+				list = list[:min(10, len(list))]
+				if len(list) == 0 {
+					printSessionList(io.Out, nil)
+					continue
+				}
+				printSessionList(io.Out, list)
+				fmt.Fprint(io.Out, greenf("❯")+" "+dimf("number or id (enter cancels)")+" ")
+				var errRead error
+				choice, errRead = br.ReadString('\n')
+				if errRead != nil { // EOF midway: exit cleanly, as in the loop
+					fmt.Fprintln(io.Out)
+					_ = db.TouchSession(sess.ID())
+					farewell(io.Out)
+					return
+				}
 			}
 			chosen := resolveSession(choice, list)
 			if chosen == "" {
@@ -590,6 +607,8 @@ func repl(io IO, cfg *config.Config) {
 			listSkills(io.Out, runtime.SkillsDisponiveis(cwd))
 		case "/tasks":
 			cmdTasks(io.Out, wired.Gerente(), arg)
+		case "/mcps":
+			listMCPs(io.Out, wired.MCP())
 		case "/model":
 			if arg != "" {
 				// switch directly by id if it is in the current catalog
@@ -699,25 +718,9 @@ func repl(io IO, cfg *config.Config) {
 }
 
 func printHelp(io IO) {
-	fmt.Fprint(io.Out, cyanf("commands")+`
-  /model            list the full catalog (alphabetical) and switch model
-  /model <id>       switch directly when the id is in the catalog
-  /effort           show the current effort and common levels
-  /effort <level>   save it; applies to the next request
-  /effort -         clear it (requests go out without reasoning_effort)
-  /provider         change base URL + key; validates /models before saving
-  /new              clear the session history (new conversation)
-  /resume           list recent sessions and resume one
-  /save [title]     title the current session and save the log
-  /rename <name>    rename the current session (terminal tab and panel)
-  /update           download and install the latest release from the channel
-  /context          active compaction policy and what each one has done
-  /skills           list skills; /<name> [args] runs one
-  /tasks            list sub-agents; /tasks <id> details; /tasks cancel <id>
-  /help             this help
-  /exit, /quit      exit
-`)
-	fmt.Fprint(io.Out, dimf("plain text goes straight to the model; Ctrl+C cancels the current turn.")+"\n\n")
+	fmt.Fprintln(io.Out, cyanf("commands"))
+	printCommands(io.Out)
+	fmt.Fprint(io.Out, dimf("plain text goes straight to the model; /<skill> [args] runs a skill; Esc twice cancels the turn.")+"\n\n")
 }
 
 // switchModelDirect resolves /model <index|id>: accepts the number from the

@@ -89,8 +89,8 @@ func TestPasteImageIntoInput(t *testing.T) {
 	}
 
 	tl.applyPaste(pasteResult{err: errors.New("boom")})
-	if !strings.Contains(tl.notice, "paste failed") {
-		t.Fatalf("notice = %q", tl.notice)
+	if tl.toast == nil || tl.toast.variant != "error" || !strings.Contains(tl.toast.text, "Paste failed") {
+		t.Fatalf("toast = %+v", tl.toast)
 	}
 }
 

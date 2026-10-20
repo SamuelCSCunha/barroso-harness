@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ruanbarroso/barroso-harness/internal/mcp"
 	"github.com/ruanbarroso/barroso-harness/internal/skills"
 	"github.com/ruanbarroso/barroso-harness/internal/subagent"
 )
@@ -139,4 +140,21 @@ func listSkills(out io.Writer, skillList []skills.Skill) {
 		fmt.Fprintf(out, "%s %s %s\n", cyanf("/"+s.Nome), desc, dimf("("+s.Fontes+")"))
 	}
 	fmt.Fprintln(out, dimf("/<name> [arguments] runs the skill"))
+}
+
+// listMCPs prints the MCP servers wired at startup and whether each one is
+// still connected (/mcps). Read-only: the connections are owned by the startup
+// wiring, so there is nothing to toggle live.
+func listMCPs(out io.Writer, cs []*mcp.Cliente) {
+	if len(cs) == 0 {
+		fmt.Fprintln(out, dimf("no MCP servers configured"))
+		return
+	}
+	for _, c := range cs {
+		state := greenf("connected")
+		if c.Falhou() {
+			state = redf("error")
+		}
+		fmt.Fprintf(out, "%s %s %s\n", cyanf(c.Fonte()), state, dimf(c.Transporto()))
+	}
 }

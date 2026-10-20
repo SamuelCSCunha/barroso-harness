@@ -89,7 +89,7 @@ const escInterruptWindow = 5 * time.Second
 
 // footerCopyHint is what OpenCode points at once the command palette exists.
 // bh has no palette yet (spec §3), so the same slot offers /help instead.
-const footerCopyHint = "/help"
+const footerCopyHint = "ctrl+p"
 
 // panelState is what the side panel, the input box and the footer show.
 type panelState struct {
@@ -132,9 +132,8 @@ type screen struct {
 	boxTop int
 	masked bool // the typed answer is a secret (API key)
 	busy   bool // model turn in progress
-	notice string
-	// noticeAt is when notice was set; it clears after 2s.
-	noticeAt time.Time
+	// toastHovered pauses the toast's timer while the pointer is on it.
+	toastHovered bool
 	// imageCount numbers the [Image N] tokens of the current prompt.
 	imageCount int
 	// sentImages holds the images of lines already sent and not yet taken by
@@ -167,6 +166,15 @@ type screen struct {
 	thoughtBodies map[int]string
 	// mcpOpen is the sidebar's MCP collapse state (open by default).
 	mcpOpen bool
+	// dlg is the open dialog (dialog.go); ac the prompt's autocomplete popup
+	// (autocomplete.go); toast the top-right notification; src the REPL data
+	// the dialogs read. files caches the "@" completion's file list.
+	dlg       *dialog
+	ac        *acState
+	toast     *toast
+	src       *dialogSource
+	files     []string
+	filesRoot string
 	// sidebarHidden is OpenCode's <leader>b toggle.
 	sidebarHidden bool
 	// leaderAt is when ctrl+x was pressed; while the leader waits for its second
@@ -722,6 +730,24 @@ func (t *screen) drawLocked() {
 		t.drawPanel(&sb, f)
 	}
 
+	t.drawAC(&sb, f)
+	t.drawToast(&sb)
+
+	// A dialog dims everything painted so far (OpenCode's backdrop) and draws
+	// its panel on top; the cursor then belongs to its search field.
+	if t.dlg != nil {
+		dimmed := dimFrame(sb.String())
+		sb.Reset()
+		sb.WriteString(dimmed)
+		row, col := t.drawDialog(&sb)
+		if row > 0 {
+			fmt.Fprintf(&sb, "\033[%d;%dH%s", row, col, escShowCursor)
+		}
+		sb.WriteString(escSyncEnd)
+		fmt.Fprint(t.out, sb.String())
+		return
+	}
+
 	// cursor: in the box (also during the turn, to type the next message right
 	// away), or at the end of the command prompt line
 	if t.partial == "" {
@@ -925,9 +951,6 @@ func (t *screen) footerParts(w int) (string, string) {
 	if t.busy && t.interruptArmed && w < 80 {
 		right = nil
 	}
-	if t.notice != "" {
-		right = []string{yellowf(t.notice)}
-	}
 	return left, strings.Join(right, grayf(" · "))
 }
 
@@ -992,6 +1015,21 @@ func (t *screen) drawPanel(sb *strings.Builder, f frame) {
 				action: func() { t.mcpOpen = !t.mcpOpen; t.drawLocked() },
 			})
 			continue // the region is registered; nothing else to do on this row
+		}
+		// An MCP row opens the MCP dialog, as OpenCode's sidebar rows do.
+		if i < len(visible)-1 && i != lastAvail {
+			plain := stripANSI(visible[i])
+			for _, m := range t.state.mcps {
+				if strings.HasPrefix(strings.TrimSpace(plain), "• "+truncateVis(m.name, panelWidth-18)) {
+					t.hits.add(&hitRegion{
+						row: row, col: col, width: panelWidth - 2, height: 1, id: "mcprow",
+						plain:  withBg(s, bgPanel, panelWidth-2),
+						hover:  withBg(s, bgBox, panelWidth-2),
+						action: func() { t.openMCPDialog(); t.drawLocked() },
+					})
+					break
+				}
+			}
 		}
 	}
 }
@@ -1345,7 +1383,7 @@ func (t *screen) copySelection() {
 	}
 	fmt.Fprint(t.out, osc52(text))
 	if clipboardWrite == nil || clipboardWrite(text) != nil {
-		t.notice, t.noticeAt = "copied to clipboard", time.Now()
+		t.toastf("success", "Copied to clipboard")
 	}
 	t.drawLocked()
 }
@@ -1400,11 +1438,10 @@ func (t *screen) applyPaste(p pasteResult) {
 	switch {
 	case p.err != nil:
 		if errors.Is(p.err, errNoClipboard) {
-			t.notice = "nothing to paste"
+			t.toastf("warning", "Nothing to paste")
 		} else {
-			t.notice = "paste failed: " + oneLineErr(p.err)
+			t.toastf("error", "Paste failed: "+oneLineErr(p.err))
 		}
-		t.noticeAt = time.Now()
 	case p.path != "":
 		if p.n <= t.imageCount {
 			p.n = t.imageCount + 1 // the input was sent/cleared meanwhile
@@ -1535,6 +1572,7 @@ func runScreen(io IO) int {
 	edit := func(f func()) {
 		t.mu.Lock()
 		f()
+		t.refreshAC()
 		t.drawLocked()
 		t.mu.Unlock()
 	}
@@ -1571,8 +1609,8 @@ func runScreen(io IO) int {
 				output <- subagentsLine
 			}
 			edit(func() {
-				if t.notice != "" && time.Since(t.noticeAt) > 2*time.Second {
-					t.notice = ""
+				if t.toast != nil && time.Since(t.toast.at) > toastLife && !t.toastHovered {
+					t.toast = nil
 				}
 				// OpenCode's interrupt window: the armed "esc again to interrupt"
 				// also expires by itself, whether or not the user presses again.
@@ -1601,9 +1639,14 @@ func runScreen(io IO) int {
 			// Only between turns: the REPL reads its next line after the turn ends,
 			// and a command typed now would silently wait until then.
 			command := func(c string) {
-				if !busy && !awaitingReply {
-					output <- c
+				if c == "" {
+					return
 				}
+				if busy || awaitingReply {
+					edit(func() { t.toastf("warning", "Wait for the current turn to finish") })
+					return
+				}
+				output <- c
 			}
 			cancelTurn := func() {
 				select {
@@ -1612,6 +1655,50 @@ func runScreen(io IO) int {
 				}
 			}
 
+			// An open dialog owns the keyboard and the mouse.
+			t.mu.Lock()
+			if t.dlg != nil {
+				var cmd string
+				repaint := true
+				if k.mouse {
+					cmd, repaint = t.dialogMouse(k)
+				} else if k.action != "pasteimage" {
+					cmd = t.dialogKey(k)
+				}
+				if repaint {
+					t.refreshAC()
+					t.drawLocked()
+				}
+				t.mu.Unlock()
+				command(cmd)
+				continue
+			}
+			// The toast: a click dismisses it, hovering keeps it on screen.
+			if k.mouse && (k.action == "mousedown" || k.action == "mousemove") && t.toast != nil {
+				over := t.toastHit(k.row, k.col)
+				t.toastHovered = over
+				if over && k.action == "mousedown" {
+					t.toast = nil
+					t.drawLocked()
+					t.mu.Unlock()
+					continue
+				}
+			}
+			// The autocomplete popup takes its keys and its clicks.
+			used := false
+			if k.mouse {
+				used = t.acMouse(k)
+			} else if !lead.armed {
+				used = t.acKey(name)
+			}
+			if used {
+				t.refreshAC()
+				t.drawLocked()
+				t.mu.Unlock()
+				continue
+			}
+			t.mu.Unlock()
+
 			// OpenCode's leader (ctrl+x): the next key within 2 s is a leader chord.
 			if !k.mouse && lead.take(time.Now()) {
 				edit(func() { t.leaderAt = time.Time{} })
@@ -1619,9 +1706,11 @@ func runScreen(io IO) int {
 				case "n":
 					command("/new")
 				case "l":
-					command("/resume")
+					edit(func() { t.openSessionsDialog() })
 				case "m":
-					command("/model")
+					edit(func() { t.openModelDialog() })
+				case "s":
+					edit(func() { t.openMCPDialog() })
 				case "b":
 					edit(func() { t.sidebarHidden = !t.sidebarHidden })
 				case "q":
@@ -1648,6 +1737,14 @@ func runScreen(io IO) int {
 					continue
 				}
 				if strings.TrimSpace(t.editor().Text()) == "" {
+					t.mu.Unlock()
+					continue
+				}
+				if c, ok := dialogCommand(strings.TrimSpace(t.editor().Text())); ok && !busy {
+					t.takeInput()
+					t.runCommand(c)
+					t.refreshAC()
+					t.drawLocked()
 					t.mu.Unlock()
 					continue
 				}
@@ -1809,6 +1906,14 @@ func runScreen(io IO) int {
 				})
 			case "ctrl+l":
 				edit(func() { t.w = 0 }) // forces a clear and repaint
+			case "ctrl+p":
+				if !awaitingReply {
+					edit(func() { t.openPalette() })
+				}
+			case "ctrl+r":
+				if !awaitingReply {
+					edit(func() { t.openRenameDialog() })
+				}
 			case "ctrl+t":
 				// OpenCode's variant cycle: bh's variants are the effort levels.
 				t.mu.Lock()
