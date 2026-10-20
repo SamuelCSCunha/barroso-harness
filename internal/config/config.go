@@ -40,7 +40,7 @@ type Config struct {
 	CurrentProvider string               `json:"current_provider"`
 	Providers       map[string]*Provider `json:"providers,omitempty"`
 	Model           string               `json:"model"`
-	Effort          string               `json:"effort,omitempty"`                // empty = disabled (the dealer omits the field)
+	Effort          string               `json:"effort,omitempty"`                // "none" = the dealer omits the field; absent = DefaultEffort
 	Janela          int                  `json:"context_window"`                  // window in tokens; 0 = unknown (guardrail off)
 	JanelaSource    string               `json:"context_window_source,omitempty"` // FonteCatalogo | FonteManual | ""
 	MaxTokens       int                  `json:"max_tokens"`                      // reserved for the provider; 0 = dealer default
@@ -222,6 +222,10 @@ func windowSource(s string) string {
 	}
 }
 
+// DefaultEffort is the reasoning_effort of a config that does not set one:
+// medium measured fastest in bh's effort bench without extra rounds.
+const DefaultEffort = "medium"
+
 // Load reads config.json. A missing file is NOT an error: it returns an empty
 // config (the interactive path starts onboarding; a one-shot turn reports what
 // is missing).
@@ -239,6 +243,14 @@ func Load() (Config, error) {
 		return c, fmt.Errorf("invalid config %s: %w", path, err)
 	}
 	migrateLegacyShape(b, &c)
+	// No "effort" key at all: the default level. "none" is the explicit
+	// "send no reasoning_effort" (what /effort - stores).
+	var keys map[string]json.RawMessage
+	if json.Unmarshal(b, &keys) == nil {
+		if _, ok := keys["effort"]; !ok {
+			c.Effort = DefaultEffort
+		}
+	}
 	c.Home = Dir()
 	if p := c.Provider(c.CurrentProvider); p != nil {
 		c.BaseURL, c.APIKey = p.BaseURL, p.APIKey

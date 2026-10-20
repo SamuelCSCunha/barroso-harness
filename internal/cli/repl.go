@@ -786,7 +786,7 @@ func switchModelDirect(io IO, cfg *config.Config, input string) error {
 // handleEffort processes /effort [level].
 func handleEffort(io IO, cfg *config.Config, sess *runtime.Session, arg string) {
 	current := "(off)"
-	if cfg.Effort != "" {
+	if cfg.Effort != "" && cfg.Effort != "none" {
 		current = cfg.Effort
 	}
 	if arg == "" {
@@ -794,8 +794,8 @@ func handleEffort(io IO, cfg *config.Config, sess *runtime.Session, arg string) 
 		return
 	}
 	draft := *cfg
-	if arg == "-" || arg == "off" || arg == "clear" {
-		draft.Effort = ""
+	if arg == "-" || arg == "off" || arg == "clear" || arg == "none" {
+		draft.Effort = "none"
 	} else {
 		draft.Effort = arg
 	}
@@ -805,7 +805,7 @@ func handleEffort(io IO, cfg *config.Config, sess *runtime.Session, arg string) 
 	}
 	*cfg = draft
 	sess.Configure(*cfg)
-	if cfg.Effort == "" {
+	if cfg.Effort == "" || cfg.Effort == "none" {
 		fmt.Fprintln(io.Out, "effort cleared; the next request goes out WITHOUT reasoning_effort.")
 	} else {
 		fmt.Fprintf(io.Out, "effort=%s; applies to the next request (provider rejects it? `/effort -` clears).\n", cfg.Effort)

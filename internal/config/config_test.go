@@ -44,7 +44,8 @@ func TestSaveLoadRoundTripWithProvider(t *testing.T) {
 	if p == nil || p.BaseURL != DefaultBaseURL || p.APIKey != "secret-key" {
 		t.Fatalf("wrong active provider: %+v", p)
 	}
-	if got.Model != "barroso-chat" || got.Effort != "" {
+	// No effort saved: Load fills in the default level.
+	if got.Model != "barroso-chat" || got.Effort != DefaultEffort {
 		t.Fatalf("wrong model/effort: %+v", got)
 	}
 }

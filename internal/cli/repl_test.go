@@ -144,7 +144,8 @@ func TestReplModelNotInCatalogKeepsConfig(t *testing.T) {
 	}
 }
 
-// /effort sets, shows and clears. Clearing OMITS the field from the request.
+// /effort sets, shows and clears. Clearing stores "none" (so the default does
+// not come back) and OMITS the field from the request.
 func TestReplEffortSetShowClear(t *testing.T) {
 	srv := fakeModelsProvider(t, "barroso-chat")
 	defer srv.Close()
@@ -154,8 +155,8 @@ func TestReplEffortSetShowClear(t *testing.T) {
 	RunInteractive(io)
 	output := outIO.String()
 	cfg, _ := config.Load()
-	if cfg.Effort != "" {
-		t.Fatalf("effort should be empty after `/effort -`, got %q", cfg.Effort)
+	if cfg.Effort != "none" {
+		t.Fatalf("effort should be none after `/effort -` (the dealer omits it), got %q", cfg.Effort)
 	}
 	b, _ := os.ReadFile(filepath.Join(home, "config.json"))
 	if strings.Contains(strings.ToLower(string(b)), "reasoning_effort") {

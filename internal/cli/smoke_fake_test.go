@@ -161,7 +161,7 @@ func TestSmokeOnboardingTurnModelEffort(t *testing.T) {
 	if err := json.Unmarshal(onDisk, &saved); err != nil {
 		t.Fatal(err)
 	}
-	if saved.Model != "zz-last" || saved.Effort != "" {
+	if saved.Model != "zz-last" || saved.Effort != "none" {
 		t.Fatalf("disk should have model zz-last and effort cleared: %+v", saved)
 	}
 	if saved.Window != 0 {

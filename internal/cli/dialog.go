@@ -263,7 +263,7 @@ func (t *screen) openModelDialog() {
 
 func (t *screen) openEffortDialog() {
 	cur := t.state.effort
-	items := []dialogItem{{title: "Default", desc: "no reasoning_effort", current: cur == "", value: "-"}}
+	items := []dialogItem{{title: "None", desc: "no reasoning_effort", current: cur == "" || cur == "none", value: "-"}}
 	for _, e := range Esforcos {
 		items = append(items, dialogItem{title: e, current: e == cur, value: e})
 	}
