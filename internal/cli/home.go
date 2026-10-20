@@ -231,3 +231,16 @@ func (t *screen) drawHomeLocked(fullClear bool) {
 	fmt.Fprintf(&sb, "\033[%d;%dH%s%s", row, col, escShowCursor, escSyncEnd)
 	fmt.Fprint(t.out, sb.String())
 }
+
+// homePlaceholders are OpenCode's home placeholder examples (routes/home.tsx).
+var homePlaceholders = []string{
+	"Fix a TODO in the codebase",
+	"What is the tech stack of this project?",
+	"Fix broken tests",
+}
+
+// homePlaceholder is the muted text of the empty home prompt:
+// `Ask anything… "<example>"`, as OpenCode's prompt renders it.
+func homePlaceholder(idx int) string {
+	return `Ask anything… "` + homePlaceholders[idx%len(homePlaceholders)] + `"`
+}

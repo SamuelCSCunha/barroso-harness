@@ -174,6 +174,9 @@ type screen struct {
 	mcpOpen bool
 	// wasHome is whether the last frame was the home screen.
 	wasHome bool
+	// placeholderIdx picks the home placeholder example, drawn once at random
+	// (OpenCode's randomIndex on mount).
+	placeholderIdx int
 	// dlg is the open dialog (dialog.go); ac the prompt's autocomplete popup
 	// (autocomplete.go); toast the top-right notification; src the REPL data
 	// the dialogs read. files caches the "@" completion's file list.
@@ -279,7 +282,8 @@ func itoa(v int) string {
 
 func newScreen(out io.Writer) *screen {
 	fmt.Fprint(out, escAlt+escMouseOn+escFocusOn+escPasteOn+escClear)
-	return &screen{out: out, hits: newHits(), mcpOpen: true}
+	return &screen{out: out, hits: newHits(), mcpOpen: true,
+		placeholderIdx: int(time.Now().UnixNano() % int64(len(homePlaceholders)))}
 }
 
 // takeImages returns (and forgets) the images sent with line: the REPL reads
@@ -888,6 +892,11 @@ func (t *screen) drawBox(sb *strings.Builder, f frame) {
 		painted := color(colorText, l)
 		if !t.masked {
 			painted = highlightTokens(l)
+		}
+		// OpenCode shows a placeholder only on the home screen, while the box is
+		// empty; the caret sits on its first cell, so the text starts there.
+		if i == 0 && l == "" && t.isHome() {
+			painted = grayf(truncateVis(homePlaceholder(t.placeholderIdx), f.boxWidth-f.textCol-1))
 		}
 		line(f.boxTextRow+i, row(painted))
 	}
