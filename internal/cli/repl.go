@@ -60,14 +60,26 @@ func (io *IO) Reader() *bufio.Reader {
 }
 
 // PromptKey reads the key WITHOUT echo (x/term on raw stdin). Tests override it.
+// On terminals that cannot enter raw mode (iSH, dumb consoles) ReadPassword fails
+// outright; there we fall back to a plain line read so the onboarding still works
+// (echo on) instead of hanging on a prompt that never returns.
 var PromptKey = func(prompt string) (string, error) {
+	fd := int(os.Stdin.Fd())
+	if term.IsTerminal(fd) {
+		fmt.Print(prompt)
+		b, err := term.ReadPassword(fd)
+		fmt.Println()
+		if err == nil {
+			return strings.TrimSpace(string(b)), nil
+		}
+		// Raw mode refused: fall through to the echoed read below.
+	}
 	fmt.Print(prompt)
-	b, err := term.ReadPassword(int(os.Stdin.Fd()))
-	fmt.Println()
-	if err != nil {
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil && line == "" {
 		return "", err
 	}
-	return strings.TrimSpace(string(b)), nil
+	return strings.TrimSpace(line), nil
 }
 
 // fetchModels is the catalog's network seam: production calls dealer.Modelos,
