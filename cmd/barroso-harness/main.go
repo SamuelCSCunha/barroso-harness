@@ -35,8 +35,17 @@ func main() {
 		initFlag    = flag.Bool("init", false, "create the data directory in ~/.barroso-harness without overwriting files")
 		acpFlag     = flag.Bool("acp", false, "serve the ACP protocol (JSON-RPC 2.0) over stdio for an editor/client")
 		versionFlag = flag.Bool("version", false, "print the version")
+		statsFlag   = flag.Int("stats", 0, "print cache/latency metrics of the latest N sessions (or of the session ids given as arguments)")
 	)
 	flag.Parse()
+
+	if *statsFlag > 0 {
+		if err := runStats(os.Stdout, flag.Args(), *statsFlag); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	if *versionFlag {
 		fmt.Println("barroso-harness " + Versao)
@@ -51,7 +60,7 @@ func main() {
 		return
 	}
 	if flag.NArg() > 0 && *prompt == "" {
-		fmt.Fprintln(os.Stderr, "usage: bh [-p \"prompt\"] [-acp] [-init] [-version]")
+		fmt.Fprintln(os.Stderr, "usage: bh [-p \"prompt\"] [-acp] [-init] [-version] [-stats N [session...]]")
 		os.Exit(2)
 	}
 	if *acpFlag {

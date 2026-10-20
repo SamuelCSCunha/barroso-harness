@@ -51,6 +51,11 @@ type Session struct {
 	// in the inbox when the turn ends are the caller's (TakeInbox).
 	muInbox sync.Mutex
 	inbox   []Steer
+
+	// day is the date the system prompt shows, fixed at the session's first
+	// request: a prompt that changed at midnight would drop the provider's
+	// prompt cache for the rest of a long session.
+	day time.Time
 }
 
 // Steer is a message sent into a running turn.
@@ -239,7 +244,10 @@ func (s *Session) SendWithImages(ctx context.Context, r Renderer, cwd, prompt st
 		// its tool.
 		list := s.toolCatalog(cwd)
 		schemas := toolSchemas(list)
-		system := systemPrompt(cwd, baroMD, hasTool(list, "task_spawn"), time.Now())
+		if s.day.IsZero() {
+			s.day = time.Now()
+		}
+		system := systemPrompt(cwd, baroMD, hasTool(list, "task_spawn"), s.day)
 
 		// Measured without the image bytes: see dealer.CorpoEstimativa.
 		body, err := s.dealer.CorpoEstimativa(system, working, schemas)
@@ -309,6 +317,22 @@ func (s *Session) SendWithImages(ctx context.Context, r Renderer, cwd, prompt st
 			if rd, ok := r.(RendererDetalhado); ok {
 				rd.Contexto(round.Usage.PromptTokens)
 			}
+			if rc, ok := r.(RendererCache); ok {
+				rc.Cache(round.Usage.CachedTokens, round.Usage.PromptTokens)
+			}
+			// One metrics event per request: what bh bench and the context
+			// stats read to measure cache hit rate and latency.
+			s.record("round", map[string]any{
+				"cycle":         cycle,
+				"prompt_tokens": round.Usage.PromptTokens,
+				"cached_tokens": round.Usage.CachedTokens,
+				"output_tokens": round.Usage.OutputTokens,
+				"ttft_ms":       round.TTFT.Milliseconds(),
+				"duration_ms":   round.Dur.Milliseconds(),
+				"tools_bytes":   jsonLen(schemas),
+				"system_bytes":  len(system),
+				"tool_calls":    len(round.Tools),
+			})
 			s.est.Calibrar(len(body), round.Usage.PromptTokens)
 			if round.Usage.PromptTokens > 0 {
 				promptUsage += round.Usage.PromptTokens
@@ -359,6 +383,7 @@ func (s *Session) SendWithImages(ctx context.Context, r Renderer, cwd, prompt st
 				assistant["usage"] = map[string]any{
 					"prompt_tokens": round.Usage.PromptTokens,
 					"output_tokens": round.Usage.OutputTokens,
+					"cached_tokens": round.Usage.CachedTokens,
 				}
 			}
 			s.record("assistant", assistant)
@@ -538,29 +563,15 @@ func hasTool(list []tools.Spec, name string) bool {
 // systemPrompt builds the turn's system message: identity, real environment
 // facts, tool policy and working style, then BARROSO.md.
 func systemPrompt(cwd, baroMD string, canSpawn bool, now time.Time) string {
+	// Order matters for the provider's prompt cache, which matches the request
+	// prefix byte for byte: the text that never changes goes first, BARROSO.md
+	// next, and the environment (cwd, date) last. The date is the session's
+	// start date (see Session.day), not the clock of each request, so the
+	// prefix does not change when midnight passes mid-session.
 	var sb strings.Builder
 	sb.WriteString("You are the Barroso Harness agent, a coding agent running locally on the user's machine. " +
 		"Your tools execute immediately, without asking for approval (YOLO mode): act decisively, but think before destructive actions. " +
 		"You help with software engineering tasks: reading and changing code, running builds and tests, using git, investigating problems.\n")
-
-	sb.WriteString("\n## Environment\n")
-	osName := goruntime.GOOS
-	switch osName {
-	case "windows":
-		osName = "Windows"
-	case "darwin":
-		osName = "macOS"
-	case "linux":
-		osName = "Linux"
-	}
-	fmt.Fprintf(&sb, "- OS: %s (%s/%s)\n", osName, goruntime.GOOS, goruntime.GOARCH)
-	fmt.Fprintf(&sb, "- Shell used by terminal_run: %s\n", tools.ShellName())
-	fmt.Fprintf(&sb, "- Working directory (cwd): %s\n", cwd)
-	fmt.Fprintf(&sb, "- Today's date: %s\n", now.Format("2006-01-02"))
-	if goruntime.GOOS == "windows" {
-		sb.WriteString("- This is Windows: do not use bash/POSIX syntax or tools (grep, sed, ls, cat, rm -rf) in terminal_run. " +
-			"File tools accept both backslashes and forward slashes in paths.\n")
-	}
 
 	sb.WriteString("\n## Tool policy\n" +
 		"- Find things with grep (file contents) and glob (file names). Do not search through terminal_run (findstr, git grep, dir /s, find).\n" +
@@ -579,11 +590,31 @@ func systemPrompt(cwd, baroMD string, canSpawn bool, now time.Time) string {
 		"- Be direct. Do the task end to end instead of describing what you would do; ask the user only when truly blocked or when the request is ambiguous in a way that matters.\n" +
 		"- Follow the conventions of the existing code (style, libraries, structure) and keep changes focused on the request.\n" +
 		"- After changing code, verify it: build and run the relevant tests, and fix what you broke.\n" +
-		"- Use tools to act and TEXT to talk to the user. When the task is done, reply with a short plain-text answer: what changed and what the user must know. No long recaps.\n")
+		"- Use tools to act and TEXT to talk to the user. When the task is done, reply with a short plain-text answer: what changed and what the user must know. No long recaps.\n" +
+		"- Messages starting with [system update] come from the harness, not the user: they announce changes to instructions, skills or tools during the session. The latest update wins over anything earlier, including this prompt's BARROSO.md section.\n")
 
 	if baroMD != "" {
-		sb.WriteString("\n## BARROSO.md (system instructions)\n" + baroMD)
+		sb.WriteString("\n## BARROSO.md (system instructions)\n" + baroMD + "\n")
 	}
+
+	sb.WriteString("\n## Environment\n")
+	osName := goruntime.GOOS
+	switch osName {
+	case "windows":
+		osName = "Windows"
+	case "darwin":
+		osName = "macOS"
+	case "linux":
+		osName = "Linux"
+	}
+	fmt.Fprintf(&sb, "- OS: %s (%s/%s)\n", osName, goruntime.GOOS, goruntime.GOARCH)
+	fmt.Fprintf(&sb, "- Shell used by terminal_run: %s\n", tools.ShellName())
+	if goruntime.GOOS == "windows" {
+		sb.WriteString("- This is Windows: do not use bash/POSIX syntax or tools (grep, sed, ls, cat, rm -rf) in terminal_run. " +
+			"File tools accept both backslashes and forward slashes in paths.\n")
+	}
+	fmt.Fprintf(&sb, "- Working directory (cwd): %s\n", cwd)
+	fmt.Fprintf(&sb, "- Session start date: %s\n", now.Format("2006-01-02"))
 	return sb.String()
 }
 
@@ -602,3 +633,12 @@ const (
 	cutNotice      = "[output limit] Your last response hit the output token limit and was cut off. Continue exactly where you stopped, without repeating what you already wrote, and break the remaining work into smaller pieces."
 	cutNoticeTools = "Tool calls in the cut response were NOT executed because their arguments may be incomplete; call them again, with smaller arguments if needed."
 )
+
+// jsonLen is the serialized size of v (0 when it does not serialize).
+func jsonLen(v any) int {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return 0
+	}
+	return len(b)
+}

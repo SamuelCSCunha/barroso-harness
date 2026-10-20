@@ -43,6 +43,10 @@ type Config struct {
 type Usage struct {
 	PromptTokens int `json:"prompt_tokens"`
 	OutputTokens int `json:"output_tokens"`
+	// CachedTokens is the part of PromptTokens the provider served from its
+	// prompt cache (prompt_tokens_details.cached_tokens); 0 when it reports
+	// none.
+	CachedTokens int `json:"cached_tokens,omitempty"`
 }
 
 // Mensagem is the internal protocol (serializable, byte-deterministic — it
@@ -83,6 +87,10 @@ type Rodada struct {
 	// to the model.
 	Raciocinio    string
 	DurRaciocinio time.Duration
+	// TTFT is the time from the request to the first streamed chunk, and Dur
+	// the time to the end of the stream.
+	TTFT time.Duration
+	Dur  time.Duration
 }
 
 // Cliente is instantiated per turn.
@@ -314,8 +322,11 @@ type sseChunk struct {
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage *struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
+		PromptTokens        int `json:"prompt_tokens"`
+		CompletionTokens    int `json:"completion_tokens"`
+		PromptTokensDetails *struct {
+			CachedTokens int `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
 	} `json:"usage"`
 }
 
@@ -341,12 +352,13 @@ func (c *Cliente) RodarContext(ctx context.Context, system string, msgs []Mensag
 	}
 	req.Header.Set("Accept", "text/event-stream")
 	httpc := &http.Client{Timeout: 15 * time.Minute}
+	sent := time.Now()
 	resp, err := httpc.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("provider: %w", err)
 	}
 	defer resp.Body.Close()
-	return readRound(resp, ctx)
+	return readRound(resp, ctx, sent)
 }
 
 // Rodar runs one round: streams, accumulates text, assembles tool calls and
@@ -370,6 +382,7 @@ func (c *Cliente) Rodar(system string, msgs []Mensagem, tools []map[string]any) 
 	req.Header.Set("Accept", "text/event-stream")
 
 	httpc := &http.Client{Timeout: 15 * time.Minute}
+	sent := time.Now()
 	resp, err := httpc.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("provider: %w", err)
@@ -379,17 +392,17 @@ func (c *Cliente) Rodar(system string, msgs []Mensagem, tools []map[string]any) 
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
 		return nil, fmt.Errorf("provider HTTP %d: %s", resp.StatusCode, errorSummary(b, 300))
 	}
-	return readRound(resp, context.Background())
+	return readRound(resp, context.Background(), sent)
 }
 
-// readRound consumes the already-open SSE stream and builds the Rodada.
-func readRound(resp *http.Response, ctx context.Context) (*Rodada, error) {
+// readRound consumes the already-open SSE stream and builds the Rodada. start
+// is when the request went out: TTFT and Dur are measured from it.
+func readRound(resp *http.Response, ctx context.Context, start time.Time) (*Rodada, error) {
 	if resp.StatusCode != 200 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
 		return nil, fmt.Errorf("provider HTTP %d: %s", resp.StatusCode, errorSummary(b, 300))
 	}
 	r := &Rodada{}
-	start := time.Now()
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 0, 1<<20), 4<<20)
 	pending := map[int]*oaiCall{}
@@ -406,6 +419,9 @@ func readRound(resp *http.Response, ctx context.Context) (*Rodada, error) {
 		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if payload == "[DONE]" {
 			break
+		}
+		if r.TTFT == 0 {
+			r.TTFT = time.Since(start)
 		}
 		var ch sseChunk
 		if err := json.Unmarshal([]byte(payload), &ch); err != nil {
@@ -445,6 +461,9 @@ func readRound(resp *http.Response, ctx context.Context) (*Rodada, error) {
 		}
 		if ch.Usage != nil && r.Usage == nil {
 			r.Usage = &Usage{PromptTokens: ch.Usage.PromptTokens, OutputTokens: ch.Usage.CompletionTokens}
+			if d := ch.Usage.PromptTokensDetails; d != nil {
+				r.Usage.CachedTokens = d.CachedTokens
+			}
 		}
 	}
 	if err := sc.Err(); err != nil {
@@ -467,6 +486,7 @@ func readRound(resp *http.Response, ctx context.Context) (*Rodada, error) {
 		r.Tools = append(r.Tools, ToolChamada{ID: call.ID, Nome: call.Function.Name, Args: call.Function.Arguments})
 	}
 	r.FimPorTexto = len(r.Tools) == 0
+	r.Dur = time.Since(start)
 	return r, nil
 }
 

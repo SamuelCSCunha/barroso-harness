@@ -46,6 +46,12 @@ type RendererDetalhado interface {
 	Contexto(promptTokens int)
 }
 
+// RendererCache is OPTIONAL: it receives, per request, how many of the prompt
+// tokens the provider served from its prompt cache (the TUI shows "cache N%").
+type RendererCache interface {
+	Cache(cachedTokens, promptTokens int)
+}
+
 // RendererRaciocinio is OPTIONAL: it receives the round's reasoning when the
 // provider exposes it, before tools and the answer (the TUI shows "Thought").
 type RendererRaciocinio interface {

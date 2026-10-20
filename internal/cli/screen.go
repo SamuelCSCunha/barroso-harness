@@ -100,9 +100,12 @@ type panelState struct {
 	effort    string
 	cwd       string
 	ctxTokens int
-	window    int
-	mcps      []mcpEntry
-	branch    string
+	// cachedTokens is how much of the last request's prompt came from the
+	// provider's cache (0 = none reported).
+	cachedTokens int
+	window       int
+	mcps         []mcpEntry
+	branch       string
 }
 
 // mcpEntry is one sidebar MCP row: the server name and whether its connection
@@ -392,6 +395,11 @@ func (t *screen) Limpar() {
 
 func (t *screen) Estado(e panelState) {
 	t.mu.Lock()
+	// The REPL does not track the cache share: keep the last turn's while the
+	// context it belongs to is still the one shown.
+	if e.cachedTokens == 0 && e.ctxTokens > 0 && e.ctxTokens == t.state.ctxTokens {
+		e.cachedTokens = t.state.cachedTokens
+	}
 	t.state = e
 	t.replReady = true
 	t.drawLocked()
@@ -1080,6 +1088,9 @@ func (t *screen) panelLines() ([]string, int) {
 				txt = "<1% used"
 			}
 			out = append(out, "  "+grayf(txt))
+		}
+		if e.cachedTokens > 0 {
+			out = append(out, "  "+grayf(fmt.Sprintf("%d%% cached", 100*e.cachedTokens/e.ctxTokens)))
 		}
 	}
 	// MCP: hidden when there are no servers; the header opens/collapses past
@@ -2331,6 +2342,15 @@ func (r *screenTurn) Contexto(n int) {
 	r.ctxTokens = n
 	r.t.mu.Lock()
 	r.t.state.ctxTokens = n
+	r.t.drawLocked()
+	r.t.mu.Unlock()
+}
+
+// Cache arrives with Contexto: the share of the prompt served from the
+// provider's cache, shown under the context usage.
+func (r *screenTurn) Cache(cached, prompt int) {
+	r.t.mu.Lock()
+	r.t.state.cachedTokens = min(cached, prompt)
 	r.t.drawLocked()
 	r.t.mu.Unlock()
 }

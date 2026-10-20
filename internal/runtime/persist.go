@@ -147,6 +147,7 @@ func eventsToMessages(st *store.Store, events []store.Event) []dealer.Mensagem {
 			Usage    *struct {
 				PromptTokens int `json:"prompt_tokens"`
 				OutputTokens int `json:"output_tokens"`
+				CachedTokens int `json:"cached_tokens"`
 			} `json:"usage"`
 		}
 		if err := json.Unmarshal([]byte(e.Payload), &p); err != nil {
@@ -165,6 +166,7 @@ func eventsToMessages(st *store.Store, events []store.Event) []dealer.Mensagem {
 			m.Usage = &dealer.Usage{
 				PromptTokens: p.Usage.PromptTokens,
 				OutputTokens: p.Usage.OutputTokens,
+				CachedTokens: p.Usage.CachedTokens,
 			}
 		}
 		// Rehydration: large content stayed in the blob, the event holds the reference.
