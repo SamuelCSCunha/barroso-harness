@@ -17,7 +17,10 @@ func TestProgressiveDisclosure(t *testing.T) {
 	ran := ""
 	mcpTool := tools.Spec{Name: "browser_click", Description: "Click an element in the browser page",
 		Schema: map[string]any{"type": "object", "properties": map[string]any{"ref": map[string]any{"type": "string"}}, "required": []string{"ref"}},
-		Exec: func(_ context.Context, _ string, raw json.RawMessage) (string, error) { ran = string(raw); return "clicked", nil }}
+		Exec: func(_ context.Context, _ string, raw json.RawMessage) (string, error) {
+			ran = string(raw)
+			return "clicked", nil
+		}}
 	s.Injetar(mcpTool)
 	list := append(tools.SpecsBuiltins(), tools.Spec{Name: "mcp_add"}, mcpTool)
 	direct, exec, catalog := s.disclose(list)

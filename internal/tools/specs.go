@@ -66,6 +66,17 @@ func truncate(s string, limit int) string {
 	return s[:limit] + fmt.Sprintf("\n\n[output truncated at %d bytes; read with smaller start/limit for the rest]", limit)
 }
 
+// truncateMiddle keeps the start and the END of a long command output: build
+// and test failures are reported last, and cutting the tail hid them.
+func truncateMiddle(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	head := limit / 4
+	tail := limit - head
+	return s[:head] + fmt.Sprintf("\n\n[... %d bytes omitted from the middle; rerun with a filter (e.g. only failing tests) to see them ...]\n\n", len(s)-limit) + s[len(s)-tail:]
+}
+
 // ── terminal_run ─────────────────────────────────────────────────────────
 
 func specTerminalRun() Spec {
@@ -120,7 +131,7 @@ func specTerminalRun() Spec {
 			if exeErr != nil && len(out) == 0 {
 				res = fmt.Sprintf("exit_code: %d\nstart failed: %v", code, exeErr)
 			}
-			return truncate(res, outputCap), nil
+			return truncateMiddle(res, outputCap), nil
 		},
 	}
 }

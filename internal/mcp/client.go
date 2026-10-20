@@ -656,10 +656,13 @@ func (c *Cliente) specFor(t mcpTool, name string) tools.Spec {
 	if len(schema) == 0 {
 		schema = freeObjectSchema()
 	}
+	// The server name leads the description: it groups the tools in the
+	// deferred catalog and lets tool_search match "playwright", "github"...
 	desc := oneLine(t.Description)
 	if desc == "" {
-		desc = fmt.Sprintf("MCP tool %s from server %s", name, c.source)
+		desc = "MCP tool " + name
 	}
+	desc = "[" + c.source + "] " + desc
 	serv := c.source
 	return tools.Spec{
 		Name:        name,

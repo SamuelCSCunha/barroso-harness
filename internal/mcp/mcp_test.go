@@ -204,7 +204,7 @@ func TestHTTPHandshakeAndList(t *testing.T) {
 	if specs[0].Name != "echo" || specs[1].Name != "sum" {
 		t.Fatalf("names = %q, %q; want echo, sum", specs[0].Name, specs[1].Name)
 	}
-	if specs[0].Description != "Returns its input" {
+	if specs[0].Description != "[fake] Returns its input" { // the server name leads the description
 		t.Errorf("description = %q", specs[0].Description)
 	}
 
