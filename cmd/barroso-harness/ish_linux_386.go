@@ -14,11 +14,14 @@ import (
 // run Go code at once: TLS verification fails with "unknown authority" and the
 // runtime dies with "morestack on g0" or random SIGSEGVs. Measured on an
 // iPhone: a JSON/fmt stress test crashed every run with 4 Ps and passed every
-// run with GOMAXPROCS=1 + GODEBUG=asyncpreemptoff=1.
+// run with GOMAXPROCS=1 + GODEBUG=asyncpreemptoff=1. That still crashed about
+// once every few minutes, during garbage collection running alongside the
+// program; with gcstoptheworld=1 (and GOGC=400, fewer collections) it stopped
+// crashing in the same test.
 //
 // Both settings are only read at process start, so the binary re-executes
-// itself once with them in the environment. A GOMAXPROCS the user already set
-// is kept; the marker variable stops a second re-exec.
+// itself once with them in the environment. GOMAXPROCS/GOGC the user already
+// set are kept; the marker variable stops a second re-exec.
 func init() {
 	if os.Getenv("BH_ISH_RUNTIME") != "" {
 		// iSH answers syscalls it does not implement (pidfd_open, used by
@@ -37,12 +40,20 @@ func init() {
 	if os.Getenv("GOMAXPROCS") == "" {
 		env = append(env, "GOMAXPROCS=1")
 	}
-	if d := os.Getenv("GODEBUG"); !strings.Contains(d, "asyncpreemptoff=") {
-		if d != "" {
-			d += ","
-		}
-		env = append(env, "GODEBUG="+d+"asyncpreemptoff=1")
+	if os.Getenv("GOGC") == "" {
+		env = append(env, "GOGC=400")
 	}
+	d := os.Getenv("GODEBUG")
+	for _, setting := range []string{"asyncpreemptoff=1", "gcstoptheworld=1"} {
+		name := setting[:strings.IndexByte(setting, '=')+1]
+		if !strings.Contains(d, name) {
+			if d != "" {
+				d += ","
+			}
+			d += setting
+		}
+	}
+	env = append(env, "GODEBUG="+d)
 	_ = syscall.Exec(self, os.Args, env) // on failure, keep running as is
 }
 
