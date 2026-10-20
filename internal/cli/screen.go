@@ -50,7 +50,7 @@ const (
 	escSyncStart  = "\033[?2026h" // paints the whole frame at once (no flicker)
 	escSyncEnd    = "\033[?2026l"
 	escClear      = "\033[2J"
-	escClearLine  = "\033[K"
+	escClearLine  = "\033[0m" + bgScreen + "\033[K" // clear in the screen colour, never the terminal default
 	escHideCursor = "\033[?25l"
 	escShowCursor = "\033[?25h"
 	maxLines      = 5000

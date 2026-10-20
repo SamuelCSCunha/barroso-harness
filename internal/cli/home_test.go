@@ -22,7 +22,7 @@ func TestHomeScreen(t *testing.T) {
 	rows := visualize(sb.String(), 160, 40)
 	all := strings.Join(rows, "\n")
 	if !strings.Contains(all, "█▀▀▄") || !strings.Contains(rowAt(rows, f.boxMetaRow), "m p") ||
-		!strings.Contains(rowAt(rows, f.boxTextRow), `Ask anything… "`) {
+		!strings.Contains(rowAt(rows, f.boxTextRow), "Ask anything…") {
 		t.Fatalf("home frame:\n%s", showGrid(rows, 160))
 	}
 	sc.Usuario("hello")

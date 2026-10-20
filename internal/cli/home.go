@@ -152,8 +152,8 @@ func (t *screen) drawHome(sb *strings.Builder) frame {
 	// The location and the shortcut hint sit under the prompt, aligned to it.
 	left, right := t.footerParts(f.boxWidth - f.barCol + 1)
 	gap := max(1, f.boxWidth-f.barCol+1-visWidth(left)-visWidth(right))
-	fmt.Fprintf(sb, "\033[%d;%dH%s%s", f.footerRow, f.barCol-1, bgScreen,
-		strings.TrimPrefix(left, " ")+strings.Repeat(" ", gap)+right)
+	fmt.Fprintf(sb, "\033[%d;%dH%s", f.footerRow, f.barCol-1,
+		withBg(strings.TrimPrefix(left, " ")+strings.Repeat(" ", gap)+right, bgScreen, f.boxWidth-f.barCol+2))
 	t.drawHomeFooter(sb)
 	return f
 }
@@ -197,7 +197,7 @@ func (t *screen) drawHomeFooter(sb *strings.Builder) {
 		right = grayf(Versao)
 	}
 	gap := max(1, t.w-4-visWidth(left)-visWidth(right))
-	fmt.Fprintf(sb, "\033[%d;1H%s  %s%s%s%s", row, bgScreen, left, strings.Repeat(" ", gap), right, escClearLine)
+	fmt.Fprintf(sb, "\033[%d;1H%s%s", row, withBg("  "+left+strings.Repeat(" ", gap)+right, bgScreen, t.w), escClearLine)
 }
 
 // drawHomeLocked paints a whole home-screen frame (the home counterpart of
@@ -240,7 +240,8 @@ var homePlaceholders = []string{
 }
 
 // homePlaceholder is the muted text of the empty home prompt:
-// `Ask anything… "<example>"`, as OpenCode's prompt renders it.
+// "Ask anything…" (OpenCode adds a quoted example; bh shows only the prompt).
 func homePlaceholder(idx int) string {
-	return `Ask anything… "` + homePlaceholders[idx%len(homePlaceholders)] + `"`
+	_ = idx
+	return "Ask anything…"
 }
