@@ -88,7 +88,7 @@ func (f *fakeMCP) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	f.mu.Unlock()
 
 	// Notifications have no id: nothing to reply, just a 200/202.
-	if !m.hasID() {
+	if !m.HasID() {
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}

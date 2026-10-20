@@ -140,7 +140,13 @@ Each compaction is stored in `sessions.db` with the policy that produced it, and
 
 ## Search
 
-`web_search` uses the SearXNG at `search_url` when configured; without it, it falls back to DuckDuckGo lite. Search works out of the box.
+Search and fetch work out of the box, with **no account and no API key**.
+
+- `web_search` tries, in order: the SearXNG at `search_url` (only when configured — it keeps precedence), the anonymous hosted MCP providers **Exa** (`mcp.exa.ai`) and **Parallel** (`search.parallel.ai`), and finally DuckDuckGo lite. A failing source only moves on to the next one; the error surfaces (on one line, naming each source) only when all of them fail.
+- `web_fetch` reads **public** URLs through the same providers first and falls back to a direct GET. Loopback, private, link-local and single-label hosts never leave the machine — they always go straight to the direct GET.
+- `search_providers` in `config.json` reorders or disables the providers: `["parallel", "exa"]`, `["exa"]`, or `["off"]` for none. Absent = `["exa", "parallel"]`. Only names are accepted; the endpoints are fixed in the code.
+- The providers are internal: their tools never enter the catalog (the model still sees only `web_search`/`web_fetch`). Requests carry only `Content-Type`, `Accept`, `User-Agent` and the server's own `Mcp-Session-Id` — never a key, cookie or `Authorization`.
+- Everything they return is untrusted external data: same warning, same caps (`web_search` 20000 chars, `web_fetch` `max_chars` up to 60000), 4 MiB per response, 20 s (search) / 30 s (fetch) per call. A provider that fails (including an anonymous rate limit) is skipped for 2 minutes.
 
 ## ACP: `session/load`
 

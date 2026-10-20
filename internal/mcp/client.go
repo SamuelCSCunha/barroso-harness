@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/ruanbarroso/barroso-harness/internal/dealer"
+	"github.com/ruanbarroso/barroso-harness/internal/jsonrpc"
 	"github.com/ruanbarroso/barroso-harness/internal/tools"
 )
 
@@ -31,94 +33,31 @@ const (
 	clientVersion = "1.0"
 
 	maxStdioLine       = 1 << 20           // 1 MiB per JSON line in the stdio scanner
-	maxHTTPBody        = 32 << 20          // cap on the HTTP response body
+	maxHTTPBody        = jsonrpc.MaxBody   // cap on the HTTP response body
 	defaultCallTimeout = 120 * time.Second // default cap for each JSON-RPC call
 	killGracePeriod    = 5 * time.Second   // wait after closing stdin before Kill
 )
 
 // ── JSON-RPC 2.0 ─────────────────────────────────────────────────────────
 
-// message is the common protocol unit: request/response have an id,
-// notifications do not. Unknown fields are ignored on unmarshal — MCP adds
-// fields freely and the client must tolerate them.
-type message struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      json.RawMessage `json:"id,omitempty"`
-	Method  string          `json:"method,omitempty"`
-	Params  json.RawMessage `json:"params,omitempty"`
-	Result  json.RawMessage `json:"result,omitempty"`
-	Error   *rpcError       `json:"error,omitempty"`
-}
+// The protocol core lives in internal/jsonrpc, shared with the hosted web
+// providers; these names keep this package's code reading as before.
+type (
+	message  = jsonrpc.Message
+	rpcError = jsonrpc.Error
+	request  = jsonrpc.Request
+)
 
-// hasID tells request/response (id present) from notification (absent).
-// id:null does not count.
-func (m message) hasID() bool {
-	v := bytes.TrimSpace(m.ID)
-	return len(v) > 0 && !bytes.Equal(v, []byte("null"))
-}
-
-// rpcError is the JSON-RPC error object (code + message required; data is
-// free-form and unpredictable across servers).
-type rpcError struct {
-	Code    int             `json:"code"`
-	Message string          `json:"message"`
-	Data    json.RawMessage `json:"data,omitempty"`
-}
-
-// Error formats on ONE line: raw data is never dumped (it may hold secrets).
-func (e *rpcError) Error() string {
-	if e == nil {
-		return "MCP server error"
-	}
-	msg := oneLine(e.Message)
-	if msg == "" {
-		msg = "(no message)"
-	}
-	if e.Code != 0 {
-		return fmt.Sprintf("MCP server returned error %d: %s", e.Code, msg)
-	}
-	return "MCP server returned error: " + msg
-}
-
-// newNotification builds a JSON-RPC notification (no id; no response expected).
-func newNotification(method string, params any) message {
-	m := message{JSONRPC: "2.0", Method: method}
-	if params != nil {
-		m.Params = jsonBytes(params)
-	}
-	return m
-}
-
-// request bundles a request with a numeric id and its already-serialized body.
-type request struct {
-	id     int64
-	method string
-	body   []byte
-}
-
-func newRequest(id int64, method string, params any) request {
-	m := message{JSONRPC: "2.0", ID: jsonBytes(id), Method: method}
-	if params != nil {
-		m.Params = jsonBytes(params)
-	}
-	b, err := json.Marshal(m)
-	if err != nil {
-		// Only happens with an unserializable value; params here are internal
-		// structs. Return an empty body and the send fails loudly.
-		b = nil
-	}
-	return request{id: id, method: method, body: b}
-}
-
-// jsonBytes converts an internal value to JSON; if impossible it returns
-// null (never panic on a network path).
-func jsonBytes(v any) json.RawMessage {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return json.RawMessage("null")
-	}
-	return b
-}
+var (
+	newNotification = jsonrpc.NewNotification
+	newRequest      = jsonrpc.NewRequest
+	jsonBytes       = jsonrpc.Bytes
+	decodeResult    = jsonrpc.DecodeResult
+	sameID          = jsonrpc.SameID
+	idKey           = jsonrpc.IDKey
+	summarizeHTTP   = jsonrpc.Summarize
+	oneLine         = jsonrpc.OneLine
+)
 
 // ── MCP params and results ───────────────────────────────────────────────
 
@@ -251,8 +190,7 @@ type Cliente struct {
 	source    string
 
 	// http
-	url   string
-	httpc *http.Client
+	httpT *jsonrpc.HTTP
 
 	// stdio
 	cmd      *exec.Cmd
@@ -422,7 +360,7 @@ func (c *Cliente) readLoopStdio(r io.Reader) {
 		if json.Unmarshal(line, &m) != nil {
 			continue // non-JSON noise: ignored, does not kill the session
 		}
-		if !m.hasID() {
+		if !m.HasID() {
 			continue // notification: no id to correlate
 		}
 		// Route by id: the message goes straight to its owner, without a
@@ -497,8 +435,14 @@ func serverWorkDir() string {
 // ── http ─────────────────────────────────────────────────────────────────
 
 func (c *Cliente) openHTTP(_ context.Context) error {
-	c.url = strings.TrimSpace(c.serv.URL)
-	c.httpc = &http.Client{Timeout: c.timeout}
+	c.httpT = &jsonrpc.HTTP{
+		URL:       strings.TrimSpace(c.serv.URL),
+		Headers:   c.serv.Headers,
+		UserAgent: dealer.UserAgent,
+		Client:    &http.Client{Timeout: c.timeout},
+		Timeout:   c.timeout,
+		MaxBody:   maxHTTPBody,
+	}
 	return c.handshake(context.Background())
 }
 
@@ -547,8 +491,8 @@ func (c *Cliente) handshake(ctx context.Context) error {
 
 // send fires the request and returns the response with the matching id.
 func (c *Cliente) send(ctx context.Context, r request) (message, error) {
-	if len(r.body) == 0 {
-		return message{}, fmt.Errorf("mcp: request %s failed to serialize", r.method)
+	if len(r.Body) == 0 {
+		return message{}, fmt.Errorf("mcp: request %s failed to serialize", r.Method)
 	}
 	if c.transport == transportHTTP {
 		return c.requestHTTP(ctx, r)
@@ -561,16 +505,16 @@ func (c *Cliente) send(ctx context.Context, r request) (message, error) {
 func (c *Cliente) requestStdio(ctx context.Context, r request) (message, error) {
 	wait := c.deadline(ctx)
 	select {
-	case c.outbox <- r.body:
+	case c.outbox <- r.Body:
 	case <-time.After(wait):
-		return message{}, fmt.Errorf("mcp: server %q: write queue full while sending %s", c.source, r.method)
+		return message{}, fmt.Errorf("mcp: server %q: write queue full while sending %s", c.source, r.Method)
 	case <-ctx.Done():
 		return message{}, ctx.Err()
 	case <-c.done:
-		return message{}, fmt.Errorf("mcp: server %q: connection closed while sending %s", c.source, r.method)
+		return message{}, fmt.Errorf("mcp: server %q: connection closed while sending %s", c.source, r.Method)
 	}
 
-	rawID := jsonBytes(r.id)
+	rawID := jsonBytes(r.ID)
 	key := idKey(rawID)
 	mine := c.router.register(key)
 	defer c.router.forget(key)
@@ -589,11 +533,11 @@ func (c *Cliente) requestStdio(ctx context.Context, r request) (message, error) 
 				return message{}, fmt.Errorf("mcp: server %q: write: %w", c.source, err)
 			}
 		case <-timer.C:
-			return message{}, fmt.Errorf("mcp: server %q: timed out after %s waiting for response to %s", c.source, wait, r.method)
+			return message{}, fmt.Errorf("mcp: server %q: timed out after %s waiting for response to %s", c.source, wait, r.Method)
 		case <-ctx.Done():
 			return message{}, ctx.Err()
 		case <-c.done:
-			return message{}, c.connectionError(r.method)
+			return message{}, c.connectionError(r.Method)
 		}
 	}
 }
@@ -612,78 +556,42 @@ func (c *Cliente) connectionError(method string) error {
 	return fmt.Errorf("mcp: server %q: server closed the connection during %s", c.source, method)
 }
 
-// requestHTTP performs the POST and extracts the response from plain JSON or
-// the SSE stream.
+// requestHTTP performs the POST. A 404 on a call carrying a session id means
+// the server dropped the session: the client initializes again ONCE and
+// repeats the call (never for initialize itself, which would loop).
 func (c *Cliente) requestHTTP(ctx context.Context, r request) (message, error) {
-	wait := c.deadline(ctx)
-	hctx, cancel := context.WithTimeout(ctx, wait)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(hctx, http.MethodPost, c.url, bytes.NewReader(r.body))
-	if err != nil {
-		return message{}, fmt.Errorf("mcp: server %q: request: %w", c.source, err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	// Same UA as the dealer: some WAFs block the default "Go-http-client/1.1"
-	// before even looking at credentials — and MCP gateways often sit behind one.
-	req.Header.Set("User-Agent", dealer.UserAgent)
-	// The MCP streamable HTTP spec REQUIRES this Accept: the server picks
-	// between plain JSON and SSE based on what the client declares it accepts.
-	req.Header.Set("Accept", "application/json, text/event-stream")
-	for k, v := range c.serv.Headers {
-		if k == "" {
-			continue
+	m, err := c.httpT.Call(ctx, r)
+	if errors.Is(err, jsonrpc.ErrSessionExpired) && r.Method != "initialize" {
+		c.mu.Lock()
+		c.initialized = false
+		c.mu.Unlock()
+		if herr := c.handshake(ctx); herr != nil {
+			return message{}, herr
 		}
-		req.Header.Set(k, v)
+		m, err = c.httpT.Call(ctx, r)
 	}
-
-	resp, err := c.httpc.Do(req)
 	if err != nil {
+		var rpc *rpcError
+		if errors.As(err, &rpc) {
+			return message{}, rpc
+		}
 		return message{}, fmt.Errorf("mcp: server %q: %w", c.source, err)
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxHTTPBody))
-	if err != nil {
-		return message{}, fmt.Errorf("mcp: server %q: reading response: %w", c.source, err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return message{}, fmt.Errorf("mcp: server %q: HTTP %d: %s", c.source, resp.StatusCode, summarizeHTTP(body, 300))
-	}
-	m, err := responseFrom(body, resp.Header.Get("Content-Type"), jsonBytes(r.id))
-	if err != nil {
-		return message{}, fmt.Errorf("mcp: server %q: %s: %w", c.source, r.method, err)
-	}
-	if m.Error != nil {
-		return message{}, m.Error
 	}
 	return m, nil
 }
 
 // sendRaw sends a notification (no response to wait for). On stdio it goes
-// to the writer; on HTTP it is the POST.
-//
-// On HTTP the server may reply 202/200 with an EMPTY body (and should: the
-// MCP streamable spec allows notifications without a JSON-RPC response), or
-// with a JSON-RPC response, or with an error one. All three are valid; body
-// parsing tolerates them.
+// to the writer; on HTTP it is the POST, where an empty 202/200 is valid.
 func (c *Cliente) sendRaw(ctx context.Context, m message) error {
+	if c.transport == transportHTTP {
+		if err := c.httpT.Notify(ctx, m); err != nil {
+			return fmt.Errorf("mcp: server %q: %w", c.source, err)
+		}
+		return nil
+	}
 	b, err := json.Marshal(m)
 	if err != nil {
 		return err
-	}
-	if c.transport == transportHTTP {
-		r := request{method: m.Method, body: b}
-		// Notification: only TRANSPORT failures matter (network, HTTP status,
-		// timeout). An empty body is not a failure.
-		_, err := c.requestHTTP(ctx, r)
-		if err != nil {
-			var empty emptyResponseError
-			if asEmptyResponse(err, &empty) {
-				return nil
-			}
-			return err
-		}
-		return nil
 	}
 	wait := c.deadline(ctx)
 	select {
@@ -710,173 +618,6 @@ func (c *Cliente) deadline(ctx context.Context) time.Duration {
 		d = defaultCallTimeout
 	}
 	return d
-}
-
-// emptyResponseError flags a missing body in a 2xx response: valid for a
-// notification (the server may reply 202/200 without a body), invalid for a
-// request, where a JSON-RPC response is mandatory.
-type emptyResponseError struct{}
-
-func (emptyResponseError) Error() string { return "response without body" }
-
-// asEmptyResponse is errors.As without importing errors here (the file needs
-// the package for nothing else).
-func asEmptyResponse(err error, target any) bool {
-	for err != nil {
-		if e, ok := err.(emptyResponseError); ok {
-			if a, ok := target.(*emptyResponseError); ok {
-				*a = e
-				return true
-			}
-			return false
-		}
-		u, ok := err.(interface{ Unwrap() error })
-		if !ok {
-			return false
-		}
-		err = u.Unwrap()
-	}
-	return false
-}
-
-// responseFrom finds the message with the matching id: accepts a single
-// JSON-RPC message, a batch (array) and SSE (data: lines).
-func responseFrom(body []byte, contentType string, id json.RawMessage) (message, error) {
-	ct := strings.ToLower(contentType)
-	if strings.Contains(ct, "text/event-stream") {
-		return sseResponse(body, id)
-	}
-	start := bytes.TrimSpace(body)
-	if bytes.HasPrefix(start, []byte("data:")) || bytes.HasPrefix(start, []byte("event:")) ||
-		bytes.HasPrefix(start, []byte("id:")) || bytes.HasPrefix(start, []byte(":")) {
-		// SSE without an informative Content-Type. The ":" covers an SSE
-		// COMMENT (":ping"), which comes before data: in real streams —
-		// sniffing only by the other three prefixes would treat that stream
-		// as JSON and fail.
-		return sseResponse(body, id)
-	}
-	return jsonResponse(body, id)
-}
-
-// jsonResponse extracts from a JSON-RPC object or an array (batch).
-func jsonResponse(body []byte, id json.RawMessage) (message, error) {
-	body = bytes.TrimSpace(body)
-	if len(body) == 0 {
-		return message{}, emptyResponseError{}
-	}
-	if body[0] == '[' {
-		var batch []message
-		if err := json.Unmarshal(body, &batch); err != nil {
-			return message{}, fmt.Errorf("invalid JSON response: %w", err)
-		}
-		return findByID(batch, id)
-	}
-	var m message
-	if err := json.Unmarshal(body, &m); err != nil {
-		return message{}, fmt.Errorf("invalid JSON response: %w", err)
-	}
-	if !m.hasID() {
-		return message{}, fmt.Errorf("server replied with a notification, not a result")
-	}
-	if !sameID(m.ID, id) {
-		return message{}, fmt.Errorf("response with unexpected id: %s", idKey(m.ID))
-	}
-	return m, nil
-}
-
-// sseResponse reads the data: lines — one JSON-RPC message per event, or a
-// batch. Comments (":ping"), event: and "[DONE]" are ignored.
-func sseResponse(body []byte, id json.RawMessage) (message, error) {
-	var found []message
-	for _, raw := range strings.Split(string(body), "\n") {
-		line := strings.TrimRight(raw, "\r")
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if data == "" || data == "[DONE]" {
-			continue
-		}
-		if data[0] == '[' {
-			var batch []message
-			if json.Unmarshal([]byte(data), &batch) == nil {
-				for _, m := range batch {
-					if m.hasID() {
-						found = append(found, m)
-					}
-				}
-				continue
-			}
-		}
-		var m message
-		if json.Unmarshal([]byte(data), &m) != nil {
-			continue // keep-alive or non-JSON event
-		}
-		if m.hasID() {
-			found = append(found, m)
-		}
-	}
-	return findByID(found, id)
-}
-
-// findByID looks for the response with the matching id in a list (batch or
-// SSE events).
-func findByID(list []message, id json.RawMessage) (message, error) {
-	for _, m := range list {
-		if sameID(m.ID, id) {
-			return m, nil
-		}
-	}
-	return message{}, fmt.Errorf("response with id %s not found in body", idKey(id))
-}
-
-// sameID compares ids tolerating number vs string.
-func sameID(a, b json.RawMessage) bool { return idKey(a) == idKey(b) }
-
-// idKey reduces the id to a stable comparable form (n:1, s:abc).
-func idKey(id json.RawMessage) string {
-	v := bytes.TrimSpace(id)
-	if len(v) == 0 {
-		return ""
-	}
-	var num json.Number
-	if json.Unmarshal(v, &num) == nil {
-		if i, err := num.Int64(); err == nil {
-			return "n:" + fmt.Sprint(i)
-		}
-		return "s:" + num.String()
-	}
-	var s string
-	if json.Unmarshal(v, &s) == nil {
-		return "s:" + s
-	}
-	return string(v)
-}
-
-// summarizeHTTP reduces the body to the essentials on ONE line (WAF HTML,
-// JSON error or plain text) — never dumps the raw body to the terminal.
-func summarizeHTTP(b []byte, max int) string {
-	s := strings.Join(strings.Fields(string(b)), " ")
-	if len(s) > max {
-		s = s[:max] + "…"
-	}
-	if s == "" {
-		return "(empty body)"
-	}
-	return s
-}
-
-// oneLine collapses spaces and line breaks: messages on a single line.
-func oneLine(s string) string { return summarizeHTTP([]byte(s), 400) }
-
-// decodeResult unmarshals tolerantly: a missing or null result leaves the
-// target at its zero value instead of erroring.
-func decodeResult(raw json.RawMessage, target any) error {
-	clean := bytes.TrimSpace(raw)
-	if len(clean) == 0 || bytes.Equal(clean, []byte("null")) {
-		return nil
-	}
-	return json.Unmarshal(clean, target)
 }
 
 // ── high-level MCP calls ─────────────────────────────────────────────────

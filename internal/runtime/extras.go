@@ -95,17 +95,19 @@ func (s *Session) turnExtras(cwd string) []tools.Spec {
 	return noShadow(own, injected)
 }
 
-// search translates the configuration into the web package handle. nil when
-// there is no search_url: the web_search tool enters the catalog ANYWAY,
-// because the configuration error must show up in the tool output — the model
-// reads it and knows what to ask for — instead of the tool silently not
-// existing.
+// search translates the configuration into the web package handle: the
+// optional SearXNG (search_url) plus the anonymous hosted providers named by
+// search_providers (absent = web.DefaultProviders). Providers are
+// process-wide singletons, so their discovery cache survives across turns.
 func (s *Session) search() *web.Busca {
-	url := strings.TrimSpace(s.config.SearchURL)
-	if url == "" {
-		return nil
+	names := s.config.SearchProviders
+	if names == nil {
+		names = web.DefaultProviders
 	}
-	return &web.Busca{Endpoint: url}
+	return &web.Busca{
+		Endpoint:  strings.TrimSpace(s.config.SearchURL),
+		Providers: web.Provedores(names),
+	}
 }
 
 // skillSpecs discovers the skills on disk and returns their tools. Discovery

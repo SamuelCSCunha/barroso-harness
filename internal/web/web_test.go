@@ -499,6 +499,15 @@ func TestWebSearchNon2XX(t *testing.T) {
 		w.Write([]byte(`{"error":"rate limited"}`))
 	}))
 	defer srv.Close()
+	// A failing SearXNG now falls back to DuckDuckGo; keep the test offline by
+	// making the fallback fail too, so the error carries both reasons.
+	ddg := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer ddg.Close()
+	prev := endpointDDG
+	endpointDDG = ddg.URL
+	t.Cleanup(func() { endpointDDG = prev })
 
 	specs := specsByName(t, &Busca{Endpoint: srv.URL})
 	out, err := run(t, specs["web_search"], map[string]any{"query": "x"})

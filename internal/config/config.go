@@ -49,10 +49,16 @@ type Config struct {
 	APIKey          string               `json:"-"`                               // resolved from the active provider; never log
 	Home            string               `json:"-"`
 
-	// SearchURL is the SearXNG endpoint with the JSON API enabled. Empty
-	// DISABLES the tool: web_search still enters the catalog (the tool
-	// explains what is missing), so web_fetch remains useful on its own.
+	// SearchURL is an optional SearXNG endpoint with the JSON API enabled.
+	// When set, web_search tries it FIRST; empty does not disable anything —
+	// search goes to the hosted providers and then DuckDuckGo lite.
 	SearchURL string `json:"search_url,omitempty"`
+
+	// SearchProviders orders the anonymous hosted MCP providers used by
+	// web_search and web_fetch ("exa", "parallel"). Absent = both, in that
+	// order; ["off"] (or any list without a known name) disables them. Only
+	// names: the endpoints are fixed in package web, never configurable.
+	SearchProviders []string `json:"search_providers,omitempty"`
 
 	// MCPServidores lists MCP servers (stdio or streamable HTTP). The tools
 	// they publish enter the turn's catalog.
@@ -79,10 +85,10 @@ type MCPServidor struct {
 	Timeout int               `json:"timeout_segundos,omitempty"` // seconds; 0 = default
 }
 
-// BuscaAtiva reports whether a search endpoint is configured. The web_search
-// tool enters the catalog either way (with the actionable error inside), but
-// whoever needs to KNOW — wiring, UI, tests — asks here instead of comparing
-// strings.
+// BuscaAtiva reports whether a SearXNG endpoint (search_url) is configured.
+// Search works without one (hosted providers, then DuckDuckGo); this only
+// tells whoever needs to KNOW — wiring, UI, tests — whether SearXNG comes
+// first, instead of comparing strings.
 func (c Config) BuscaAtiva() bool { return strings.TrimSpace(c.SearchURL) != "" }
 
 // validServers returns only the MCP servers with a recognizable name and
