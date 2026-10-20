@@ -1,4 +1,4 @@
-// MCP server management by the agent itself: mcp_list, mcp_add and
+// MCP server management by the agent itself: mcp_list, mcp_add, mcp_edit and
 // mcp_remove. Before this the model could only USE servers hand-written in
 // config.json — it had no way to add one, see their state or remove one that
 // broke. The plan asked for "skills and MCP management"; this is the MCP half.
@@ -139,7 +139,116 @@ func (m *mcpManager) close() error {
 // ── the three tools ───────────────────────────────────────────────────────
 
 func (m *mcpManager) specs() []tools.Spec {
-	return []tools.Spec{m.specList(), m.specAdd(), m.specRemove()}
+	return []tools.Spec{m.specList(), m.specAdd(), m.specEdit(), m.specRemove()}
+}
+
+// describe is the reply after connecting a server: its tools or its error.
+func describe(e *mcpState, verb string) string {
+	if e.client == nil {
+		return fmt.Sprintf("server %q %s and saved to config.json, but did NOT connect: %s", e.cfg.Nome, verb, e.err)
+	}
+	t := append([]string(nil), e.tools...)
+	sort.Strings(t)
+	return fmt.Sprintf("server %q %s, connected and saved; %d tools available: %s", e.cfg.Nome, verb, len(t), strings.Join(t, ", "))
+}
+
+func (m *mcpManager) specEdit() tools.Spec {
+	return tools.Spec{
+		Name: "mcp_edit",
+		Description: "Edits an existing MCP server: give only the fields that change (type, command, args, env, url, headers, new_name). " +
+			"env and headers given here replace the whole map. Saves config.json and reconnects only this server. " +
+			"With reconnect true and nothing else, just reconnects it (e.g. after the server process died).",
+		Schema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name":      map[string]any{"type": "string", "description": "current server name"},
+				"new_name":  map[string]any{"type": "string", "description": "rename the server"},
+				"type":      map[string]any{"type": "string", "enum": []string{"stdio", "http"}},
+				"command":   map[string]any{"type": "string", "description": "executable (stdio)"},
+				"args":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				"env":       map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}},
+				"url":       map[string]any{"type": "string", "description": "endpoint (http)"},
+				"headers":   map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}},
+				"reconnect": map[string]any{"type": "boolean", "description": "reconnect even if nothing else changes"},
+			},
+			"required": []string{"name"},
+		},
+		Exec: func(_ context.Context, _ string, raw json.RawMessage) (string, error) {
+			var c struct {
+				Name      string             `json:"name"`
+				NewName   string             `json:"new_name"`
+				Type      *string            `json:"type"`
+				Command   *string            `json:"command"`
+				Args      *[]string          `json:"args"`
+				Env       *map[string]string `json:"env"`
+				URL       *string            `json:"url"`
+				Headers   *map[string]string `json:"headers"`
+				Reconnect bool               `json:"reconnect"`
+			}
+			if err := json.Unmarshal(raw, &c); err != nil {
+				return "", fmt.Errorf("invalid input: %w", err)
+			}
+			name := strings.TrimSpace(c.Name)
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			old := m.states[name]
+			if old == nil {
+				return "", fmt.Errorf("server %q does not exist (see mcp_list; add it with mcp_add)", name)
+			}
+			s := old.cfg
+			changed := c.Reconnect
+			if c.Type != nil {
+				s.Tipo, changed = *c.Type, true
+			}
+			if c.Command != nil {
+				s.Command, changed = *c.Command, true
+			}
+			if c.Args != nil {
+				s.Args, changed = *c.Args, true
+			}
+			if c.Env != nil {
+				s.Env, changed = *c.Env, true
+			}
+			if c.URL != nil {
+				s.URL, changed = *c.URL, true
+			}
+			if c.Headers != nil {
+				s.Headers, changed = *c.Headers, true
+			}
+			newName := strings.TrimSpace(c.NewName)
+			if newName != "" && newName != name {
+				if m.states[newName] != nil {
+					return "", fmt.Errorf("server %q already exists", newName)
+				}
+				s.Nome, changed = newName, true
+			}
+			if !changed {
+				return "", fmt.Errorf("nothing to change: give the fields to edit or reconnect true")
+			}
+			if mcpType(s.Tipo) == "" {
+				return "", fmt.Errorf("type must be stdio or http")
+			}
+			if !acceptable(s) {
+				return "", fmt.Errorf("incomplete configuration: stdio requires command; http requires url")
+			}
+			m.withdraw(old)
+			e := m.connect(s)
+			if s.Nome != name {
+				delete(m.states, name)
+				for i, n := range m.order {
+					if n == name {
+						m.order[i] = s.Nome
+						break
+					}
+				}
+			}
+			m.states[s.Nome] = e
+			if err := m.save(m.configs()); err != nil {
+				return "", fmt.Errorf("reconnected, but did not save to config.json: %w", err)
+			}
+			return describe(e, "edited"), nil
+		},
+	}
 }
 
 func (m *mcpManager) specList() tools.Spec {
@@ -176,9 +285,9 @@ func (m *mcpManager) specList() tools.Spec {
 func (m *mcpManager) specAdd() tools.Spec {
 	return tools.Spec{
 		Name: "mcp_add",
-		Description: "Adds (or replaces) an MCP server, connects right away and saves it to config.json. " +
+		Description: "Adds a NEW MCP server, connects right away and saves it to config.json. " +
 			"stdio: provide command (and args/env). http (streamable HTTP): provide url (and headers). " +
-			"The server's tools become available from the next call on.",
+			"The server's tools become available from the next call on. Fails if the name exists: change it with mcp_edit.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -209,21 +318,15 @@ func (m *mcpManager) specAdd() tools.Spec {
 			}
 			m.mu.Lock()
 			defer m.mu.Unlock()
-			// Replace: the old one goes first, so tools are not duplicated.
-			if old := m.states[s.Nome]; old != nil {
-				m.withdraw(old)
+			if m.states[s.Nome] != nil {
+				return "", fmt.Errorf("server %q already exists: use mcp_edit to change it", s.Nome)
 			}
 			e := m.connect(s)
 			m.register(e)
 			if err := m.save(m.configs()); err != nil {
 				return "", fmt.Errorf("connected, but did not save to config.json: %w", err)
 			}
-			if e.client == nil {
-				return fmt.Sprintf("server %q saved to config.json, but did NOT connect: %s", s.Nome, e.err), nil
-			}
-			t := append([]string(nil), e.tools...)
-			sort.Strings(t)
-			return fmt.Sprintf("server %q connected and saved; %d tools available: %s", s.Nome, len(t), strings.Join(t, ", ")), nil
+			return describe(e, "added"), nil
 		},
 	}
 }

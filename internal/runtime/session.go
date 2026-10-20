@@ -468,14 +468,19 @@ type toolOutcome struct {
 // sequentialTools mutate the catalog or the session itself; a round that
 // contains any of them runs one call at a time, in order.
 var sequentialTools = map[string]bool{
-	"mcp_add":      true,
-	"mcp_remove":   true,
-	"skill_create": true,
-	"skill_remove": true,
-	"ctx_compact":  true,
-	"ctx_write":    true,
-	"ctx_append":   true,
-	"task_spawn":   true,
+	"mcp_add":             true,
+	"mcp_remove":          true,
+	"mcp_edit":            true,
+	"skill_edit":          true,
+	"instructions_write":  true,
+	"instructions_edit":   true,
+	"instructions_delete": true,
+	"skill_create":        true,
+	"skill_remove":        true,
+	"ctx_compact":         true,
+	"ctx_write":           true,
+	"ctx_append":          true,
+	"task_spawn":          true,
 }
 
 // runRound executes the round's tool calls and returns their outcomes in the

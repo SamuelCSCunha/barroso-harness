@@ -26,6 +26,7 @@ import (
 	"strings"
 
 	"github.com/ruanbarroso/barroso-harness/internal/config"
+	"github.com/ruanbarroso/barroso-harness/internal/instructions"
 	"github.com/ruanbarroso/barroso-harness/internal/skills"
 	"github.com/ruanbarroso/barroso-harness/internal/tools"
 	"github.com/ruanbarroso/barroso-harness/internal/web"
@@ -232,6 +233,7 @@ func (s *Session) toolCatalog(cwd string) []tools.Spec {
 	base = append(base, EspecificacoesContextoVivoSessao(s)...)
 	base = append(base, web.Especificacoes(s.search())...)
 	base = append(base, skillSpecs(cwd)...)
+	base = append(base, instructions.Especificacoes()...)
 	if policy(s.config.PoliticaContexto) == PoliticaAgente {
 		base = append(base, compactSpec())
 	}
