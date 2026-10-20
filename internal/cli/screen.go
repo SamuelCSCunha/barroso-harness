@@ -123,9 +123,7 @@ type screen struct {
 	// with it; >0 means the user read back, and new output must NOT pull the
 	// view down again.
 	scroll int
-	// sticky records whether the view is pinned to the bottom. It differs
-	// from scroll == 0 only while a jump is in flight (see toBottom).
-	sticky bool
+
 	w, h   int
 	state  panelState
 	input  string
@@ -168,6 +166,10 @@ type screen struct {
 	thoughtBodies map[int]string
 	// mcpOpen is the sidebar's MCP collapse state (open by default).
 	mcpOpen bool
+	// panelOff is the sidebar's own scroll offset in lines (its content can grow
+	// taller than the pane). It is independent of the transcript's scroll: the two
+	// scroll separately, as OpenCode's do, and the offset is clamped per frame.
+	panelOff int
 	// interruptArmed is set by the first Esc while a turn runs; the second Esc
 	// within escInterruptWindow actually interrupts. escAt is when the first
 	// press happened.
@@ -247,7 +249,7 @@ func itoa(v int) string {
 
 func newScreen(out io.Writer) *screen {
 	fmt.Fprint(out, escAlt+escMouseOn+escFocusOn+escPasteOn+escClear)
-	return &screen{out: out, hits: newHits(), sticky: true, mcpOpen: true, thinking: map[int]bool{}, thoughtBodies: map[int]string{}}
+	return &screen{out: out, hits: newHits(), mcpOpen: true, thinking: map[int]bool{}, thoughtBodies: map[int]string{}}
 }
 
 // takeImages returns (and forgets) the images sent with line: the REPL reads
@@ -300,46 +302,73 @@ func tabTitle(session string) string {
 // bottom (sticky) the new lines scroll in with it; once the user read back,
 // the view stays exactly where it is — new output must not yank it down.
 func (t *screen) Adicionar(text string) {
+	t.appendLines(strings.Split(text, "\n")...)
+}
+
+// appendLines takes the lock and appends. Callers that already hold t.mu
+// (because they read t.lines or t.state to build the lines first) must call
+// appendLocked instead, or they deadlock on the same mutex.
+func (t *screen) appendLines(lines ...string) {
 	t.mu.Lock()
-	t.lines = append(t.lines, strings.Split(text, "\n")...)
+	defer t.mu.Unlock()
+	t.appendLocked(lines...)
+}
+
+// wrappedRows is how many rows the whole transcript occupies once wrapped, which
+// is the unit both the frame and the scroll offset count in.
+func (t *screen) wrappedRows() int {
+	return len(t.wrapped(t.conversationWidth() - 2))
+}
+
+// appendLocked adds the lines and keeps the stay-put offset correct. It is the
+// single choke point for every writer: user messages, tool output, renderer
+// output and expanded reasoning all come through here.
+//
+// Stay-put is expressed in WRAPPED rows, not logical lines: that is the unit the
+// frame shows and the offset is measured in, so a logical line that wraps into
+// three rows grows the offset by three regardless of who wrote it. While pinned
+// (scroll == 0) the offset stays 0 and new output scrolls in with the view,
+// exactly like OpenCode's sticky scroll.
+//
+// Caller holds t.mu.
+func (t *screen) appendLocked(lines ...string) {
+	if len(lines) == 0 {
+		return
+	}
+	before := t.wrappedRows()
+	for _, l := range lines {
+		t.lines = append(t.lines, l)
+	}
 	t.trim()
-	if t.scroll > 0 {
-		// keep the offset above the bottom while content grows
-		t.scroll += len(strings.Split(text, "\n"))
+	if t.scroll > 0 && len(t.lines) > 0 {
+		// Grow the offset by the wrapped growth, so the rows on screen stay put
+		// while content grows underneath them.
+		t.scroll += max(0, t.wrappedRows()-before)
 	}
 	t.drawLocked()
-	t.mu.Unlock()
 }
 
 // Usuario draws the sent message as a dark-background block with the blue
 // bar, like OpenCode.
 func (t *screen) Usuario(text string) {
 	t.mu.Lock()
+	defer t.mu.Unlock()
 	// Same width and same text column as the input box: both boxes line up,
 	// like in OpenCode. The bar is ┃ in the agent (primary blue) colour and the
 	// box background is raised.base #141414, with one padding line above and
 	// below; text two columns inside the bar.
 	avail := t.conversationWidth()
 	blank := withBg(bluef(bar), bgUser, avail)
-	grown := 0
+	grown := []string{}
 	if len(t.lines) > 0 {
-		t.lines = append(t.lines, "")
-		grown++
+		grown = append(grown, "")
 	}
-	t.lines = append(t.lines, blank)
-	grown++
+	grown = append(grown, blank)
 	for _, l := range strings.Split(wrap(text, avail-5), "\n") {
-		t.lines = append(t.lines, withBg(bluef(bar)+"  "+highlightImages(l, colorText), bgUser, avail))
-		grown++
+		grown = append(grown, withBg(bluef(bar)+"  "+highlightImages(l, colorText), bgUser, avail))
 	}
-	t.lines = append(t.lines, blank, "")
-	grown += 2
-	t.trim()
-	if t.scroll > 0 {
-		t.scroll += grown
-	}
-	t.drawLocked()
-	t.mu.Unlock()
+	grown = append(grown, blank, "")
+	t.appendLocked(grown...)
 }
 
 // AvisoSubagentes shows, in place of the user box, one line per finished
@@ -377,8 +406,15 @@ func (t *screen) Estado(e panelState) {
 	t.mu.Unlock()
 }
 
+// Ocupado marks whether a turn is running. The armed interrupt state belongs to
+// the turn: it is cleared when the turn ends, so a leftover "esc again to
+// interrupt" cannot arm the next turn's first Esc.
 func (t *screen) Ocupado(v bool) {
 	t.mu.Lock()
+	if !v {
+		t.interruptArmed = false
+		t.escAt = time.Time{}
+	}
 	t.busy = v
 	t.drawLocked()
 	t.mu.Unlock()
@@ -443,25 +479,27 @@ func (t *screen) stopSpin() {
 // conversation line; the rest stays as the partial line (a prompt awaiting input).
 type screenWriter struct{ t *screen }
 
+// Write appends the finished lines of the chunk to the conversation. The
+// stay-put accounting is shared with every other writer (appendLocked), so the
+// view does not behave differently depending on which path produced the output.
 func (e screenWriter) Write(p []byte) (int, error) {
 	t := e.t
 	t.mu.Lock()
+	defer t.mu.Unlock()
 	parts := strings.Split(t.partial+string(p), "\n")
+	// Everything except the trailing fragment is a finished line; it goes
+	// through the same accounting as every other writer.
+	done := make([]string, 0, len(parts)-1)
 	for _, l := range parts[:len(parts)-1] {
 		if i := strings.LastIndexByte(l, '\r'); i >= 0 {
 			l = l[i+1:]
 		}
-		t.lines = append(t.lines, l)
+		done = append(done, l)
 	}
 	t.partial = parts[len(parts)-1]
-	t.trim()
-	// Stay-put scrolling: while the user reads back, the view keeps its offset
-	// above the bottom as the conversation grows.
-	if t.scroll > 0 {
-		t.scroll += len(parts) - 1
-	}
-	t.drawLocked()
-	t.mu.Unlock()
+	// The partial line is part of the wrapped view (a prompt awaiting input), so
+	// the accounting is taken before it changes and after the lines land.
+	t.appendLocked(done...)
 	return len(p), nil
 }
 
@@ -662,13 +700,27 @@ func (t *screen) drawLocked() {
 	t.paintTranscript(&sb, f, vis, height)
 
 	// status row: "Jump to latest ↓" while the view sits above the bottom.
+	//
+	// The hint is right-aligned inside the PANE, not the whole terminal: padding
+	// to the full width would put it under the sidebar, which is painted after
+	// this row and would cover it in the wide layout.
+	//
+	// The hit region spans the whole pane row (col 1, width boxWidth) and its
+	// plain/hover strings carry their own right-alignment padding. That is what
+	// makes a partial (hover) repaint correct: the region is repainted at its own
+	// geometry with its own text, so the text lands on exactly the columns the
+	// full frame had drawn. A region that stored an unpadded text and a separate
+	// column would be repainted flush-left, and one that stored a row padded to
+	// the full terminal width would be truncated by its own narrower geometry.
 	if t.scroll > 0 {
-		jump := grayf("Jump to latest ↓")
-		row := padding(f.w) + jump
+		pane := f.boxWidth
+		gap := max(1, pane-visWidth(grayf("Jump to latest ↓")))
+		hint := "Jump to latest ↓"
+		row := padding(gap) + grayf(hint)
 		t.hits.add(&hitRegion{
-			row: f.statusRow, col: f.w - visWidth(jump) + 1,
-			width: visWidth(jump), height: 1,
-			plain: row, hover: color(colorText, "Jump to latest ↓") + " ↓",
+			row: f.statusRow, col: 1, width: pane, height: 1,
+			plain:  row,
+			hover:  padding(gap) + color(colorText, hint),
 			action: func() { t.toBottom() },
 		})
 		line(f.statusRow, row)
@@ -892,18 +944,18 @@ func (t *screen) visibleInput() string {
 	return t.input
 }
 
-// sidebarScroll is the sidebar's own scroll offset (its content grows taller
-// than the pane).
+// drawPanel paints the sidebar with its own independent scroll offset: the
+// transcript and the sidebar scroll separately, as OpenCode's does.
 func (t *screen) drawPanel(sb *strings.Builder, f frame) {
 	col := t.w - panelWidth + 1
 	panel, n := t.panelLines()
 	avail := f.h - 2 // top/bottom padding of 1
-	// off is how many leading lines the sidebar clips (its content can grow
-	// taller than the pane); the visible slice starts there.
-	off := 0
-	if d := n - avail; d > 0 {
-		off = d
-	}
+	// panelOff is clamped on every frame, so it can never leave a blank stretch
+	// at the bottom when the content shrinks (MCPs disconnecting, a session being
+	// renamed to a shorter title).
+	maxOff := max(0, n-avail)
+	off := clampInt(t.panelOff, 0, maxOff)
+	t.panelOff = off
 	visible := panel[min(off, len(panel)):]
 	// The MCP heading, when it is one of the visible lines and there are more
 	// than two servers: a mouse-down collapses the section.
@@ -914,16 +966,34 @@ func (t *screen) drawPanel(sb *strings.Builder, f frame) {
 			break
 		}
 	}
+	// The pinned footer (working directory + branch) always stays visible, so a
+	// scrolled sidebar never hides which repository is open.
+	pinned := panel[len(panel)-1]
+	lastAvail := avail - 1
 	for i := 0; i < avail; i++ {
 		row := 2 + i
 		s := ""
-		if i < len(visible) {
+		switch {
+		case i == lastAvail:
+			s = pinned
+		case i < len(visible)-1:
 			s = visible[i]
 		}
 		fmt.Fprintf(sb, "\033[%d;%dH%s%s", row, col, reset, withBg(s, bgPanel, panelWidth-2))
 		if i == mcpVisible && len(t.state.mcps) > 2 {
-			t.hits.add(&hitRegion{row: row, col: col, width: panelWidth - 2, height: 1,
-				id: "mcpheader", action: func() { t.mcpOpen = !t.mcpOpen; t.drawLocked() }})
+			// The heading carries its own plain/hover text: a region without them
+			// is treated as unclickable by the mouse state machine (press() only
+			// arms regions that can paint a hover style) and hover never repaints
+			// it. The hover variant paints the muted "(N active, M errors)" count
+			// in text.base, the way OpenCode's sidebar heading reacts to a pointer.
+			hover := t.mcpHeading(false)
+			t.hits.add(&hitRegion{
+				row: row, col: col, width: panelWidth - 2, height: 1,
+				id:     "mcpheader",
+				plain:  visible[i],
+				hover:  hover,
+				action: func() { t.mcpOpen = !t.mcpOpen; t.drawLocked() },
+			})
 			continue // the region is registered; nothing else to do on this row
 		}
 	}
@@ -959,7 +1029,7 @@ func (t *screen) panelLines() ([]string, int) {
 	// MCP: hidden when there are no servers; the header opens/collapses past
 	// two servers, exactly like OpenCode's sidebar/mcp.tsx.
 	if len(e.mcps) > 0 {
-		out = append(out, "", "  "+mcpHeader(e.mcps, t.mcpOpen))
+		out = append(out, "", "  "+t.mcpHeading(true))
 		if t.mcpOpen || len(e.mcps) <= 2 {
 			for _, m := range e.mcps {
 				name := truncateVis(m.name, panelWidth-18)
@@ -982,32 +1052,40 @@ func (t *screen) panelLines() ([]string, int) {
 	return out, len(out)
 }
 
-// mcpHeader renders the sidebar's MCP heading: "▼ MCP" open, and
-// "▶ MCP 2 active, 1 error" collapsed (OpenCode counts the live and the broken
-// servers so the hidden section still reports them).
-func mcpHeader(mcps []mcpEntry, open bool) string {
+// mcpHeading renders the sidebar's MCP heading: "▼ MCP" open, and
+// "▶ MCP" + the "(N active, M errors)" count when collapsed (OpenCode counts the
+// live and the broken servers so the hidden section still reports them).
+// muted decides the colour of that count: muted in the plain row, text.base in
+// the hover variant — that difference is what the pointer has to show.
+func (t *screen) mcpHeading(muted bool) string {
 	arrow := "▼"
-	if open {
-		return boldf(color(colorText, arrow+" MCP"))
+	head := boldf(color(colorText, arrow+" MCP"))
+	if t.mcpOpen {
+		return head
 	}
 	arrow = "▶"
+	head = boldf(color(colorText, arrow+" MCP"))
 	live, bad := 0, 0
-	for _, m := range mcps {
+	for _, m := range t.state.mcps {
 		if m.falha {
 			bad++
 			continue
 		}
 		live++
 	}
-	tail := fmt.Sprintf(" (%d active", live)
+	count := fmt.Sprintf("(%d active", live)
 	if bad > 0 {
-		tail += fmt.Sprintf(", %d error", bad)
+		count += fmt.Sprintf(", %d error", bad)
 		if bad > 1 {
-			tail += "s"
+			count += "s"
 		}
 	}
-	tail += ")"
-	return boldf(color(colorText, arrow+" MCP")) + grayf(tail)
+	count += ")"
+	paint := color(colorText, count)
+	if muted {
+		paint = grayf(count)
+	}
+	return head + " " + paint
 }
 
 // padding pads a footer/status row's left side to width columns.
@@ -1034,14 +1112,21 @@ func (t *screen) maxScroll() int {
 	return max(0, len(t.wrapped(t.conversationWidth()-2))-t.frameFor().convHeight)
 }
 
+// sticky reports whether the view is pinned to the bottom. It is DERIVED from
+// scroll == 0 rather than kept as a separate field: two pieces of state holding
+// the same fact drift apart (a raw screen literal, a code path that set one and
+// not the other), and every such drift turns into a view that either stops
+// following new output or yanks it down while the user reads back.
+func (t *screen) sticky() bool { return t.scroll == 0 }
+
 // offsetFromTop is the view's position measured from the top of the transcript.
 func (t *screen) offsetFromTop() int { return t.maxScroll() - t.scroll }
 
-// setOffset pins the view at n lines from the top and re-sticks it when that is
-// the bottom, exactly like OpenCode's sticky scroll.
+// setOffset pins the view at n lines from the top. Reaching the bottom re-sticks
+// the view exactly like OpenCode's sticky scroll (and, now that sticky is derived
+// from the offset, no separate flag can fall out of step with it).
 func (t *screen) setOffset(n int) {
 	t.scroll = clampInt(t.maxScroll()-n, 0, t.maxScroll())
-	t.sticky = t.scroll == 0
 	t.drawLocked()
 }
 
@@ -1065,7 +1150,7 @@ func (t *screen) scrollPage(fraction int, up bool) {
 
 // toBottom re-pins the view to the bottom, like OpenCode's toBottom().
 func (t *screen) toBottom() {
-	t.scroll, t.sticky = 0, true
+	t.scroll = 0
 	t.drawLocked()
 }
 
@@ -1074,12 +1159,12 @@ func (t *screen) toBottom() {
 // mouse is the screen's left-button state (idle / selecting / pressed).
 var mouse = mouseState{}
 
-// wheelScroll routes a wheel event by the region the pointer is over: the
+// wheelScroll routes a wheel event by the column the pointer is over: the
 // sidebar scrolls its own list, everything else scrolls the transcript, at
 // OpenCode's 3 lines per tick.
 func (t *screen) wheelScroll(row, col, dir int) {
 	if t.panelVisible() && col > t.w-panelWidth {
-		t.drawLocked()
+		t.panelScroll(dir)
 		return
 	}
 	// dir is +1 for a wheel-up event: the view moves UP (older content).
@@ -1090,40 +1175,121 @@ func (t *screen) wheelScroll(row, col, dir int) {
 	t.scrollDown(wheelLines)
 }
 
-// mouseHover repaints the hovered region, but only when the hovered region
-// changed: motion inside one region costs no redraw.
-func (t *screen) mouseHover(row, col int) {
-	if _, change := t.hits.hoverRegion(row, col); !change {
-		return
+// panelScroll moves the sidebar's own offset by OpenCode's 3 lines per tick,
+// upward for dir > 0. The offset is clamped per frame (drawPanel), so scrolling
+// past either end simply stops there.
+//
+// It does NOT take t.mu: wheel events reach it from the key loop's edit(), which
+// already holds the lock. Go mutexes are not reentrant, so locking here would
+// deadlock the whole screen on the first wheel tick over the sidebar.
+func (t *screen) panelScroll(dir int) {
+	if dir > 0 {
+		t.panelOff -= wheelLines
+	} else {
+		t.panelOff += wheelLines
 	}
-	t.repaintHover()
+	t.drawLocked()
 }
 
-// repaintHover writes just the row of the region being (un)hovered, instead of
-// the whole frame: a hover must not cost a full repaint.
-func (t *screen) repaintHover() {
+// panelMaxOff is the furthest the sidebar can scroll: its content height minus
+// the rows it has (both paddings of 1 taken from the pane height).
+func (t *screen) panelMaxOff() int {
+	_, n := t.panelLines()
+	return max(0, n-(t.h-2))
+}
+
+// mouseHover repaints the regions whose hover state changed. Motion inside one
+// region costs nothing: only crossing a border changes a state, and then both
+// the region that gained the highlight and the one that lost it are repainted
+// (otherwise the latter stays painted in the hover style).
+func (t *screen) mouseHover(row, col int) {
+	// A held press owns the pointer: the region pressed keeps the highlight and
+	// hover motion over it must not repaint the conversation underneath.
+	if mouse.active() {
+		t.repaintHoverRegions(nil)
+		return
+	}
+	t.repaintHoverRegions(t.hits.hoverRegion(row, col))
+}
+
+// repaintHoverRegions writes just the given regions of the last frame instead
+// of the whole frame: a hover must not cost a full repaint. The caret is put
+// back under the cursor afterwards — a partial repaint moved the terminal cursor,
+// and the frame had it on the input box's caret.
+func (t *screen) repaintHoverRegions(regions []*hitRegion) {
+	if len(regions) == 0 {
+		return
+	}
 	var sb strings.Builder
 	sb.WriteString(escHideCursor)
-	for _, r := range t.hits.regions {
-		if r.hover == "" || !r.hovered {
-			continue
-		}
-		text := r.plain
-		if r.hovered {
-			text = r.hover
-		}
-		fmt.Fprintf(&sb, "\033[%d;%dH%s%s%s%s", r.row, r.col, reset, truncateVis(text, r.width),
-			escClearLine, reset)
+	for _, r := range regions {
+		r.paint(&sb)
 	}
 	sb.WriteString(escShowCursor)
 	fmt.Fprint(t.out, sb.String())
+	t.placeCursor()
+}
+
+// recomputePromptCol records the column of the caret for the given frame, the
+// same way drawLocked does, so a partial repaint can put the cursor back.
+func (t *screen) recomputePromptCol(f frame) {
+	box := t.boxLines(max(6, t.h/3))
+	t.promptCol = f.textCol + visWidth(box[len(box)-1])
+}
+
+// placeCursor puts the terminal cursor back on the caret of the input box (or
+// at the end of a command prompt awaiting an answer), as drawLocked does.
+func (t *screen) placeCursor() {
+	f := t.frameFor()
+	switch {
+	case t.partial == "":
+		t.recomputePromptCol(f)
+		fmt.Fprint(t.out, fmt.Sprintf("\033[%d;%dH", f.boxTextRow+f.boxTextN-1, t.promptCol)+escShowCursor)
+	case f.convHeight > 0:
+		// A command prompt line is the last transcript row.
+		all := t.wrapped(f.paneCols - 2)
+		height := f.convHeight
+		if t.scroll > len(all)-height {
+			t.scroll = max(0, len(all)-height)
+		}
+		vis := all[max(0, len(all)-t.scroll-height) : len(all)-t.scroll]
+		if len(vis) > 0 {
+			last := vis[len(vis)-1]
+			fmt.Fprint(t.out, fmt.Sprintf("\033[%d;%dH", f.convRow+len(vis)-1,
+				1+visWidth(conversationMargin(last)+last))+escShowCursor)
+		}
+	}
 }
 
 // mouseDown handles a left press: it starts a selection over the conversation
-// or arms the click of the region underneath.
+// or arms the click of the region underneath. Any hover highlight is dropped
+// first: while a button is held the pressed region owns the pointer.
 func (t *screen) mouseDown(row, col int) {
-	if r := mouse.press(t.hits, row, col); r != nil {
-		t.repaintHover()
+	t.repaintHoverRegions(t.hits.unhover())
+	mouse.press(t.hits, row, col)
+}
+
+// mouseUp closes the interaction: a release that matches the pressed region
+// dispatches its action; the highlight of that region is cleared either way, so
+// a press that never became a click leaves nothing painted.
+func (t *screen) mouseUp(row, col int) {
+	r, kept := mouse.release(t.hits, row, col)
+	// A press that started a selection releases it: the selection is kept and
+	// copied, and the click is ignored (OpenCode ignores clicks while a
+	// selection holds text).
+	if r == nil && kept {
+		if t.selOn {
+			t.copySelection()
+		}
+		return
+	}
+	// Whatever region was pressed is repainted plain: a highlight must not
+	// survive a click, nor a press that was cancelled.
+	if r != nil {
+		t.repaintHoverRegions([]*hitRegion{r})
+	}
+	if kept && r != nil && r.action != nil {
+		r.action()
 	}
 }
 
@@ -1133,6 +1299,9 @@ func (t *screen) mouseDown(row, col int) {
 func (t *screen) mouseDrag(row, col int) {
 	p := mouse.drag(row, col, t.frameFor().convRow, t.panePadCols())
 	if p == nil {
+		// The press was dropped (a drag off the pressed region): whatever region
+		// the terminal still shows as highlighted goes back to plain.
+		t.repaintHoverRegions(t.hits.unhover())
 		return
 	}
 	if !t.selOn {
@@ -1141,21 +1310,6 @@ func (t *screen) mouseDrag(row, col int) {
 	}
 	t.sel.to = *p
 	t.drawLocked()
-}
-
-// mouseUp closes the interaction: a selection is kept and copied (clicks are
-// then ignored while it holds text, as OpenCode does); a click dispatches the
-// region's action.
-func (t *screen) mouseUp(row, col int) {
-	r, kept := mouse.release(t.hits, row, col)
-	if kept && t.selOn {
-		t.copySelection()
-		return
-	}
-	if r == nil || r.action == nil {
-		return
-	}
-	r.action()
 }
 
 // rightClick copies the current selection, as OpenCode does on Windows (where
@@ -1566,6 +1720,14 @@ func runScreen(io IO) int {
 			edit(func() {
 				if t.notice != "" && time.Since(t.noticeAt) > 2*time.Second {
 					t.notice = ""
+				}
+				// OpenCode's interrupt window: the armed "esc again to interrupt"
+				// also expires by itself, whether or not the user presses again.
+				// Otherwise a first Esc would arm the turn indefinitely, and the
+				// next Esc minutes later would cancel it unasked.
+				if t.busy && t.interruptArmed && time.Since(t.escAt) >= escInterruptWindow {
+					t.interruptArmed = false
+					t.escAt = time.Time{}
 				}
 				// Reassert the tab name: child processes run through cmd.exe
 				// (npx.cmd for the Playwright MCP, terminal_run with cmd /C) overwrite
@@ -2089,9 +2251,10 @@ func reasoningSummary(text string) (title, body string) {
 // expandThought toggles a Thought line's body in place, the way OpenCode's
 // click does: the "+"/"-" prefix flips and the reasoning shows below the header,
 // indented, all in the muted colour.
+//
+// It does NOT take t.mu: a click reaches it from the key loop's edit(), which
+// already holds the lock.
 func (t *screen) expandThought(idx int) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
 	if idx < 0 || idx >= len(t.lines) {
 		return
 	}

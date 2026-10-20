@@ -11,6 +11,7 @@
 package cli
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -116,24 +117,43 @@ func (h *hitList) at(row, col int) *hitRegion {
 	return nil
 }
 
-// hoverRegion moves the hover highlight to (row, col) and returns the region
-// that changed when a repaint is needed (nil means the hovered region did not
-// change, so no redraw is needed). Motion is coalesced this way: moving the
-// pointer inside one region costs nothing, only crossing a border repaints.
-func (h *hitList) hoverRegion(row, col int) (*hitRegion, bool) {
+// hoverRegion moves the hover highlight to (row, col) and returns EVERY region
+// whose hover state changed, so the caller repaints both halves: the region that
+// gained the highlight (in its hover style) and the one that lost it (back to
+// its plain style). Without the second half a pointer that leaves a region
+// leaves it painted in the hover style until the next full frame.
+//
+// Motion is coalesced: crossing nothing changes nothing, and moving inside one
+// region costs no repaint at all.
+func (h *hitList) hoverRegion(row, col int) []*hitRegion {
 	target := h.at(row, col)
-	change := false
+	if target != nil && target.hover == "" {
+		target = nil // a region with no hover style never highlights
+	}
+	var changed []*hitRegion
 	for _, r := range h.regions {
-		switch {
-		case r == target && !r.hovered:
-			r.hovered = true
-			change = true
-		case r != target && r.hovered:
-			r.hovered = false
-			change = true
+		before := r.hovered
+		r.hovered = r == target
+		if before != r.hovered && (r.hover != "" || r.plain != "") {
+			changed = append(changed, r)
 		}
 	}
-	return target, change
+	return changed
+}
+
+// unhover drops the highlight of every region (a frame rebuild, a release, a
+// drag that cancels a press). The caller repaints what changed.
+func (h *hitList) unhover() []*hitRegion {
+	var changed []*hitRegion
+	for _, r := range h.regions {
+		if r.hovered {
+			r.hovered = false
+			if r.hover != "" || r.plain != "" {
+				changed = append(changed, r)
+			}
+		}
+	}
+	return changed
 }
 
 // clear forgets the regions and their hovered state: called when the frame is
@@ -148,6 +168,31 @@ func (h *hitList) hovering() *hitRegion {
 		}
 	}
 	return nil
+}
+
+// isHovered reports whether a region still carries the hover highlight.
+func (r *hitRegion) isHovered() bool { return r.hovered }
+
+// paint writes a region's current appearance (plain or hover style) at its own
+// geometry, in exactly its own columns.
+//
+// Two details make this safe as a partial repaint over a full frame:
+//   - the row's base background is written first, so the padding cells after the
+//     region's text are the screen background, not whatever was painted there;
+//   - the line is NOT cleared with \033[K: the region is narrower than the row
+//     (the pane, not the whole line), and clearing would wipe the sidebar that
+//     shares the row in the wide layout. It pads to its own width instead.
+func (r *hitRegion) paint(sb *strings.Builder) {
+	if r.plain == "" && r.hover == "" {
+		return
+	}
+	text := r.plain
+	if r.hovered && r.hover != "" {
+		text = r.hover
+	}
+	body := truncateVis(text, r.width)
+	fmt.Fprintf(sb, "\033[%d;%dH%s%s%s%s", r.row, r.col, reset, bgScreen, body,
+		strings.Repeat(" ", max(0, r.width-visWidth(text))))
 }
 
 // selPoint is a cell of the selection anchor: line is the index in the wrapped
@@ -260,28 +305,40 @@ type mouseState struct {
 	pressRow   int
 	pressCol   int
 	pressedHvr *hitRegion
+	// hits remembers the frame the press came from, so the press and the
+	// release are compared against the SAME regions: a frame rebuilt between the
+	// two (a spinner tick repainting the transcript) would otherwise make the
+	// release land on a fresh region object that never matches.
+	hits *hitList
 }
 
 // press handles a left press: over the conversation it starts a selection;
 // anywhere else it arms the click, whose hover style the caller repaints.
 func (m *mouseState) press(hits *hitList, row, col int) *hitRegion {
+	m.hits = hits
+	m.pressRow, m.pressCol = row, col
 	r := hits.at(row, col)
 	if r == nil || r.id == "conv" || r.hover == "" {
+		// A region without a hover style claims nothing: the press either starts
+		// a selection (over the conversation) or is plain idle, so the next
+		// motion still reports hover normally.
 		if r == nil || r.id == "conv" {
 			m.mode = mouseSelecting
+			m.pressedHvr = nil
 			return nil
 		}
 		m.mode = mouseIdle
+		m.pressedHvr = nil
 		return nil
 	}
 	m.mode = mousePressed
-	m.pressRow, m.pressCol = row, col
 	m.pressedHvr = r
 	return r
 }
 
 // drag extends the selection while the button is held over the conversation;
-// a drag that leaves it drops the pending click.
+// a drag that leaves it drops the pending click (and its highlight: the caller
+// repaints the pressed region back to plain).
 func (m *mouseState) drag(row, col, convRow, convCol int) *selPoint {
 	if m.mode == mouseIdle {
 		return nil
@@ -290,14 +347,15 @@ func (m *mouseState) drag(row, col, convRow, convCol int) *selPoint {
 		return &selPoint{line: row - convRow, col: col - convCol}
 	}
 	m.mode = mouseIdle
-	m.pressedHvr = nil
+	m.pressedHvr = nil // the press is cancelled: the highlight must go
 	return nil
 }
 
 // release closes the interaction. A selection returns kept=true (the caller
 // copies it and ignores the click); a click returns the region that was
-// pressed, when the release lands on it.
-func (m *mouseState) release(hits *hitList, row, col int) (*hitRegion, bool) {
+// pressed, and the caller still repaints it (plain) when the release landed
+// elsewhere.
+func (m *mouseState) release(hits *hitList, row, col int) (pressed *hitRegion, dismissed bool) {
 	if m.mode == mouseIdle {
 		return nil, false
 	}
@@ -305,8 +363,31 @@ func (m *mouseState) release(hits *hitList, row, col int) (*hitRegion, bool) {
 		m.mode = mouseIdle
 		return nil, true
 	}
-	r := hits.at(row, col)
-	kept := m.pressedHvr != nil && r == m.pressedHvr
-	m.mode, m.pressedHvr = mouseIdle, nil
-	return r, kept
+	m.mode = mouseIdle
+	r := m.pressedHvr
+	m.pressedHvr = nil
+	m.hits = nil
+	if r == nil {
+		return nil, false
+	}
+	// The click counts when the release lands on the same region. Comparisons
+	// use the pressed region's own identity when the frame was rebuilt between
+	// press and release (a spinner tick), by geometry otherwise.
+	same := false
+	if at := hits.at(row, col); at != nil {
+		same = at == r || (at.id == r.id && at.id != "")
+	}
+	if !same {
+		// A geometry match against the pressed frame: the row/column of the press
+		// is all that matters when the object identity changed.
+		same = row >= r.row && row < r.row+r.height && col >= r.col && col < r.col+r.width
+	}
+	if !same {
+		return r, false // released outside: the caller drops the highlight
+	}
+	return r, true
 }
+
+// active reports whether a press is still being held (selecting or pressed), so
+// hover motion never fights a press that owns the pointer.
+func (m *mouseState) active() bool { return m.mode == mouseSelecting || m.mode == mousePressed }

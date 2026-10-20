@@ -132,9 +132,16 @@ func TestFrameLayoutMatchesSpec(t *testing.T) {
 			t.Errorf("row %d = %q, want %q", tc.row, got, tc.want)
 		}
 	}
-	// The prompt block, the cap and the footer never cross into the sidebar.
+	// The prompt block, the cap and the footer never cross into the sidebar. The
+	// pane's right edge is at w-panelWidth, so the pane's share of a row is
+	// everything before that column; the sidebar paints its own columns after it
+	// (including its pinned footer on the same row as the pane footer).
 	for _, row := range []int{24, 25, 26, 27, 28, 29} {
-		if got := visWidth(rowAt(rows, row)); got > 140-42 {
+		pane := rowAt(rows, row)
+		if r := []rune(pane); len(r) > 140-42 {
+			pane = string(r[:140-42])
+		}
+		if got := visWidth(pane); got > 140-42 {
 			t.Errorf("row %d spans %d columns, into the sidebar: %q", row, got, rowAt(rows, row))
 		}
 	}
@@ -298,7 +305,7 @@ func TestJumpToLatestAndStickiness(t *testing.T) {
 	if !acted {
 		t.Fatal("the jump hint must be clickable")
 	}
-	if sc.scroll != 0 || !sc.sticky {
+	if sc.scroll != 0 || !sc.sticky() {
 		t.Error("clicking the hint must return to the bottom and re-stick")
 	}
 }
@@ -345,7 +352,7 @@ func TestPageAndHomeEndScroll(t *testing.T) {
 		sc.Adicionar(fmt.Sprintf("line %d", i))
 	}
 	sc.setOffset(0)
-	if sc.sticky {
+	if sc.sticky() {
 		t.Fatal("reaching the top must un-stick the view")
 	}
 	if got := sc.scroll; got != sc.maxScroll() {
@@ -357,8 +364,8 @@ func TestPageAndHomeEndScroll(t *testing.T) {
 		t.Errorf("a page down should move half the height (%d), scrolled %d", half, got)
 	}
 	sc.setOffset(sc.maxScroll())
-	if !sc.sticky || sc.scroll != 0 {
-		t.Errorf("End must reach the bottom (scroll=%d sticky=%v)", sc.scroll, sc.sticky)
+	if !sc.sticky() || sc.scroll != 0 {
+		t.Errorf("End must reach the bottom (scroll=%d sticky=%v)", sc.scroll, sc.sticky())
 	}
 	sc.scrollUp(wheelLines * 2)
 	if sc.scroll == 0 {
