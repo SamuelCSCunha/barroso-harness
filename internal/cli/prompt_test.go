@@ -35,6 +35,7 @@ func TestPromptMultilineBox(t *testing.T) {
 	defer func() { colorsOn = false }()
 
 	sc, _ := newTestScreen(t, 100, 30, panelState{model: "m"})
+	sc.Adicionar("an earlier message") // the conversation layout, not home
 	one := sc.frameFor()
 	sc.editor().Insert("first line\nsecond line\nthird line")
 	three := sc.frameFor()

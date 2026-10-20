@@ -47,6 +47,7 @@ func TestQueuedDock(t *testing.T) {
 	colorsOn = true
 	defer func() { colorsOn = false }()
 	sc, _ := newTestScreen(t, 100, 30, panelState{model: "m"})
+	sc.Adicionar("an earlier message") // the conversation layout, not home
 	plain := sc.frameFor()
 	sc.enqueue(queuedPrompt{sent: "first queued"})
 	sc.enqueue(queuedPrompt{sent: "second"})

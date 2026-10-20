@@ -67,7 +67,13 @@ func wrapSegments(r []rune, n int) [][2]int {
 
 // boxTextWidth is the width the typed text wraps at: two columns inside the ┃
 // and two of right padding.
-func (t *screen) boxTextWidth() int { return t.boxWidthCols() - t.panePadCols() - 4 }
+func (t *screen) boxTextWidth() int {
+	if t.isHome() {
+		// The home prompt is at most 75 columns wide, centered (see homeFrame).
+		return min(homePromptMax, t.w-2*t.panePadCols()) - 4
+	}
+	return t.boxWidthCols() - t.panePadCols() - 4
+}
 
 // boxView wraps the buffer for the box and keeps the caret's row inside the
 // visible window of maxBox rows: past that height the box scrolls internally,

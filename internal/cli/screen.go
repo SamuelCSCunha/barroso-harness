@@ -172,6 +172,8 @@ type screen struct {
 	pendingCmd string
 	// mcpOpen is the sidebar's MCP collapse state (open by default).
 	mcpOpen bool
+	// wasHome is whether the last frame was the home screen.
+	wasHome bool
 	// dlg is the open dialog (dialog.go); ac the prompt's autocomplete popup
 	// (autocomplete.go); toast the top-right notification; src the REPL data
 	// the dialogs read. files caches the "@" completion's file list.
@@ -571,6 +573,12 @@ type frame struct {
 // footer. Below the footer the last row of the screen stays blank (OpenCode's
 // pane paddingBottom 1), so the footer lands on H−1.
 func (t *screen) frameFor() frame {
+	// The home screen centers the prompt: every caller that maps a mouse cell
+	// or the caret onto the box must see the same geometry it was painted with.
+	if t.isHome() {
+		f, _ := t.homeFrame()
+		return f
+	}
 	f := frame{w: t.w, h: t.h}
 	boxN := len(t.boxLines(max(6, t.h/3))) // OpenCode: maxHeight = max(6, floor(H/3))
 	// Rows are counted from the bottom so the block always ends on H−1 (footer)
@@ -632,7 +640,15 @@ func (t *screen) drawLocked() {
 	t.ensure()
 	t.hits.clear()
 	fullClear := t.measure()
+	if home := t.isHome(); home != t.wasHome {
+		// Home and conversation paint different rows: the switch repaints all.
+		t.wasHome, fullClear = home, true
+	}
 	f := t.frameFor()
+	if t.isHome() {
+		t.drawHomeLocked(fullClear)
+		return
+	}
 
 	var sb strings.Builder
 	sb.WriteString(escSyncStart + escHideCursor)
@@ -771,6 +787,11 @@ func (t *screen) wrapped(width int) []string {
 		all = append(all, wrapVis("  "+t.partial+t.visibleInput(), width)...)
 	}
 	if t.transit != "" {
+		// OpenCode gives every transcript row marginTop 1: the spinner line
+		// ("Thinking", a running tool) gets the same blank line above it.
+		if n := len(all); n > 0 && strings.TrimSpace(stripANSI(all[n-1])) != "" {
+			all = append(all, "")
+		}
 		all = append(all, t.transit)
 	}
 	return all
@@ -844,44 +865,49 @@ func (t *screen) applySelection(l string, idx int) string {
 // metadata row, and the bottom cap. No bottom padding row inside the box.
 func (t *screen) drawBox(sb *strings.Builder, f frame) {
 	line := func(r int, s string) {
-		fmt.Fprintf(sb, "\033[%d;1H%s%s%s", r, bgScreen, s, escClearLine)
+		fmt.Fprintf(sb, "[%d;1H%s%s%s", r, bgScreen, s, escClearLine)
 	}
 	// While the ctrl+x leader waits for its second key the bar turns
 	// border.base (#484848), as OpenCode shows a pending leader.
-	bar := bluef(bar)
+	barFg := bluef
 	if !t.leaderAt.IsZero() && time.Since(t.leaderAt) < leaderTimeout {
-		bar = color("[38;2;72;72;72m", "┃")
+		barFg = func(s string) string { return color("[38;2;72;72;72m", s) }
 	}
-	gutter := strings.Repeat(" ", f.barCol-1) + bar
-	blank := strings.Repeat(" ", f.barCol-1) + withBg(bar, bgBox, f.boxWidth-f.barCol+1)
+	pad := strings.Repeat(" ", f.barCol-1)
+	// Every box row spans the same columns (the bar to the box's right edge),
+	// with the box background behind the bar, the gap and the text, so no row
+	// leaves a hole in the screen colour on either side.
+	inner := f.boxWidth - f.barCol + 1
+	row := func(content string) string {
+		return pad + withBg(barFg(bar)+"  "+content, bgBox, inner)
+	}
 	// padding row above the text (paddingTop 1)
-	line(f.boxTop, blank)
-	// text rows
+	line(f.boxTop, row(""))
 	maxBox := max(6, t.h/3)
-	boxLines := t.boxLines(maxBox)
-	for i, l := range boxLines {
+	for i, l := range t.boxLines(maxBox) {
 		painted := color(colorText, l)
 		if !t.masked {
 			painted = highlightTokens(l)
 		}
-		line(f.boxTextRow+i, gutter+"  "+withBg(painted, bgBox, f.boxWidth-f.textCol+1-2))
+		line(f.boxTextRow+i, row(painted))
 	}
 	// metadata row: a blank padding row first (paddingTop 1), then the model,
 	// provider and effort (the effort in bold warning), as OpenCode does.
-	line(f.boxGapRow, blank)
+	line(f.boxGapRow, row(""))
 	info := color(colorText, t.state.model) + " " + grayf(t.state.provider)
 	if t.state.effort != "" {
 		info += grayf(" · ") + boldf(orangef(t.state.effort))
 	}
-	line(f.boxMetaRow, gutter+"  "+withBg(info, bgBox, f.boxWidth-f.textCol+1-2))
-	// bottom cap: ╹ in the bar colour, then ▀ across the box
-	capRow := strings.Repeat(" ", f.barCol-1) + bar + strings.Repeat(barEdge, f.boxWidth-f.barCol)
-	line(f.boxCapRow, withBg(capRow, bgBox, f.boxWidth))
+	line(f.boxMetaRow, row(info))
+	// Bottom cap, OpenCode's prompt edge: ╹ in the bar colour, then ▀ drawn in
+	// the box colour over the screen background, so the upper half-block closes
+	// the box instead of painting a light bar under it.
+	edge := "[38;2;30;30;30m" + strings.Repeat(barEdge, max(0, inner-1)) + reset
+	line(f.boxCapRow, pad+barFg(barCap)+edge)
 	// the whole box is clickable: a click inside it must not reach the
 	// conversation underneath.
 	t.hits.add(&hitRegion{row: f.boxTop, col: 1, width: f.boxWidth,
 		height: f.boxCapRow - f.boxTop + 1, id: "box"})
-	_ = bar
 }
 
 // drawFooter paints the footer on the row right below the cap; the last row
@@ -1079,6 +1105,11 @@ func (t *screen) panelLines() ([]string, int) {
 // muted decides the colour of that count: muted in the plain row, text.base in
 // the hover variant — that difference is what the pointer has to show.
 func (t *screen) mcpHeading(muted bool) string {
+	// OpenCode's sidebar/mcp.tsx only shows the arrow (and only answers the
+	// click) with more than two servers; with one or two the heading is plain.
+	if len(t.state.mcps) <= 2 {
+		return boldf(color(colorText, "MCP"))
+	}
 	arrow := "▼"
 	head := boldf(color(colorText, arrow+" MCP"))
 	if t.mcpOpen {

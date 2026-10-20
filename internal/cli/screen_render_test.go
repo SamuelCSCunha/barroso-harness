@@ -34,6 +34,16 @@ func visualize(frame string, w, h int) []string {
 		if frame[i] == '\033' {
 			j := escapeEnd(frame, i)
 			seq := frame[i:j]
+			// Erase sequences, as a real terminal applies them: 2J clears the
+			// screen, K clears from the cursor to the end of the row.
+			if seq == "[2J" {
+				for k := range rows {
+					rows[k] = nil
+				}
+			}
+			if seq == "[K" && r >= 0 && r < h && c < len(rows[r]) {
+				rows[r] = rows[r][:max(0, c)]
+			}
 			if strings.HasSuffix(seq, "H") && strings.Contains(seq, "[") {
 				p := strings.SplitN(seq[2:len(seq)-1], ";", 2)
 				if len(p) == 2 {
