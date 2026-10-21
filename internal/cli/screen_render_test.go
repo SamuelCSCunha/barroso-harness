@@ -588,3 +588,27 @@ func TestBusySpinnerAnimates(t *testing.T) {
 		t.Fatal("spinner kept running after the turn ended")
 	}
 }
+
+// The spinner's footer repaint must not erase to the end of the row: the
+// sidebar's cwd line shares it, and clearing it 25 times a second blinked.
+func TestFooterRepaintLeavesSidebarAlone(t *testing.T) {
+	sc, sb := newTestScreen(t, 160, 30, panelState{model: "m", cwd: "~"})
+	sc.Adicionar("hello")
+	sc.mu.Lock()
+	sc.busy = true
+	sb.Reset()
+	sc.repaintFooterLocked()
+	out := sb.String()
+	sc.busy = false
+	sc.mu.Unlock()
+	if out == "" {
+		t.Fatal("the footer was not repainted")
+	}
+	if strings.Contains(out, "\033[K") {
+		t.Fatalf("footer repaint clears to the end of the line: %q", out)
+	}
+	f := sc.frameFor()
+	if w := visWidth(stripANSI(strings.SplitN(out, "H", 2)[1])); w > f.boxWidth {
+		t.Fatalf("footer repaint spans %d columns, past the pane (%d)", w, f.boxWidth)
+	}
+}

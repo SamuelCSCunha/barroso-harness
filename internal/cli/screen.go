@@ -473,9 +473,18 @@ func (t *screen) repaintFooterLocked() {
 	if !t.busy || t.dlg != nil || t.w == 0 || t.isHome() {
 		return
 	}
+	f := t.frameFor()
+	width := f.boxWidth
+	left, right := t.footerParts(width)
+	gap := max(1, width-visWidth(left)-visWidth(right))
+	row := left + strings.Repeat(" ", gap) + truncateVis(right, width-visWidth(left)-gap)
+	// Padded to the pane, NOT cleared to the end of the line as the full frame
+	// does: the sidebar shares this row (its cwd line), and erasing it 25
+	// times a second made it blink.
+	row += strings.Repeat(" ", max(0, width-visWidth(row)))
 	var sb strings.Builder
 	sb.WriteString(escSyncStart + escHideCursor)
-	t.drawFooter(&sb, t.frameFor())
+	fmt.Fprintf(&sb, "[%d;1H%s%s[0m", f.footerRow, bgScreen, row)
 	sb.WriteString(escSyncEnd)
 	fmt.Fprint(t.out, sb.String())
 	t.placeCursor()
