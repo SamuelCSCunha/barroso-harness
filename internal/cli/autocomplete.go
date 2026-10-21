@@ -167,6 +167,17 @@ func (t *screen) acKey(name string) bool {
 		if n == 0 {
 			return false
 		}
+		// Enter on a command that takes no argument runs it: the prompt becomes
+		// the bare command and the key falls through to the normal send.
+		if it := a.items[clampInt(a.sel, 0, n-1)]; name == keyEnter && a.trigger == '/' && noArgCommand(it.text) {
+			e := t.editor()
+			e.pushUndo()
+			e.lines[e.row] = []rune(it.text)
+			e.col = len(e.lines[e.row])
+			e.wantCol, e.hasWantCol = e.col, true
+			t.ac = nil
+			return false
+		}
 		t.acPick()
 	case keyEsc:
 		a.hidden = true

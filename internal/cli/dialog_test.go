@@ -227,6 +227,24 @@ func TestAutocomplete(t *testing.T) {
 	if sc.editor().Text() != "/model " || sc.acOpen() {
 		t.Fatalf("after tab = %q", sc.editor().Text())
 	}
+	// Enter on a command without arguments leaves the bare command and lets
+	// the key through, so a single Enter runs it.
+	sc.ed = newEditor()
+	sc.editor().Insert("/ne")
+	sc.refreshAC()
+	if !sc.acOpen() || sc.ac.items[0].text != "/new" {
+		t.Fatalf("slash = %+v", sc.ac)
+	}
+	if sc.acKey(keyEnter) || sc.editor().Text() != "/new" || sc.ac != nil {
+		t.Fatalf("enter on /new = %q", sc.editor().Text())
+	}
+	// A command that takes an argument still only completes on Enter.
+	sc.ed = newEditor()
+	sc.editor().Insert("/mod")
+	sc.refreshAC()
+	if !sc.acKey(keyEnter) || sc.editor().Text() != "/model " {
+		t.Fatalf("enter on /model = %q", sc.editor().Text())
+	}
 	sc.ed = newEditor()
 	sc.editor().Insert("look at @scr")
 	sc.refreshAC()

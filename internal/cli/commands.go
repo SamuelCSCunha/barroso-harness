@@ -57,6 +57,17 @@ type completionEntry struct {
 	desc string
 }
 
+// noArgCommand reports whether name is a registered command whose usage takes
+// no argument ("/new", "/help"); skills always may take one.
+func noArgCommand(name string) bool {
+	for _, c := range commands() {
+		if c.name == name {
+			return !strings.ContainsAny(c.usage, "[<")
+		}
+	}
+	return false
+}
+
 // slashCompletions lists the commands and skills whose name starts with the
 // typed prefix ("/" alone lists everything), commands first.
 func slashCompletions(cwd, prefix string) []completionEntry {
