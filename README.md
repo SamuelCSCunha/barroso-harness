@@ -175,7 +175,7 @@ The session name appears in the terminal tab (`BH | <name>`) and in the panel: i
 
 With the mouse wheel captured, selecting text to copy is `Shift` + drag (Windows Terminal and most terminals).
 
-`BH_SIMPLES=1 bh` goes back to scrolling mode. Pipes, redirection and `bh -p` never use full screen.
+The iSH build (linux/386, iPhone/iPad) always uses scrolling mode, since iSH sends no mouse wheel events; every other build always uses full screen. Pipes, redirection and `bh -p` never use full screen.
 
 ## License
 

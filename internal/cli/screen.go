@@ -8,8 +8,9 @@
 // the line to the pipe on Enter. That way every command — including the ones
 // that ask something, like /model and /provider — works without a rewrite.
 //
-// Only enabled when stdin and stdout are real terminals; BH_SIMPLES=1 forces
-// scrolling mode. Pipes, -p and tests never come through here.
+// Only enabled when stdin and stdout are real terminals, and never on the iSH
+// build (linux/386), which always uses scrolling mode. Pipes, -p and tests
+// never come through here.
 package cli
 
 import (
@@ -1633,7 +1634,7 @@ func readPaste(r *bufio.Reader) (string, bool) {
 
 // useScreen reports whether the REPL opens in full-screen mode.
 func useScreen(io IO) bool {
-	if os.Getenv("BH_SIMPLES") != "" || os.Getenv("TERM") == "dumb" {
+	if simpleOnly || os.Getenv("TERM") == "dumb" {
 		return false
 	}
 	in, okIn := io.In.(*os.File)

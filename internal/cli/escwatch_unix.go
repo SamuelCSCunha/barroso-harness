@@ -13,7 +13,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// watchEsc gives the scrolling mode (BH_SIMPLES, iSH) the full screen's Esc:
+// watchEsc gives the scrolling mode (the iSH build) the full screen's Esc:
 // while a turn runs the terminal leaves canonical mode, so a lone Esc arrives
 // without Enter, and two within escInterruptWindow cancel the turn. ISIG stays
 // on, so Ctrl+C still raises SIGINT. Other keys are dropped: this mode has no
