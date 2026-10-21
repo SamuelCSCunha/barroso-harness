@@ -129,3 +129,23 @@ func TestThinkingSpacedFromTool(t *testing.T) {
 		t.Fatalf("only one blank line between blocks: %q", out)
 	}
 }
+
+func TestRunningToolSpaced(t *testing.T) {
+	colorsOn = true
+	defer func() { colorsOn = false }()
+	var sb strings.Builder
+	tui := newTUITurn(&sb, &config.Config{Model: "m"})
+	tui.ToolInicio("a", `{"command":"ls"}`)
+	tui.Tool("a", time.Second, false)
+	tui.Eco("x")
+	tui.ToolInicio("b", `{"command":"pwd"}`)
+	out := strings.ReplaceAll(plain(sb.String()), "\r", "")
+	if !strings.Contains(out, "x\n\n") {
+		t.Fatalf("running tool must start after a blank line: %q", out)
+	}
+	tui.Tool("b", time.Second, false)
+	out = strings.ReplaceAll(plain(sb.String()), "\r", "")
+	if strings.Contains(out, "x\n\n\n") {
+		t.Fatalf("only one blank line between blocks: %q", out)
+	}
+}

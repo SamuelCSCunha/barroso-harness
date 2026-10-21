@@ -158,7 +158,16 @@ func (t *tuiTurn) ToolInicio(name, args string) {
 	summary := summarizeArgs(args)
 	t.mu.Lock()
 	t.pendingTool, t.pendingArgs = name, summary
+	gap := t.toolsShown > 0 && !t.spaced
+	if gap {
+		// The running line already sits below its own blank line; the final
+		// "✓" line overwrites it in place and must not add another.
+		t.spaced = true
+	}
 	t.mu.Unlock()
+	if gap {
+		fmt.Fprint(t.out, "\r\033[K\n")
+	}
 	fmt.Fprintf(t.out, "\r  %s %s %s\033[K", yellowf("●"), color(colorText, name), grayf(summary))
 }
 
