@@ -612,3 +612,26 @@ func TestFooterRepaintLeavesSidebarAlone(t *testing.T) {
 		t.Fatalf("footer repaint spans %d columns, past the pane (%d)", w, f.boxWidth)
 	}
 }
+
+// A drag over a transcript taller than the screen selects the lines it
+// crosses ON SCREEN: the drag's screen rows are offset by the first visible
+// line (before, only a transcript that fit on screen could be selected).
+func TestDragSelectsVisibleLinesOfLongTranscript(t *testing.T) {
+	colorsOn = true
+	defer func() { colorsOn = false }()
+	sc, _ := newTestScreen(t, 120, 20, panelState{model: "m"})
+	for i := 1; i <= 100; i++ {
+		sc.Adicionar(fmt.Sprintf("line %03d", i))
+	}
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	f := sc.frameFor()
+	row := f.convRow + f.convHeight - 1 // the last line on screen: "line 100"
+	sc.mouseDown(row, 4)
+	sc.mouseDrag(row, 4)
+	sc.mouseDrag(row, 11)
+	if got := sc.selectionText(); got != "line 100" {
+		t.Fatalf("selection = %q, want the line under the drag", got)
+	}
+	sc.mouseUp(row, 11)
+}

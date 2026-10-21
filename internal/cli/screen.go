@@ -1461,12 +1461,42 @@ func (t *screen) mouseDrag(row, col int) {
 		t.repaintHoverRegions(t.hits.unhover())
 		return
 	}
+	// mouse.drag gives the row on SCREEN; the selection is kept in transcript
+	// lines (what applySelection and selectionText index), so it adds the
+	// first visible line. Without it only a transcript shorter than the screen
+	// could be selected.
+	//
+	// The column is measured the same way: paintTranscript prints each row
+	// after its own margin (conversationMargin: 3 columns, 2 for a boxed row),
+	// so screen column c is rune c-1-margin of the wrapped line.
+	p.line += t.viewTop()
+	all := t.wrapped(t.frameFor().paneCols - 2)
+	margin := 3
+	if p.line >= 0 && p.line < len(all) {
+		margin = len(conversationMargin(all[p.line]))
+	}
+	p.col = max(0, col-1-margin)
 	if !t.selOn {
 		t.selOn = true
 		t.sel = selRange{from: *p}
 	}
-	t.sel.to = *p
+	// The selection end is exclusive; the cell under the pointer is part of
+	// it when dragging forward, so the last character dragged over is copied.
+	to := *p
+	if to.line > t.sel.from.line || to.line == t.sel.from.line && to.col >= t.sel.from.col {
+		to.col++
+	}
+	t.sel.to = to
 	t.drawLocked()
+}
+
+// viewTop is the index, in the wrapped transcript, of the first line on
+// screen (paintTranscript's base).
+func (t *screen) viewTop() int {
+	f := t.frameFor()
+	n := len(t.wrapped(f.paneCols - 2))
+	end := n - clampInt(t.scroll, 0, max(0, n-f.convHeight))
+	return max(0, end-f.convHeight)
 }
 
 // rightClick copies the current selection, as OpenCode does on Windows (where
