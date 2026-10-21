@@ -58,8 +58,8 @@ type ProvedorMCP struct {
 	transport *jsonrpc.HTTP
 	ready     bool
 	tools     []remoteTool
-	until     time.Time // cooldown after a failure
-	nextID    int64
+	until     time.Time    // cooldown after a failure
+	nextID    atomic.Int64 // aligned on 386, unlike a bare int64
 }
 
 var (
@@ -288,7 +288,7 @@ func (p *ProvedorMCP) discover(ctx context.Context) (*jsonrpc.HTTP, []remoteTool
 	return t, list.Tools, nil
 }
 
-func (p *ProvedorMCP) id() int64 { return atomic.AddInt64(&p.nextID, 1) }
+func (p *ProvedorMCP) id() int64 { return p.nextID.Add(1) }
 
 func (p *ProvedorMCP) invalidate() {
 	p.mu.Lock()

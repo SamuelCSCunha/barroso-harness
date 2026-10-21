@@ -93,8 +93,8 @@ type Agente struct {
 	mu       sync.Mutex
 	sessions map[string]*session
 
-	writeMu sync.Mutex // serializes writes to the wire
-	seq     int64      // process-unique tool call ids
+	writeMu sync.Mutex   // serializes writes to the wire
+	seq     atomic.Int64 // process-unique tool call ids; aligned on 386
 	running sync.WaitGroup
 }
 
@@ -523,7 +523,7 @@ func (a *Agente) notify(w io.Writer, n Notification) error {
 
 // nextID yields process-unique tool call ids (clients index by them).
 func (a *Agente) nextID() string {
-	return fmt.Sprintf("tool-%d", atomic.AddInt64(&a.seq, 1))
+	return fmt.Sprintf("tool-%d", a.seq.Add(1))
 }
 
 // Esperar waits for in-flight turns. It serves a host that wants to shut down

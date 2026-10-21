@@ -207,7 +207,7 @@ type Cliente struct {
 	info        resultInitialize
 	caps        map[string]any
 
-	nextID    int64
+	nextID    atomic.Int64 // atomic.Int64 is 8-byte aligned on 386 too (iSH)
 	timeout   time.Duration
 	closeOnce sync.Once
 
@@ -285,7 +285,7 @@ func (c *Cliente) Capacidades() map[string]any {
 
 // nextRequestID reserves a monotonic id (id-based correlation, required
 // because the server may emit notifications between responses).
-func (c *Cliente) nextRequestID() int64 { return atomic.AddInt64(&c.nextID, 1) }
+func (c *Cliente) nextRequestID() int64 { return c.nextID.Add(1) }
 
 // Abre connects and performs the handshake (initialize +
 // notifications/initialized). After Abre the client is ready for
