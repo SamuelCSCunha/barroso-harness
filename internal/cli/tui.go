@@ -79,6 +79,9 @@ type tuiTurn struct {
 	// much of the output deserves the screen.
 	lastTool   string
 	lastFailed bool
+	// toolsShown counts the tool blocks since the last answer: from the second
+	// on, a blank line separates them.
+	toolsShown int
 }
 
 func newTUITurn(out io.Writer, cfg *config.Config) *tuiTurn {
@@ -157,7 +160,13 @@ func (t *tuiTurn) Tool(name string, dur time.Duration, failed bool) {
 	summary := t.pendingArgs
 	t.pendingTool, t.pendingArgs = "", ""
 	t.lastTool, t.lastFailed = name, failed
+	gap := t.toolsShown > 0
+	t.toolsShown++
 	t.mu.Unlock()
+	if gap {
+		// Clear the "● running" line and leave it blank between the blocks.
+		fmt.Fprint(t.out, "\r\033[K\n")
+	}
 	mark := greenf("✓")
 	if failed {
 		mark = redf("✗")
@@ -223,6 +232,9 @@ func (t *tuiTurn) Guardrail(proactive bool) {
 
 func (t *tuiTurn) Resposta(text string) {
 	t.stopSpin()
+	t.mu.Lock()
+	t.toolsShown = 0
+	t.mu.Unlock()
 	fmt.Fprintln(t.out)
 	fmt.Fprintln(t.out, renderMarkdown(text, textWidth()))
 }

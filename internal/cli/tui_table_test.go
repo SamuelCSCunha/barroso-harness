@@ -92,3 +92,20 @@ func TestPrintLastExchange(t *testing.T) {
 		t.Fatalf("last exchange: %q", out)
 	}
 }
+
+func TestBlankLineBetweenTools(t *testing.T) {
+	colorsOn = true
+	defer func() { colorsOn = false }()
+	var sb strings.Builder
+	tui := newTUITurn(&sb, &config.Config{Model: "m"})
+	tui.Tool("a", time.Second, false)
+	tui.Eco("x")
+	tui.Tool("b", time.Second, false)
+	out := strings.ReplaceAll(plain(sb.String()), "\r", "")
+	if !strings.Contains(out, "x\n\n") {
+		t.Fatalf("expected a blank line between tool blocks: %q", out)
+	}
+	if strings.HasPrefix(out, "\n") {
+		t.Fatalf("no blank line before the first tool: %q", out)
+	}
+}
