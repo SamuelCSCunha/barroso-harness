@@ -674,6 +674,7 @@ func systemPrompt(cwd, baroMD string, canSpawn bool, now time.Time, deferred str
 		sb.WriteString("- This is Windows: do not use bash/POSIX syntax or tools (grep, sed, ls, cat, rm -rf) in terminal_run. " +
 			"File tools accept both backslashes and forward slashes in paths.\n")
 	}
+	sb.WriteString(tools.ProtectedNote())
 	fmt.Fprintf(&sb, "- Working directory (cwd): %s\n", cwd)
 	fmt.Fprintf(&sb, "- Session start date: %s\n", now.Format("2006-01-02"))
 	return sb.String()

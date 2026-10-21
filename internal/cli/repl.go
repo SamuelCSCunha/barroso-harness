@@ -381,12 +381,17 @@ func selectModel(io IO, cfg *config.Config) error {
 
 // ── REPL ─────────────────────────────────────────────────────────────────
 
-// turnContext: the first Ctrl+C during a turn cancels the round, a second one
-// ends the REPL (by closing quitCh).
+// turnContext: the first Ctrl+C (or Esc twice) during a turn cancels the round,
+// a second Ctrl+C ends the REPL (by closing quitCh).
 func (io IO) turnContext(quitCh chan<- struct{}) (context.Context, context.CancelFunc) {
 	sigs := make(chan os.Signal, 2)
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
 	ctx, cancel := context.WithCancel(context.Background())
+	stopEsc := func() {}
+	if io.cancelCh == nil {
+		// Scrolling mode: no screen reads the keys, so Esc needs its own watcher.
+		stopEsc = watchEsc(io, cancel)
+	}
 	if io.cancelCh != nil {
 		// Full screen: raw mode raises no signal; Esc/Ctrl+C come through here.
 		// A request left over from a finished turn must not kill this one
@@ -415,7 +420,7 @@ func (io IO) turnContext(quitCh chan<- struct{}) (context.Context, context.Cance
 		}
 		signal.Stop(sigs)
 	}()
-	return ctx, cancel
+	return ctx, func() { cancel(); stopEsc() }
 }
 
 func repl(io IO, cfg *config.Config) {

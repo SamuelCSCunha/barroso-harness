@@ -110,6 +110,9 @@ func specTerminalRun() Spec {
 			if c.Command == "" {
 				return "", fmt.Errorf("empty command")
 			}
+			if pid, hit := killsProtected(c.Command, ProtectedPIDs()); hit {
+				return fmt.Sprintf("refused: PID %d is this agent or one of its ancestors (the shell/terminal/connector hosting this session); killing it ends the session. Exclude it and run again.", pid), nil
+			}
 			dir := cwd
 			if c.Workdir != "" {
 				dir = resolvePath(cwd, c.Workdir)
