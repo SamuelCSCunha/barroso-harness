@@ -56,7 +56,7 @@ func cmdUpdate(io IO) bool {
 // EOF (Ctrl+D) midway is also a no — the line comes back clean, as in the
 // rest of the REPL. "s"/"sim" are still accepted as yes (Portuguese input).
 func confirm(io IO, question string) bool {
-	fmt.Fprintf(io.Out, "%s %s ", greenf("❯"), question)
+	fmt.Fprintf(io.Out, "\n%s %s ", greenf("❯"), question)
 	line, err := io.Reader().ReadString('\n')
 	if err != nil {
 		fmt.Fprintln(io.Out)
