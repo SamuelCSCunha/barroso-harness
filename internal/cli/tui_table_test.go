@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ruanbarroso/barroso-harness/internal/config"
 	"github.com/ruanbarroso/barroso-harness/internal/dealer"
@@ -155,5 +156,26 @@ func TestHeaderDrawsWordmark(t *testing.T) {
 	out := plain(sb.String())
 	if !strings.Contains(out, "█▀▀▄") || strings.Contains(out, bgScreen) || !strings.Contains(out, "v1") {
 		t.Fatalf("header: %q", out)
+	}
+}
+
+func TestListItemsWrapWithHangingIndent(t *testing.T) {
+	colorsOn = true
+	defer func() { colorsOn = false }()
+	long := strings.Repeat("palavra ", 20)
+	for _, md := range []string{"- " + long, "1. " + long} {
+		out := plain(renderMarkdown(md, 40))
+		lines := strings.Split(out, "\n")
+		if len(lines) < 2 {
+			t.Fatalf("long item did not wrap: %q", out)
+		}
+		for _, l := range lines {
+			if utf8.RuneCountInString(l) > 40 {
+				t.Fatalf("line wider than 40: %q", l)
+			}
+		}
+		if !strings.HasPrefix(lines[1], "    ") {
+			t.Fatalf("continuation not indented under the text: %q", lines[1])
+		}
 	}
 }

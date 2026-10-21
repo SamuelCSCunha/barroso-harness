@@ -168,7 +168,17 @@ func (t *tuiTurn) ToolInicio(name, args string) {
 	if gap {
 		fmt.Fprint(t.out, "\r\033[K\n")
 	}
-	fmt.Fprintf(t.out, "\r  %s %s %s\033[K", yellowf("●"), color(colorText, name), grayf(summary))
+	fmt.Fprintf(t.out, "\r  %s %s %s\033[K", yellowf("●"), color(colorText, name), grayf(fitSummary(summary, name, 0)))
+}
+
+// fitSummary cuts the tool's argument so "  ✓ name summary 12.3s" stays on one
+// line: a line that wraps also breaks the in-place rewrite of "● running".
+func fitSummary(summary, name string, durCols int) string {
+	room := terminalWidth() - 6 - utf8.RuneCountInString(name) - durCols
+	if room < 8 {
+		return ""
+	}
+	return truncate(summary, room)
 }
 
 func (t *tuiTurn) Tool(name string, dur time.Duration, failed bool) {
@@ -189,7 +199,8 @@ func (t *tuiTurn) Tool(name string, dur time.Duration, failed bool) {
 	if failed {
 		mark = redf("✗")
 	}
-	fmt.Fprintf(t.out, "\r  %s %s %s %s\033[K\n", mark, color(colorText, name), grayf(summary), grayf(fmtDur(dur)))
+	d := fmtDur(dur)
+	fmt.Fprintf(t.out, "\r  %s %s %s %s\033[K\n", mark, color(colorText, name), grayf(fitSummary(summary, name, len(d)+1)), grayf(d))
 }
 
 // Eco keeps the tool's echo short: the line above already says what ran.
@@ -214,7 +225,7 @@ func (t *tuiTurn) Eco(output string) {
 		lines = lines[len(lines)-max:]
 	}
 	for _, l := range lines {
-		fmt.Fprintln(t.out, "    "+grayf(truncate(l, textWidth()-4)))
+		fmt.Fprintln(t.out, "    "+grayf(truncate(l, textWidth()-6)))
 	}
 }
 
@@ -324,8 +335,18 @@ func inputStatus(out io.Writer, cfg *config.Config, session string, mcps int, ct
 	if session != "" {
 		dir = append(dir, grayf("sess "+shortSession(session)))
 	}
+	// On a narrow screen (the iPhone) the line must not wrap: the session id,
+	// then the MCP count, then the provider give way, in that order.
+	line := func() string { return left + "   " + strings.Join(dir, grayf("  ")) }
+	for visWidth(line()) > terminalWidth()-1 && len(dir) > 0 {
+		dir = dir[:len(dir)-1]
+	}
+	if visWidth(line()) > terminalWidth()-1 && len(parts) > 1 {
+		parts = append(parts[:1], parts[2:]...)
+		left = "  " + bluef(bar) + " " + strings.Join(parts, grayf(" · "))
+	}
 	fmt.Fprintln(out)
-	fmt.Fprintln(out, left+"   "+strings.Join(dir, grayf("  ")))
+	fmt.Fprintln(out, strings.TrimRight(line(), " "))
 }
 
 // printPromptTUI is the typing line, inside the blue-bordered "box".
@@ -362,6 +383,8 @@ var (
 	reBold   = regexp.MustCompile(`\*\*([^*\n]+)\*\*`)
 	reItalic = regexp.MustCompile(`(^|[^*])\*([^*\n]+)\*`)
 	reCode   = regexp.MustCompile("`([^`\n]+)`")
+	// reNumbered is the "1. " of an ordered list item.
+	reNumbered = regexp.MustCompile(`^\d+[.)] `)
 )
 
 // renderMarkdown turns the most common markdown into color: headings, bold,
@@ -413,8 +436,26 @@ func renderMarkdown(text string, width int) string {
 			title := strings.TrimSpace(strings.TrimLeft(t, "#"))
 			out = append(out, "  "+boldf(bluef(inline(title))))
 		case strings.HasPrefix(t, "- ") || strings.HasPrefix(t, "* "):
+			// Wrapped with a hanging indent, so a long item stays inside the
+			// screen and its continuation lines up under the text.
 			indent := strings.Repeat(" ", len(l)-len(strings.TrimLeft(l, " ")))
-			out = append(out, "  "+indent+bluef("•")+" "+inline(t[2:]))
+			for i, w := range strings.Split(wrap(t[2:], width-6-len(indent)), "\n") {
+				lead := bluef("•") + " "
+				if i > 0 {
+					lead = "  "
+				}
+				out = append(out, "  "+indent+lead+inline(w))
+			}
+		case reNumbered.MatchString(t):
+			num := reNumbered.FindString(t)
+			pad := strings.Repeat(" ", utf8.RuneCountInString(num))
+			for i, w := range strings.Split(wrap(t[len(num):], width-4-len(pad)), "\n") {
+				lead := num
+				if i > 0 {
+					lead = pad
+				}
+				out = append(out, "  "+lead+inline(w))
+			}
 		case strings.HasPrefix(t, ">"):
 			q := strings.TrimSpace(strings.TrimPrefix(t, ">"))
 			for _, w := range strings.Split(wrap(q, width-6), "\n") {
