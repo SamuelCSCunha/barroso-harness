@@ -20,6 +20,7 @@ import (
 	"github.com/ruanbarroso/barroso-harness/internal/dealer"
 	"github.com/ruanbarroso/barroso-harness/internal/runtime"
 	"github.com/ruanbarroso/barroso-harness/internal/subagent"
+	"github.com/ruanbarroso/barroso-harness/internal/update"
 	"github.com/ruanbarroso/barroso-harness/internal/wiring"
 	"golang.org/x/term"
 )
@@ -446,6 +447,9 @@ func repl(io IO, cfg *config.Config) {
 	// REPL crash; /model switching provider re-injects on the next line.
 	processCtx, cancelProcess := context.WithCancel(context.Background())
 	defer cancelProcess()
+	// Background prefetch of a newer release: downloads, never installs;
+	// /update reuses the file. Silent, and off for "dev" builds.
+	go update.LoopPrefetch(processCtx, strings.TrimSpace(Versao))
 	wired, wiringWarnings := wiring.Montar(processCtx, *cfg, sess, cwd)
 	for _, notice := range wiringWarnings {
 		warnFmt(io.Out, notice)

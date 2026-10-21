@@ -79,16 +79,17 @@ func Rodar(ctx context.Context, out io.Writer, currentVersion string, confirm Co
 		return nil
 	}
 
-	staging := filepath.Join(stagingRoot(), asset.Name)
-	defer removeIfExists(staging)
-
-	fmt.Fprintf(out, "downloading %s (%s, ~%d MiB)...\n", asset.Name, rel.Version, asset.Bytes/(1<<20))
-	if _, err := Baixar(ctx, asset, sum, staging); err != nil {
+	plan := Plano{Release: rel, Asset: asset, Sum: sum}
+	if _, ok := cachedFor(plan); ok {
+		fmt.Fprintf(out, "using %s, already downloaded in the background...\n", rel.Version)
+	} else {
+		fmt.Fprintf(out, "downloading %s (%s, ~%d MiB)...\n", asset.Name, rel.Version, asset.Bytes/(1<<20))
+	}
+	staging, err := stage(ctx, plan)
+	if err != nil {
 		return err
 	}
-	if err := verifyStaged(staging, rel.Version); err != nil {
-		return fmt.Errorf("new binary failed the exec check: %w", err)
-	}
+	defer removeIfExists(staging)
 
 	result, err := installBinary(staging)
 	if err != nil {
@@ -180,14 +181,11 @@ func Verificar(ctx context.Context, currentVersion string) (Plano, error) {
 // half of Rodar. On a permission failure the error carries the commands the
 // person must run.
 func Instalar(ctx context.Context, p Plano) error {
-	staging := filepath.Join(stagingRoot(), p.Asset.Name)
-	defer removeIfExists(staging)
-	if _, err := Baixar(ctx, p.Asset, p.Sum, staging); err != nil {
+	staging, err := stage(ctx, p)
+	if err != nil {
 		return err
 	}
-	if err := verifyStaged(staging, p.Release.Version); err != nil {
-		return fmt.Errorf("new binary failed the exec check: %w", err)
-	}
+	defer removeIfExists(staging)
 	result, err := installBinary(staging)
 	if err != nil {
 		if len(result.commands) > 0 {
@@ -196,4 +194,23 @@ func Instalar(ctx context.Context, p Plano) error {
 		return err
 	}
 	return nil
+}
+
+// stage returns a verified binary of the plan's release, ready to install:
+// the one prefetched in the background when its SHA256 matches SHA256SUMS,
+// otherwise a fresh download. Either way the exec check runs before anything
+// is installed. The caller removes the returned file once done.
+func stage(ctx context.Context, p Plano) (string, error) {
+	staging, ok := cachedFor(p)
+	if !ok {
+		staging = filepath.Join(stagingRoot(), p.Asset.Name)
+		if _, err := Baixar(ctx, p.Asset, p.Sum, staging); err != nil {
+			return "", err
+		}
+	}
+	if err := verifyStaged(staging, p.Release.Version); err != nil {
+		removeIfExists(staging)
+		return "", fmt.Errorf("new binary failed the exec check: %w", err)
+	}
+	return staging, nil
 }
