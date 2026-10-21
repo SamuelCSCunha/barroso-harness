@@ -562,3 +562,29 @@ func TestUserMessageBox(t *testing.T) {
 		}
 	}
 }
+
+// While a turn runs the footer's knight-rider spinner moves on its own, and it
+// stops when the turn ends.
+func TestBusySpinnerAnimates(t *testing.T) {
+	sc, _ := newTestScreen(t, 120, 30, panelState{model: "m", cwd: "~/proj"})
+	sc.Adicionar("hello")
+	sc.Ocupado(true)
+	time.Sleep(6 * spinInterval)
+	sc.mu.Lock()
+	moved := sc.spinnerSeqVal
+	sc.mu.Unlock()
+	sc.Ocupado(false)
+	if moved < 2 {
+		t.Fatalf("spinner advanced %d frames while busy; it must animate", moved)
+	}
+	time.Sleep(3 * spinInterval)
+	sc.mu.Lock()
+	after := sc.spinnerSeqVal
+	sc.mu.Unlock()
+	time.Sleep(3 * spinInterval)
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	if sc.spinnerSeqVal != after {
+		t.Fatal("spinner kept running after the turn ended")
+	}
+}

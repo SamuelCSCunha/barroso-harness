@@ -211,8 +211,10 @@ type screen struct {
 	// press happened.
 	interruptArmed bool
 	escAt          time.Time
-	// spinnerSeq counts frames of the footer's busy spinner.
+	// spinnerSeq counts frames of the footer's busy spinner; busyStop stops the
+	// ticker that advances it while a turn runs.
 	spinnerSeqVal int
+	busyStop      chan struct{}
 }
 
 // interruptLabel is the footer text while a turn runs: "esc interrupt", and
@@ -420,10 +422,54 @@ func (t *screen) Ocupado(v bool) {
 	if !v {
 		t.interruptArmed = false
 		t.escAt = time.Time{}
+		if t.busyStop != nil {
+			close(t.busyStop)
+			t.busyStop = nil
+		}
+	} else if t.busyStop == nil {
+		t.busyStop = make(chan struct{})
+		go t.animateSpin(t.busyStop)
 	}
 	t.busy = v
 	t.drawLocked()
 	t.mu.Unlock()
+}
+
+// spinInterval is OpenCode's knight-rider frame time (ui/spinner.ts).
+const spinInterval = 40 * time.Millisecond
+
+// animateSpin advances the footer spinner every spinInterval until stop is
+// closed. Only the footer row is repainted: a full frame re-wraps the whole
+// transcript, too much work for 25 frames a second.
+func (t *screen) animateSpin(stop chan struct{}) {
+	tick := time.NewTicker(spinInterval)
+	defer tick.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-tick.C:
+		}
+		t.mu.Lock()
+		t.spinnerSeqVal++
+		t.repaintFooterLocked()
+		t.mu.Unlock()
+	}
+}
+
+// repaintFooterLocked repaints just the footer row. With a dialog open the
+// footer sits under its darkened backdrop, so it is left to the next full
+// frame. Caller holds t.mu.
+func (t *screen) repaintFooterLocked() {
+	if !t.busy || t.dlg != nil || t.w == 0 || t.isHome() {
+		return
+	}
+	var sb strings.Builder
+	sb.WriteString(escSyncStart + escHideCursor)
+	t.drawFooter(&sb, t.frameFor())
+	sb.WriteString(escSyncEnd)
+	fmt.Fprint(t.out, sb.String())
+	t.placeCursor()
 }
 
 func (t *screen) Ocultar(v bool) {
