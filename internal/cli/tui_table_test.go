@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -9,8 +8,6 @@ import (
 	"github.com/ruanbarroso/barroso-harness/internal/config"
 	"github.com/ruanbarroso/barroso-harness/internal/dealer"
 )
-
-var ansi = regexp.MustCompile("\033\\[[0-9;?]*[a-zA-Z]")
 
 func plain(s string) string { return ansi.ReplaceAllString(s, "") }
 
@@ -147,5 +144,16 @@ func TestRunningToolSpaced(t *testing.T) {
 	out = strings.ReplaceAll(plain(sb.String()), "\r", "")
 	if strings.Contains(out, "x\n\n\n") {
 		t.Fatalf("only one blank line between blocks: %q", out)
+	}
+}
+
+func TestHeaderDrawsWordmark(t *testing.T) {
+	colorsOn = true
+	defer func() { colorsOn = false }()
+	var sb strings.Builder
+	headerTUI(&sb, "v1")
+	out := plain(sb.String())
+	if !strings.Contains(out, "█▀▀▄") || strings.Contains(out, bgScreen) || !strings.Contains(out, "v1") {
+		t.Fatalf("header: %q", out)
 	}
 }

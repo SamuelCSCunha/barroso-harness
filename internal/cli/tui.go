@@ -280,13 +280,26 @@ func (t *tuiTurn) Tokens(prompt, output int, dur time.Duration, compacted bool) 
 
 // ── boxes: header, input, request ─────────────────────────────────────────
 
-// headerTUI is the opening: the block logo and a hint line.
+// headerTUI is the opening: the same block wordmark as the full screen's
+// home ("Barroso" muted, "Harness" bold), stacked when the terminal is
+// narrow, and a hint line under it. The screen background the full screen
+// paints behind the glyphs is dropped: here the terminal's own shows.
 func headerTUI(out io.Writer, version string) {
 	fmt.Fprintln(out)
-	fmt.Fprintln(out, "  "+grayf("▄▄ ▄▄")+"  "+boldf(color(colorText, "barroso"))+boldf(bluef(" harness")))
-	fmt.Fprintln(out, "  "+grayf("▀▀ ▀▀")+"  "+grayf("v"+strings.TrimPrefix(version, "v")+" · /help commands · ctrl+c interrupt"))
+	for _, row := range homeLogo(terminalWidth() - 4) {
+		row = strings.ReplaceAll(row, bgScreen, "")
+		if strings.TrimSpace(ansi.ReplaceAllString(row, "")) == "" {
+			continue // the font's empty top row
+		}
+		fmt.Fprintln(out, "  "+row)
+	}
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "  "+grayf("v"+strings.TrimPrefix(version, "v")+" · /help commands · esc esc or ctrl+c interrupt"))
 	fmt.Fprintln(out)
 }
+
+// ansi matches an escape sequence, to tell an all-blank row apart.
+var ansi = regexp.MustCompile("\033\\[[0-9;?]*[a-zA-Z]")
 
 // inputStatus is the line under the input box: model, provider, effort,
 // context and MCPs. No mode label like OpenCode's "Build": BH is always
