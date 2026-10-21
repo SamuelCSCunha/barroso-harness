@@ -142,7 +142,12 @@ func farewell(out io.Writer) {
 		// the spinner was interrupted midway.
 		fmt.Fprint(out, showCursor)
 	}
-	fmt.Fprintln(out, dimf("╰─ bye"))
+	// A rule above and below sets the goodbye apart from the session and from
+	// the shell prompt that comes back right after it.
+	rule := dimf(strings.Repeat("─", textWidth()))
+	fmt.Fprintln(out, rule)
+	fmt.Fprintln(out, dimf("bye"))
+	fmt.Fprintln(out, rule)
 }
 
 // errorFmt prints an error in red, on one line, with no raw markup.
