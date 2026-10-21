@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/ruanbarroso/barroso-harness/internal/dealer"
 	"github.com/ruanbarroso/barroso-harness/internal/runtime"
 	"github.com/ruanbarroso/barroso-harness/internal/subagent"
+	"github.com/ruanbarroso/barroso-harness/internal/update"
 	"github.com/ruanbarroso/barroso-harness/internal/wiring"
 	"golang.org/x/term"
 )
@@ -451,8 +453,20 @@ func repl(io IO, cfg *config.Config) {
 	// REPL crash; /model switching provider re-injects on the next line.
 	processCtx, cancelProcess := context.WithCancel(context.Background())
 	defer cancelProcess()
-	// No background download: a release is only fetched when the user runs
-	// /update.
+	// Auto-update: a newer release is downloaded, verified and installed in
+	// the background, so the next bh starts on it. This process keeps its
+	// version until it exits. Off on iSH (manual /update) and for dev builds.
+	var autoInstalled atomic.Value // version installed, announced at the next prompt
+	go update.LoopAuto(processCtx, strings.TrimSpace(Versao), func(v string) {
+		if io.screen != nil {
+			io.screen.mu.Lock()
+			io.screen.toastf("success", "Updated to "+v+"; reopen bh to use it")
+			io.screen.drawLocked()
+			io.screen.mu.Unlock()
+			return
+		}
+		autoInstalled.Store(v)
+	})
 	wired, wiringWarnings := wiring.Montar(processCtx, *cfg, sess, cwd)
 	for _, notice := range wiringWarnings {
 		warnFmt(io.Out, notice)
@@ -486,6 +500,9 @@ func repl(io IO, cfg *config.Config) {
 		}
 		if src != nil {
 			src.update(*cfg, sess.ID())
+		}
+		if v, _ := autoInstalled.Swap("").(string); v != "" {
+			okFmt(io.Out, "updated to "+v+" in the background; reopen bh to use it")
 		}
 		if io.screen != nil {
 			var mcps []mcpEntry

@@ -224,3 +224,15 @@ func TestLoopPrefetchOffForDev(t *testing.T) {
 		t.Fatal("LoopPrefetch kept running for a dev build")
 	}
 }
+
+// useLatest points the latest-release redirect at a server announcing tag.
+func useLatest(t *testing.T, tag string) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/releases/tag/"+tag, http.StatusFound)
+	}))
+	t.Cleanup(srv.Close)
+	prev := latestURL
+	latestURL = srv.URL
+	t.Cleanup(func() { latestURL = prev })
+}
