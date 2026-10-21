@@ -276,9 +276,9 @@ func TestRenameStoresName(t *testing.T) {
 	}
 }
 
-// /close leaves the open session's log untouched (no session_reset) and moves
+// /new leaves the open session's log untouched (no session_reset) and moves
 // the REPL onto a fresh session id.
-func TestCloseKeepsSessionAndStartsFresh(t *testing.T) {
+func TestNewKeepsSessionAndStartsFresh(t *testing.T) {
 	fakeHome(t)
 	noColors(t)
 	srv := fakeModelsProvider(t, "barroso-chat")
@@ -300,17 +300,17 @@ func TestCloseKeepsSessionAndStartsFresh(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	io, outIO, _ := bridgeIO(t, "/resume "+prevSession+"\n/close\n/exit\n")
+	io, outIO, _ := bridgeIO(t, "/resume "+prevSession+"\n/new\n/exit\n")
 	if code := RunInteractive(io); code != 0 {
 		t.Fatalf("repl exited with %d: %s", code, io.ErrOut)
 	}
 	out := outIO.String()
-	i := strings.Index(out, "session closed; new session bh-")
+	i := strings.Index(out, "new session bh-")
 	if i < 0 {
-		t.Fatalf("/close did not report a new session:\n%s", out)
+		t.Fatalf("/new did not report a new session:\n%s", out)
 	}
 	if strings.Contains(out[i:i+60], prevSession) {
-		t.Fatalf("/close kept the old id:\n%s", out)
+		t.Fatalf("/new kept the old id:\n%s", out)
 	}
 
 	db2, err := store.Open(filepath.Join(home, "sessions.db"))
@@ -319,6 +319,6 @@ func TestCloseKeepsSessionAndStartsFresh(t *testing.T) {
 	}
 	defer db2.Fechar()
 	if n, _ := db2.ContarEventos(prevSession); n != 1 {
-		t.Fatalf("closed session events = %d; /close must not write to its log", n)
+		t.Fatalf("previous session events = %d; /new must not write to its log", n)
 	}
 }

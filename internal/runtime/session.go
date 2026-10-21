@@ -190,7 +190,7 @@ func (s *Session) ClearHistory() {
 }
 
 // StartFresh drops the transcript WITHOUT logging a session_reset. It is for
-// /close, which attaches a new session id first: the closed session's log must
+// /new, which attaches a new session id first: the previous session's log must
 // stay exactly as it was so /resume brings it back whole.
 func (s *Session) StartFresh() {
 	s.history = nil

@@ -539,19 +539,10 @@ func repl(io IO, cfg *config.Config) {
 			farewell(io.Out)
 			return
 		case "/new":
-			// /new: clear the session transcript without switching provider (the
-			// config stays as is). Useful after finishing something, so the context
-			// is not carried into the next request.
-			sess.ClearHistory()
-			lastContext = 0
-			if io.screen != nil {
-				io.screen.Limpar()
-			}
-			okFmt(io.Out, "history cleared; new conversation")
-		case "/close":
-			// /close: leave the current session untouched (it can be resumed
+			// /new: leave the current session untouched (it can be resumed
 			// later) and start a fresh one under a new id, back on the home
-			// screen. Unlike /new, nothing is written to the closed session's log.
+			// screen. Nothing is written to the old session's log, and on the full
+			// screen nothing is printed: an empty transcript is what shows the home.
 			if db != nil {
 				_ = db.TouchSession(sess.ID())
 				activeID = newSessionID()
@@ -563,7 +554,7 @@ func repl(io IO, cfg *config.Config) {
 			if io.screen != nil {
 				io.screen.Limpar()
 			} else {
-				okFmt(io.Out, "session closed; new session "+sess.ID())
+				okFmt(io.Out, "new session "+sess.ID())
 			}
 		case "/resume":
 			if db == nil {
