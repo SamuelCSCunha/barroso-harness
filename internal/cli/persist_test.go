@@ -275,3 +275,50 @@ func TestRenameStoresName(t *testing.T) {
 		t.Fatalf("stored title: %+v", ls)
 	}
 }
+
+// /close leaves the open session's log untouched (no session_reset) and moves
+// the REPL onto a fresh session id.
+func TestCloseKeepsSessionAndStartsFresh(t *testing.T) {
+	fakeHome(t)
+	noColors(t)
+	srv := fakeModelsProvider(t, "barroso-chat")
+	defer srv.Close()
+	home := readyConfig(t, srv.URL+"/v1", "k", "barroso-chat")
+
+	db, err := store.Open(filepath.Join(home, "sessions.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const prevSession = "bh-20240101100000-abcd"
+	if err := db.NewSession(prevSession); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.StoreEvent(prevSession, "user_message", map[string]any{"role": "user", "content": "pergunta"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Fechar(); err != nil {
+		t.Fatal(err)
+	}
+
+	io, outIO, _ := bridgeIO(t, "/resume "+prevSession+"\n/close\n/exit\n")
+	if code := RunInteractive(io); code != 0 {
+		t.Fatalf("repl exited with %d: %s", code, io.ErrOut)
+	}
+	out := outIO.String()
+	i := strings.Index(out, "session closed; new session bh-")
+	if i < 0 {
+		t.Fatalf("/close did not report a new session:\n%s", out)
+	}
+	if strings.Contains(out[i:i+60], prevSession) {
+		t.Fatalf("/close kept the old id:\n%s", out)
+	}
+
+	db2, err := store.Open(filepath.Join(home, "sessions.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db2.Fechar()
+	if n, _ := db2.ContarEventos(prevSession); n != 1 {
+		t.Fatalf("closed session events = %d; /close must not write to its log", n)
+	}
+}

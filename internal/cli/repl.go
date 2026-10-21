@@ -548,6 +548,23 @@ func repl(io IO, cfg *config.Config) {
 				io.screen.Limpar()
 			}
 			okFmt(io.Out, "history cleared; new conversation")
+		case "/close":
+			// /close: leave the current session untouched (it can be resumed
+			// later) and start a fresh one under a new id, back on the home
+			// screen. Unlike /new, nothing is written to the closed session's log.
+			if db != nil {
+				_ = db.TouchSession(sess.ID())
+				activeID = newSessionID()
+				sess.Attach(db, activeID)
+				_ = sess.ContextoVivoCarregar()
+			}
+			sess.StartFresh()
+			lastContext = 0
+			if io.screen != nil {
+				io.screen.Limpar()
+			} else {
+				okFmt(io.Out, "session closed; new session "+sess.ID())
+			}
 		case "/resume":
 			if db == nil {
 				warnFmt(io.Out, "session not persisted: nothing to resume")

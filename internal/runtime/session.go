@@ -189,6 +189,13 @@ func (s *Session) ClearHistory() {
 	s.record("session_reset", map[string]any{"role": "system", "content": "history cleared; new conversation"})
 }
 
+// StartFresh drops the transcript WITHOUT logging a session_reset. It is for
+// /close, which attaches a new session id first: the closed session's log must
+// stay exactly as it was so /resume brings it back whole.
+func (s *Session) StartFresh() {
+	s.history = nil
+}
+
 // Send runs a turn and keeps the transcript between calls. The user message
 // and the rounds are appended to a private buffer and only committed on full
 // success; YOLO tool execution already performed cannot be reverted, but the

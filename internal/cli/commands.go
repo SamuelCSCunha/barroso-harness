@@ -31,6 +31,7 @@ func commands() []command {
 		{name: "/effort", usage: "/effort [level|-]", cat: "Model", desc: "show or set the reasoning effort", key: "ctrl+t", dialog: true},
 		{name: "/provider", usage: "/provider", cat: "Model", desc: "change base URL + key; validates /models before saving"},
 		{name: "/new", usage: "/new", cat: "Session", desc: "clear the session history (new conversation)", key: "ctrl+x n"},
+		{name: "/close", usage: "/close", cat: "Session", desc: "close this session (it stays in /resume) and go back to the home screen"},
 		{name: "/resume", usage: "/resume", cat: "Session", desc: "list recent sessions and resume one", key: "ctrl+x l", dialog: true},
 		{name: "/save", usage: "/save [title]", cat: "Session", desc: "title the current session and save the log"},
 		{name: "/rename", usage: "/rename <name>", cat: "Session", desc: "rename the current session (tab and panel)", key: "ctrl+r", dialog: true},
