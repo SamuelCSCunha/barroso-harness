@@ -82,6 +82,9 @@ type tuiTurn struct {
 	// toolsShown counts the tool blocks since the last answer: from the second
 	// on, a blank line separates them.
 	toolsShown int
+	// spaced: a blank line is already on screen below the last block (the
+	// spinner left it), so the next block or answer must not add another.
+	spaced bool
 }
 
 func newTUITurn(out io.Writer, cfg *config.Config) *tuiTurn {
@@ -100,6 +103,11 @@ const (
 func (t *tuiTurn) Pensando() {
 	t.stopSpin()
 	t.mu.Lock()
+	if t.toolsShown > 0 && !t.spaced {
+		// "Thinking" after a tool block gets its own breathing line.
+		fmt.Fprint(t.out, "\n")
+		t.spaced = true
+	}
 	t.spin = make(chan struct{})
 	t.spinDone = make(chan struct{})
 	stop, end := t.spin, t.spinDone
@@ -160,7 +168,8 @@ func (t *tuiTurn) Tool(name string, dur time.Duration, failed bool) {
 	summary := t.pendingArgs
 	t.pendingTool, t.pendingArgs = "", ""
 	t.lastTool, t.lastFailed = name, failed
-	gap := t.toolsShown > 0
+	gap := t.toolsShown > 0 && !t.spaced
+	t.spaced = false
 	t.toolsShown++
 	t.mu.Unlock()
 	if gap {
@@ -234,8 +243,12 @@ func (t *tuiTurn) Resposta(text string) {
 	t.stopSpin()
 	t.mu.Lock()
 	t.toolsShown = 0
+	spaced := t.spaced
+	t.spaced = false
 	t.mu.Unlock()
-	fmt.Fprintln(t.out)
+	if !spaced {
+		fmt.Fprintln(t.out)
+	}
 	fmt.Fprintln(t.out, renderMarkdown(text, textWidth()))
 }
 
