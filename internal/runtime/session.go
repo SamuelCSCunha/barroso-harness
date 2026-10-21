@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	goruntime "runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -522,10 +523,17 @@ var sequentialTools = map[string]bool{
 // of calls without results.
 func (s *Session) runRound(ctx context.Context, r Renderer, list []tools.Spec, cwd string, calls []dealer.ToolChamada) []toolOutcome {
 	outcomes := make([]toolOutcome, len(calls))
+	av, live := r.(RendererAoVivo)
+	liveID := func(i int) string { return strconv.Itoa(i) + "/" + calls[i].ID }
 	run := func(i int) {
 		call := calls[i]
 		start := time.Now()
-		output, execErr := runTool(ctx, list, cwd, call)
+		cctx := ctx
+		if live {
+			id := liveID(i)
+			cctx = tools.WithOutput(ctx, func(chunk string) { av.ToolSaida(id, chunk) })
+		}
+		output, execErr := runTool(cctx, list, cwd, call)
 		o := toolOutcome{call: call, output: output, dur: time.Since(start)}
 		if execErr != nil {
 			o.isErr = true
@@ -537,6 +545,11 @@ func (s *Session) runRound(ctx context.Context, r Renderer, list []tools.Spec, c
 		o := outcomes[i]
 		// Outputs above blobThreshold become blob + preview.
 		s.recordResult(o.call.ID, o.call.Nome, o.output, o.isErr)
+		if live {
+			name, args := shownCall(o.call.Nome, o.call.Args)
+			av.ToolTerminou(liveID(i), name, args, o.output, o.dur, o.isErr)
+			return
+		}
 		if rr, ok := r.(RendererResultado); ok {
 			name, args := shownCall(o.call.Nome, o.call.Args)
 			rr.ToolResultado(name, args, o.output, o.dur, o.isErr)
@@ -547,6 +560,15 @@ func (s *Session) runRound(ctx context.Context, r Renderer, list []tools.Spec, c
 		r.Eco(echoExcerpt(o.output))
 	}
 	rd, detailed := r.(RendererDetalhado)
+	announce := func(i int) {
+		name, args := shownCall(calls[i].Nome, calls[i].Args)
+		switch {
+		case live:
+			av.ToolComecou(liveID(i), name, args)
+		case detailed:
+			rd.ToolInicio(name, args)
+		}
+	}
 
 	parallel := len(calls) > 1
 	for _, c := range calls {
@@ -556,10 +578,8 @@ func (s *Session) runRound(ctx context.Context, r Renderer, list []tools.Spec, c
 		}
 	}
 	if !parallel {
-		for i, c := range calls {
-			if detailed {
-				rd.ToolInicio(shownCall(c.Nome, c.Args))
-			}
+		for i := range calls {
+			announce(i)
 			run(i)
 			report(i)
 		}
@@ -568,10 +588,8 @@ func (s *Session) runRound(ctx context.Context, r Renderer, list []tools.Spec, c
 
 	done := make([]chan struct{}, len(calls))
 	var wg sync.WaitGroup
-	for i, c := range calls {
-		if detailed {
-			rd.ToolInicio(shownCall(c.Nome, c.Args))
-		}
+	for i := range calls {
+		announce(i)
 		done[i] = make(chan struct{})
 		wg.Add(1)
 		go func(i int) {

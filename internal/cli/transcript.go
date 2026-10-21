@@ -56,7 +56,13 @@ type item struct {
 
 	name, args, out string // tool calls
 	failed          bool
-	members         []*item // group: the exploration tools it gathers
+	// running marks a call that started and has no result yet: it draws with a
+	// spinner, and a shell block shows live (its output so far). spin is the
+	// spinner frame, copied from the screen when painting.
+	running bool
+	live    string
+	spin    int
+	members []*item // group: the exploration tools it gathers
 
 	taskID, state string // sub: finished sub-agent
 }
@@ -164,6 +170,7 @@ func (t *screen) openMessageDialog(it *item) {
 // renderItem draws an item at the pane width. hover gives the hover variant;
 // full ignores the collapse (used to tell whether collapsing hides anything).
 func (t *screen) renderItem(it *item, width int, hover, full bool) []string {
+	it.spin = t.spinnerSeqVal
 	switch it.kind {
 	case "user":
 		return renderUser(it, width, hover && !it.pending)
@@ -290,13 +297,33 @@ func renderShell(it *item, width int, hover, full bool) []string {
 	}
 	_ = json.Unmarshal([]byte(it.args), &a)
 	inner := max(10, width-5)
-	cmd := strings.Split(wrap("$ "+commandLine(a.Command, a.Workdir), inner), "\n")
+	prompt := "$ "
+	if it.running {
+		// OpenCode drops the "$ " while the command runs: the spinner is there.
+		prompt = spinGlyph(it.spin) + " "
+	}
+	cmd := strings.Split(wrap(prompt+commandLine(a.Command, a.Workdir), inner), "\n")
 	if !full && len(cmd) > 2 {
 		cmd = append(cmd[:1], truncateVis(cmd[1], inner-1)+"…")
 	}
 	var content []string
 	for _, l := range cmd {
 		content = append(content, color(colorText, l))
+	}
+	if it.running {
+		if body := strings.TrimRight(cleanOutput(it.live), "\n"); body != "" {
+			var out []string
+			for _, l := range strings.Split(body, "\n") {
+				out = append(out, strings.Split(wrapPlain(l, inner), "\n")...)
+			}
+			if !full {
+				out = tailCollapse(out, max(1, collapsedRows-len(cmd)))
+			}
+			for _, l := range out {
+				content = append(content, grayf(l))
+			}
+		}
+		return blockRows(content, width, hover)
 	}
 	code, body, parsed := shellResult(it.out)
 	errLine := ""
@@ -386,6 +413,9 @@ func renderBlock(it *item, width int, hover, full bool) []string {
 	if !full && len(body) > collapsedRows {
 		more := len(body) - (collapsedRows - 1)
 		body = append(body[:collapsedRows-1], grayf("("+strconv.Itoa(more)+" more lines)"))
+	}
+	if it.running {
+		head = spinGlyph(it.spin) + " " + strings.TrimLeft(head, "←# ")
 	}
 	content := append([]string{grayf(truncateVis(head, inner))}, body...)
 	if it.failed {
@@ -517,6 +547,9 @@ func (t *screen) genericFields(it *item) []string {
 // (generic tools).
 func (t *screen) renderTool(it *item, width int, hover bool) []string {
 	icon, label := toolLabel(it.name, it.args, it.out, it.failed)
+	if it.running {
+		icon = spinGlyph(t.spinnerSeqVal)
+	}
 	fields := t.genericFields(it)
 	if !knownInline[it.name] && len(fields) > 0 {
 		var kv []string
@@ -587,7 +620,14 @@ func (t *screen) renderGroup(it *item, width int, hover bool) []string {
 	if hover {
 		fg = colorText
 	}
-	rows := []string{color(fg, truncateVis("→ Explored: "+strings.Join(parts, ", "), width-3))}
+	icon := "→"
+	for _, m := range it.members {
+		if m.running {
+			icon = spinGlyph(t.spinnerSeqVal)
+			break
+		}
+	}
+	rows := []string{color(fg, truncateVis(icon+" Explored: "+strings.Join(parts, ", "), width-3))}
 	if it.open {
 		for _, m := range it.members {
 			for _, r := range t.renderTool(m, width-2, false) {
@@ -640,7 +680,83 @@ func (t *screen) thought(dur time.Duration, reasoning string) {
 func (t *screen) toolResult(name, args, out string, failed bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	it := &item{kind: "tool", name: name, args: args, out: cleanOutput(out), failed: failed}
+	t.placeTool(&item{kind: "tool", name: name, args: args, out: cleanOutput(out), failed: failed})
+}
+
+// toolStarted draws a call that is about to run, with its input (the command,
+// the path) next to a spinner, as OpenCode does; toolFinished later fills the
+// SAME item with the result instead of adding another row.
+func (t *screen) toolStarted(id, name, args string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	it := &item{kind: "tool", name: name, args: args, running: true}
+	if t.runningTools == nil {
+		t.runningTools = map[string]*item{}
+	}
+	t.runningTools[id] = it
+	t.placeTool(it)
+}
+
+// liveOutputCap bounds what a running shell block keeps of its output: only
+// the last rows are shown, and the full result replaces it at the end.
+const liveOutputCap = 64 << 10
+
+// toolOutput appends live output to a running call. It does not repaint: the
+// spinner ticker does, a few times a second, however fast the output comes.
+func (t *screen) toolOutput(id, chunk string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	it := t.runningTools[id]
+	if it == nil {
+		return
+	}
+	grow := func() {
+		it.live += chunk
+		if len(it.live) > liveOutputCap {
+			it.live = it.live[len(it.live)-liveOutputCap:]
+		}
+	}
+	if t.scroll == 0 {
+		grow()
+		return
+	}
+	// Read back: keep the rows on screen where they are while the block grows.
+	before := t.wrappedRows()
+	grow()
+	t.scroll = max(0, t.scroll+t.wrappedRows()-before)
+}
+
+// toolFinished completes the running item with the call's result.
+func (t *screen) toolFinished(id, name, args, out string, failed bool) {
+	t.mu.Lock()
+	it := t.runningTools[id]
+	if it == nil {
+		t.mu.Unlock()
+		t.toolResult(name, args, out, failed)
+		return
+	}
+	defer t.mu.Unlock()
+	delete(t.runningTools, id)
+	t.mutate(func() {
+		it.running, it.live = false, ""
+		it.name, it.args, it.out, it.failed = name, args, cleanOutput(out), failed
+	})
+}
+
+// stopRunningTools ends the spinner of any call still marked running when the
+// turn is over (a result that never came must not spin forever). Caller holds
+// t.mu.
+func (t *screen) stopRunningTools() {
+	for id, it := range t.runningTools {
+		it.running = false
+		delete(t.runningTools, id)
+	}
+}
+
+// placeTool adds a call's item where its kind goes: a shell or edit block of
+// its own, or a member of the current exploration group. Caller holds t.mu.
+func (t *screen) placeTool(it *item) {
+	name := it.name
 	switch name {
 	case "terminal_run":
 		it.kind = "shell"
@@ -772,3 +888,7 @@ func cleanOutput(s string) string {
 		return -1
 	}, s)
 }
+
+// spinGlyph is the braille spinner frame of a running transcript row. seq is
+// the footer spinner's 40 ms counter; the braille one turns every other frame.
+func spinGlyph(seq int) string { return spinFrames[(seq/2)%len(spinFrames)] }

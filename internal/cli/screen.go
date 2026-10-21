@@ -168,11 +168,13 @@ type screen struct {
 	// under the pointer; rowOwner maps each row of the last wrapped() to the
 	// item it belongs to (0 for plain lines). pendingCmd is a slash command a
 	// click asked for (a sub-agent row opens /tasks <id>).
-	items      map[int]*item
-	nextItem   int
-	hoverItem  int
-	rowOwner   []int
-	pendingCmd string
+	items    map[int]*item
+	nextItem int
+	// runningTools are the calls started and not finished yet, by call id.
+	runningTools map[string]*item
+	hoverItem    int
+	rowOwner     []int
+	pendingCmd   string
 	// mcpOpen is the sidebar's MCP collapse state (open by default).
 	mcpOpen bool
 	// wasHome is whether the last frame was the home screen.
@@ -396,7 +398,7 @@ func (t *screen) appendLocked(lines ...string) {
 func (t *screen) Limpar() {
 	t.mu.Lock()
 	t.lines, t.partial, t.scroll = nil, "", 0
-	t.items, t.hoverItem = nil, 0
+	t.items, t.hoverItem, t.runningTools = nil, 0, nil
 	t.drawLocked()
 	t.mu.Unlock()
 }
@@ -426,6 +428,7 @@ func (t *screen) Ocupado(v bool) {
 			close(t.busyStop)
 			t.busyStop = nil
 		}
+		t.stopRunningTools()
 	} else if t.busyStop == nil {
 		t.busyStop = make(chan struct{})
 		go t.animateSpin(t.busyStop)
@@ -452,7 +455,13 @@ func (t *screen) animateSpin(stop chan struct{}) {
 		}
 		t.mu.Lock()
 		t.spinnerSeqVal++
-		t.repaintFooterLocked()
+		if len(t.runningTools) > 0 && t.spinnerSeqVal%2 == 0 && t.dlg == nil {
+			// A running call spins in the transcript and its live output
+			// grows: the whole frame is repainted every other tick.
+			t.drawLocked()
+		} else {
+			t.repaintFooterLocked()
+		}
 		t.mu.Unlock()
 	}
 }
@@ -2388,6 +2397,21 @@ type screenTurn struct {
 }
 
 func (r *screenTurn) Pensando() { r.t.Pensar("Thinking") }
+
+// ToolComecou, ToolSaida and ToolTerminou are the live path (runtime's
+// RendererAoVivo): the call's row appears when it starts, with its input, a
+// shell block fills with output as the command prints it, and the result
+// completes the same row.
+func (r *screenTurn) ToolComecou(id, name, args string) {
+	r.t.stopSpin()
+	r.t.toolStarted(id, name, args)
+}
+
+func (r *screenTurn) ToolSaida(id, chunk string) { r.t.toolOutput(id, chunk) }
+
+func (r *screenTurn) ToolTerminou(id, name, args, output string, _ time.Duration, failed bool) {
+	r.t.toolFinished(id, name, args, output, failed)
+}
 
 func (r *screenTurn) ToolInicio(name, args string) {
 	icon, label := toolLabel(name, args, "", false)

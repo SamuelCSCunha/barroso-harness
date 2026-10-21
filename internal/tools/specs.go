@@ -122,7 +122,10 @@ func specTerminalRun() Spec {
 
 			cmd := terminalCmd(cctx, c.Command)
 			cmd.Dir = dir
-			out, exeErr := cmd.CombinedOutput()
+			lb := &liveBuffer{sink: outputSink(ctx)}
+			cmd.Stdout, cmd.Stderr = lb, lb
+			exeErr := cmd.Run()
+			out := lb.Bytes()
 			code := -1
 			if cmd.ProcessState != nil {
 				code = cmd.ProcessState.ExitCode()

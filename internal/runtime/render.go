@@ -72,6 +72,17 @@ type RendererResultado interface {
 	ToolResultado(name, args, output string, dur time.Duration, failed bool)
 }
 
+// RendererAoVivo is OPTIONAL and takes precedence over ToolInicio and
+// ToolResultado: each call is announced when it starts, its live output
+// (terminal_run) arrives while it runs, and the result closes the same call.
+// id tells concurrent calls of a round apart. ToolSaida may be called from
+// the tool's own goroutine.
+type RendererAoVivo interface {
+	ToolComecou(id, name, args string)
+	ToolSaida(id, chunk string)
+	ToolTerminou(id, name, args, output string, dur time.Duration, failed bool)
+}
+
 // RendererSteer is OPTIONAL: it is told when a message sent during the turn
 // (Session.AddSteer) was delivered to the model.
 type RendererSteer interface {

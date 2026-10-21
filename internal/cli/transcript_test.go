@@ -217,3 +217,44 @@ func TestShellBlockCRLFOutput(t *testing.T) {
 		t.Fatalf("output line missing:\n%s", all)
 	}
 }
+
+// A started shell call shows its command (no "$ ") with a spinner and its
+// live output; the result completes the SAME block as "$ command".
+func TestRunningShellBlockBecomesResult(t *testing.T) {
+	sc, _ := newTestScreen(t, 100, 40, panelState{model: "m"})
+	sc.toolStarted("0/c0", "terminal_run", `{"command":"make test"}`)
+	txt := sc.transcriptText()
+	if !strings.Contains(txt, "make test") || strings.Contains(txt, "$ make test") {
+		t.Fatalf("running block:\n%s", txt)
+	}
+	sc.toolOutput("0/c0", "building\r\n")
+	if !strings.Contains(sc.transcriptText(), "building") {
+		t.Fatalf("live output missing:\n%s", sc.transcriptText())
+	}
+	sc.toolFinished("0/c0", "terminal_run", `{"command":"make test"}`, "exit_code: 0\nstdout+stderr:\nok all", false)
+	txt = sc.transcriptText()
+	if !strings.Contains(txt, "$ make test") || !strings.Contains(txt, "ok all") || strings.Contains(txt, "building") {
+		t.Fatalf("finished block:\n%s", txt)
+	}
+	if n := strings.Count(txt, "make test"); n != 1 {
+		t.Fatalf("the result must complete the running block, not add another (%d):\n%s", n, txt)
+	}
+}
+
+// An inline tool started shows its label with a spinner instead of ✓, and a
+// turn that ends without the result stops spinning.
+func TestRunningInlineToolStopsWithTurn(t *testing.T) {
+	sc, _ := newTestScreen(t, 100, 40, panelState{model: "m"})
+	sc.Ocupado(true)
+	sc.toolStarted("0/c0", "mystery", `{"x":1}`)
+	if strings.Contains(sc.transcriptText(), "✓ mystery") {
+		t.Fatalf("a running call must not show ✓:\n%s", sc.transcriptText())
+	}
+	sc.Ocupado(false)
+	sc.mu.Lock()
+	n := len(sc.runningTools)
+	sc.mu.Unlock()
+	if n != 0 {
+		t.Fatal("running calls must stop when the turn ends")
+	}
+}
