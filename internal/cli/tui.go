@@ -305,7 +305,13 @@ func headerTUI(out io.Writer, version string) {
 		fmt.Fprintln(out, "  "+row)
 	}
 	fmt.Fprintln(out)
-	fmt.Fprintln(out, "  "+grayf("v"+strings.TrimPrefix(version, "v")+" · /help commands · esc esc or ctrl+c interrupt"))
+	// The hints give way from the right on a narrow screen (the iPhone): the
+	// line must not wrap under the wordmark.
+	hints := []string{"v" + strings.TrimPrefix(version, "v"), "/help commands", "esc esc or ctrl+c interrupt"}
+	for len(hints) > 1 && 2+utf8.RuneCountInString(strings.Join(hints, " · ")) > terminalWidth()-1 {
+		hints = hints[:len(hints)-1]
+	}
+	fmt.Fprintln(out, "  "+grayf(strings.Join(hints, " · ")))
 	fmt.Fprintln(out)
 }
 
