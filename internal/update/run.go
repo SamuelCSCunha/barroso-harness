@@ -31,29 +31,32 @@ type Confirmar func() bool
 //
 // In every failure BEFORE installation, the running executable is left
 // untouched. A failed update never leaves the machine without a harness.
-func Rodar(ctx context.Context, out io.Writer, currentVersion string, confirm Confirmar) error {
+//
+// installed reports that a new binary is in place: the caller exits so the
+// next start runs it.
+func Rodar(ctx context.Context, out io.Writer, currentVersion string, confirm Confirmar) (installed bool, err error) {
 	rel, err := BuscarUltima(ctx)
 	if err != nil {
-		return fmt.Errorf("update channel unavailable: %w", err)
+		return false, fmt.Errorf("update channel unavailable: %w", err)
 	}
 
 	cmp, err := compareVersions(currentVersion, rel.Version)
 	if err != nil {
-		return fmt.Errorf("compare versions: %w", err)
+		return false, fmt.Errorf("compare versions: %w", err)
 	}
 	switch cmp {
 	case 0:
 		fmt.Fprintf(out, "already on the latest version (%s).\n", currentVersion)
-		return nil
+		return false, nil
 	case 1:
 		fmt.Fprintf(out, "installed version (%s) is newer than the published one (%s); nothing to do.\n",
 			currentVersion, rel.Version)
-		return nil
+		return false, nil
 	}
 
 	asset, err := rel.AssetDaPlataforma()
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	// The checksum comes from the SHA256SUMS published with the release.
@@ -63,20 +66,20 @@ func Rodar(ctx context.Context, out io.Writer, currentVersion string, confirm Co
 	if sumsAsset, ok := rel.AssetSomas(); ok {
 		sums, errSums := ListarSomas(ctx, sumsAsset)
 		if errSums != nil {
-			return fmt.Errorf("could not read the release SHA256SUMS (%v); aborting for safety", errSums)
+			return false, fmt.Errorf("could not read the release SHA256SUMS (%v); aborting for safety", errSums)
 		}
 		sum = sums[asset.Name]
 		if sum == "" {
-			return fmt.Errorf("SHA256SUMS of release %s does not list %s; aborting for safety",
+			return false, fmt.Errorf("SHA256SUMS of release %s does not list %s; aborting for safety",
 				rel.Version, asset.Name)
 		}
 	} else {
-		return errors.New("release did not publish SHA256SUMS; aborting for safety")
+		return false, errors.New("release did not publish SHA256SUMS; aborting for safety")
 	}
 
 	if confirm != nil && !confirm() {
 		fmt.Fprintln(out, "update canceled; current installation kept.")
-		return nil
+		return false, nil
 	}
 
 	plan := Plano{Release: rel, Asset: asset, Sum: sum}
@@ -87,7 +90,7 @@ func Rodar(ctx context.Context, out io.Writer, currentVersion string, confirm Co
 	}
 	staging, err := stage(ctx, plan)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer removeIfExists(staging)
 
@@ -96,12 +99,12 @@ func Rodar(ctx context.Context, out io.Writer, currentVersion string, confirm Co
 		if len(result.commands) > 0 {
 			fmt.Fprintln(out, "not enough permission to replace the binary; run the following, then retry /update:")
 			fmt.Fprintln(out, installCommands(result))
-			return err
+			return false, err
 		}
-		return err
+		return false, err
 	}
-	fmt.Fprintf(out, "installed %s; exit and reopen bh to use the new version.\n", rel.Version)
-	return nil
+	fmt.Fprintf(out, "installed %s; bh will exit now — reopen it to use the new version.\n", rel.Version)
+	return true, nil
 }
 
 // stagingRoot is where the downloaded binary waits for installation. It lives

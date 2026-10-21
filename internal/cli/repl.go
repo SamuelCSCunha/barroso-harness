@@ -652,7 +652,14 @@ func repl(io IO, cfg *config.Config) {
 		case "/help":
 			printHelp(io)
 		case "/update":
-			cmdUpdate(io)
+			// A new binary is in place: leave, so the next start runs it.
+			if cmdUpdate(io) {
+				if db != nil {
+					_ = db.TouchSession(sess.ID())
+				}
+				farewell(io.Out)
+				return
+			}
 		case "/context", "/contexto": // /contexto: legacy alias, not in help
 			cmdContext(io.Out, cfg, db)
 		case "/skills":

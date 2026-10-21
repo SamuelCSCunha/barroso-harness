@@ -32,18 +32,21 @@ const timeoutUpdate = 10 * time.Minute
 
 // cmdUpdate runs the full cycle. A channel failure NEVER brings the REPL
 // down: the error comes back as a message and the session goes on — updating is a convenience.
-func cmdUpdate(io IO) {
+// It reports true when a new binary was installed: the REPL then exits on its
+// own, since the running process is still the old version.
+func cmdUpdate(io IO) bool {
 	version := strings.TrimSpace(Versao)
 	ctx, cancel := context.WithTimeout(context.Background(), timeoutUpdate)
 	defer cancel()
 
-	err := update.Rodar(ctx, io.Out, version, func() bool {
+	installed, err := update.Rodar(ctx, io.Out, version, func() bool {
 		return confirm(io, "update barroso-harness now? [y/N]")
 	})
 	if err != nil {
 		errorFmt(io.ErrOut, "update failed", err)
-		return
+		return false
 	}
+	return installed
 }
 
 // confirm asks a yes/no question and returns true only for an explicit yes.
