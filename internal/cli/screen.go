@@ -1935,15 +1935,20 @@ func runScreen(io IO) int {
 				})
 			case "pgup", "pgdn", "rodacima", "rodabaixo", "mousedrag", "mousemove",
 				"mousedown", "mouseup", "mouserelease", "rightclick":
-				// A selection suppresses every other input while it holds text,
-				// as OpenCode does: the drag is being made or read.
+				// A selection suppresses hover while it holds text, as OpenCode
+				// does: the drag is being made or read. Scrolling is never
+				// suppressed (a kept selection used to freeze the wheel until
+				// Esc), and a new press drops the old selection and starts over.
 				t.mu.Lock()
 				selecting := t.hasSelection()
 				t.mu.Unlock()
-				if selecting && name != "mouseup" && name != "mouserelease" && name != "rightclick" {
+				if selecting && (name == "mousemove" || name == "mousedrag") && mouse.mode != mouseSelecting {
 					continue
 				}
 				edit(func() {
+					if name == "mousedown" && t.selOn {
+						t.selOn = false
+					}
 					switch name {
 					case "rodacima":
 						t.wheelScroll(k.row, k.col, 1)
