@@ -267,6 +267,13 @@ func turnRenderer(out io.Writer) runtime.Renderer {
 	return runtime.RendererDe(out)
 }
 
+// maxTextWidth caps the answer's line length: on a wide window a paragraph
+// running edge to edge is hard to read.
+const maxTextWidth = 100
+
+// textWidth is the width the answer wraps at: the terminal, up to maxTextWidth.
+func textWidth() int { return min(terminalWidth(), maxTextWidth) }
+
 // terminalWidth returns stdout's columns; 100 when unknown.
 func terminalWidth() int {
 	if w, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 20 {

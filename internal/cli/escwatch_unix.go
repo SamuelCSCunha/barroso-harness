@@ -5,6 +5,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"sync"
 	"time"
@@ -66,11 +67,15 @@ func watchEsc(io IO, cancel context.CancelFunc) (stop func()) {
 				continue
 			}
 			if !armedAt.IsZero() && time.Since(armedAt) < escInterruptWindow {
+				// The spinner owns the current line: clear it first, or the
+				// notice lands glued to "Thinking 5s".
+				fmt.Fprint(io.Out, clearLine)
 				warnFmt(io.Out, "canceling the turn")
 				cancel()
 				return
 			}
 			armedAt = time.Now()
+			fmt.Fprint(io.Out, clearLine)
 			warnFmt(io.Out, "press Esc again to cancel the turn")
 		}
 	}()
@@ -83,6 +88,9 @@ func watchEsc(io IO, cancel context.CancelFunc) (stop func()) {
 		})
 	}
 }
+
+// clearLine returns to column 0 and erases the line.
+const clearLine = "\r\033[K"
 
 // readable waits up to ms milliseconds for input on fd. EINTR counts as "not
 // yet"; any other error is returned.

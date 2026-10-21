@@ -614,6 +614,10 @@ func repl(io IO, cfg *config.Config) {
 				io.screen.Limpar()
 				replayHistory(io.screen, sess.History())
 				io.screen.Adicionar("") // spacing between the conversation and the notice
+			} else {
+				// Scrolling mode: no replay of the whole conversation, but the
+				// last exchange, so it is clear where it stopped.
+				printLastExchange(io.Out, sess.History())
 			}
 			okFmt(io.Out, "session "+sess.ID()+" resumed")
 		case "/save":
