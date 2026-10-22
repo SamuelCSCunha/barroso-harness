@@ -64,7 +64,7 @@ func TestSteerDeliveredAtRoundBoundary(t *testing.T) {
 		if !toolDone {
 			emit(map[string]any{"choices": []map[string]any{{"delta": map[string]any{"tool_calls": []map[string]any{{
 				"index": 0, "id": "c1", "type": "function",
-				"function": map[string]any{"name": "terminal_run", "arguments": `{"command":"echo hi"}`},
+				"function": map[string]any{"name": "shell", "arguments": `{"command":"echo hi"}`},
 			}}}}}})
 		} else {
 			emit(map[string]any{"choices": []map[string]any{{"delta": map[string]any{"content": "done"}}}})

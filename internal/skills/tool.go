@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	// bodyCap limits the body returned by skill_read. The skills catalog as a
+	// bodyCap limits the body returned by skill. The skills catalog as a
 	// whole is small, so the guardrail lives here and not in the runtime.
 	bodyCap = 48 << 10
 
@@ -20,8 +20,8 @@ const (
 	unknownSource = "unknown"
 )
 
-// Especificacoes returns the two skills tools: skills_list (catalog) and
-// skill_read (full body of one skill). Both share the given catalog; an empty
+// Especificacoes returns the two skills tools: skills (catalog) and
+// skill (full body of one skill). Both share the given catalog; an empty
 // list yields specs that report "no skills".
 func Especificacoes(list []Skill) []tools.Spec {
 	return []tools.Spec{
@@ -30,13 +30,13 @@ func Especificacoes(list []Skill) []tools.Spec {
 	}
 }
 
-// ── skills_list ───────────────────────────────────────────────────────────
+// ── skills ───────────────────────────────────────────────────────────
 
 func specSkillsList(list []Skill) tools.Spec {
 	return tools.Spec{
-		Name: "skills_list",
+		Name: "skills",
 		Description: "Lists the available skills (name, description and origin), numbered. " +
-			"To use one, call skill_read with the exact name — the body contains the full instructions.",
+			"To use one, call skill with its exact id (shown below) — the body contains the full instructions.",
 		Schema: map[string]any{"type": "object", "properties": map[string]any{}},
 		Exec: func(_ context.Context, _ string, _ json.RawMessage) (string, error) {
 			return catalog(list), nil
@@ -53,7 +53,7 @@ func catalog(list []Skill) string {
 	for i, s := range list {
 		fmt.Fprintf(&sb, "%d. %s — %s (%s)\n", i+1, s.Nome, shortDescription(s), shortSource(s))
 	}
-	sb.WriteString("\nUse skill_read with the exact name to load the full instructions.")
+	sb.WriteString("\nUse skill with the exact id (shown above) to load the full instructions.")
 	return strings.TrimRight(sb.String(), "\n")
 }
 
@@ -98,30 +98,31 @@ func firstLine(s string) string {
 	return ""
 }
 
-// ── skill_read ────────────────────────────────────────────────────────────
+// ── skill ────────────────────────────────────────────────────────────
 
 func specSkillRead(list []Skill) tools.Spec {
 	return tools.Spec{
-		Name: "skill_read",
-		Description: "Returns the full content (the markdown after the frontmatter) of a skill " +
-			"by the exact name shown in skills_list. Follow the instructions you receive.",
+		Name: "skill",
+		Description: "Load a specialized skill's instructions into the conversation when the task at hand " +
+			"matches its description. Returns the full content (the markdown after the frontmatter) of " +
+			"a skill by the exact id shown in skills. Follow the instructions you receive.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"name": map[string]any{"type": "string", "description": "exact skill name, as in skills_list"},
+				"id": map[string]any{"type": "string", "description": "skill id (its name), as shown in skills"},
 			},
-			"required": []string{"name"},
+			"required": []string{"id"},
 		},
 		Exec: func(_ context.Context, _ string, raw json.RawMessage) (string, error) {
 			var c struct {
-				Name string `json:"name"`
+				Name string `json:"id"`
 			}
 			if err := json.Unmarshal(raw, &c); err != nil {
 				return "", fmt.Errorf("invalid input: %w", err)
 			}
 			name := strings.TrimSpace(c.Name)
 			if name == "" {
-				return "", fmt.Errorf("skill not found; use skills_list")
+				return "", fmt.Errorf("skill not found; use skills")
 			}
 			for _, s := range list {
 				if s.Nome != name {
@@ -134,7 +135,7 @@ func specSkillRead(list []Skill) tools.Spec {
 				}
 				return "# " + s.Nome + "\n\n" + body, nil
 			}
-			return "", fmt.Errorf("skill %s not found; use skills_list", name)
+			return "", fmt.Errorf("skill %s not found; use skills", name)
 		},
 	}
 }

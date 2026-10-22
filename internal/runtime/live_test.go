@@ -39,7 +39,7 @@ func TestLiveRendererGetsStartOutputEnd(t *testing.T) {
 	s := NewSession(config.Config{BaseURL: srv.URL, Model: "fake", APIKey: "k", Janela: 100_000})
 	s.Injetar(tools.Spec{Name: "talker", Schema: map[string]any{"type": "object"},
 		Exec: func(ctx context.Context, _ string, _ json.RawMessage) (string, error) {
-			// Built-in terminal_run streams through the same sink.
+			// Built-in shell streams through the same sink.
 			sink := tools.OutputSinkForTest(ctx)
 			if sink == nil {
 				t.Error("no live output sink in the tool's context")

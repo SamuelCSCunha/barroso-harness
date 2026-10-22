@@ -42,8 +42,8 @@ func setupWithLoader(t *testing.T, load Carregador) *harness {
 func testHistory() []dealer.Mensagem {
 	return []dealer.Mensagem{
 		{Role: "user", Conteudo: "list the files"},
-		{Role: "tool_call", ToolID: "c1", ToolName: "list_dir", ToolArgs: `{}`},
-		{Role: "tool_result", ToolID: "c1", ToolName: "list_dir", Conteudo: "a.go\nb.go"},
+		{Role: "tool_call", ToolID: "c1", ToolName: "list", ToolArgs: `{}`},
+		{Role: "tool_result", ToolID: "c1", ToolName: "list", Conteudo: "a.go\nb.go"},
 		{Role: "assistant", Conteudo: "there are two files"},
 	}
 }
@@ -108,7 +108,7 @@ func TestSessionLoadReplaysHistoryAndResponds(t *testing.T) {
 	if ls[0].Params.Update.Content.Blocks[0].Text != "list the files" {
 		t.Errorf("wrong user text: %+v", ls[0].Params.Update.Content)
 	}
-	if ls[1].Params.Update.Title != "list_dir" {
+	if ls[1].Params.Update.Title != "list" {
 		t.Errorf("tool_call without the tool name: %+v", ls[1].Params.Update)
 	}
 	if ls[2].Params.Update.ToolCallID != ls[1].Params.Update.ToolCallID {

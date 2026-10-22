@@ -180,10 +180,10 @@ func TestReplayHistory(t *testing.T) {
 	replayHistory(tl, []dealer.Mensagem{
 		{Role: "user", Conteudo: "list the files"},
 		{Role: "assistant", Conteudo: ""},
-		{Role: "tool_call", ToolID: "1", ToolName: "terminal_run", ToolArgs: `{"command":"dir"}`},
-		{Role: "tool_call", ToolID: "2", ToolName: "file_read", ToolArgs: `{"path":"a.go"}`},
-		{Role: "tool_result", ToolID: "1", ToolName: "terminal_run", Conteudo: "exit_code: 0\nx"},
-		{Role: "tool_result", ToolID: "2", ToolName: "file_read", Conteudo: "package a", IsErro: true},
+		{Role: "tool_call", ToolID: "1", ToolName: "shell", ToolArgs: `{"command":"dir"}`},
+		{Role: "tool_call", ToolID: "2", ToolName: "read", ToolArgs: `{"path":"a.go"}`},
+		{Role: "tool_result", ToolID: "1", ToolName: "shell", Conteudo: "exit_code: 0\nx"},
+		{Role: "tool_result", ToolID: "2", ToolName: "read", Conteudo: "package a", IsErro: true},
 		{Role: "assistant", Conteudo: "done, two files"},
 	})
 	// The shell call is a "$ command" block with its output; the failed read is
@@ -201,7 +201,7 @@ func TestReplayHistory(t *testing.T) {
 	failed := false
 	for _, it := range tl.items {
 		for _, m := range append([]*item{it}, it.members...) {
-			if m.name == "file_read" && m.failed {
+			if m.name == "read" && m.failed {
 				failed = true
 			}
 		}

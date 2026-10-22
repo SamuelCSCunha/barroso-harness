@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// terminal_run must hand the model's command line to cmd.exe AS WRITTEN.
+// shell must hand the model's command line to cmd.exe AS WRITTEN.
 // exec.Command's default escaping rewrites inner double quotes as \" and
 // cmd.exe does not understand backslash escapes: the backslash leaked and the
 // command arrived truncated at the first quote. These two cases both fail

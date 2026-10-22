@@ -14,7 +14,7 @@ import (
 )
 
 // endpointDDG is DuckDuckGo's "lite" version: static HTML, no JavaScript,
-// one table per result. It is web_search's fallback when no SearXNG is
+// one table per result. It is websearch's fallback when no SearXNG is
 // configured — search works out of the box, and search_url becomes an
 // improvement (more sources, no scraping), not a prerequisite.
 //

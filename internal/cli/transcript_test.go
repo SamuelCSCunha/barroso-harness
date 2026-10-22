@@ -33,7 +33,7 @@ func TestShellBlockCollapse(t *testing.T) {
 	for i := 1; i <= 30; i++ {
 		out = append(out, fmt.Sprintf("out %d", i))
 	}
-	sc.toolResult("terminal_run", `{"command":"make test"}`, "exit_code: 0\nstdout+stderr:\n"+strings.Join(out, "\n"), false)
+	sc.toolResult("shell", `{"command":"make test"}`, "exit_code: 0\nstdout+stderr:\n"+strings.Join(out, "\n"), false)
 	txt := sc.transcriptText()
 	if !strings.Contains(txt, "$ make test") || !strings.Contains(txt, "out 30") || strings.Contains(txt, "out 5\n") {
 		t.Fatalf("collapsed:\n%s", txt)
@@ -46,7 +46,7 @@ func TestShellBlockCollapse(t *testing.T) {
 		t.Fatalf("expanded:\n%s", txt)
 	}
 	// A failing command names the exit code; a short output is not clickable.
-	sc.toolResult("terminal_run", `{"command":"false"}`, "exit_code: 2\nstdout+stderr:\n", false)
+	sc.toolResult("shell", `{"command":"false"}`, "exit_code: 2\nstdout+stderr:\n", false)
 	if !strings.Contains(sc.transcriptText(), "Command exited with code 2") {
 		t.Fatal("exit code line")
 	}
@@ -58,12 +58,12 @@ func TestExplorationGroup(t *testing.T) {
 	colorsOn = true
 	defer func() { colorsOn = false }()
 	sc, _ := newTestScreen(t, 100, 40, panelState{model: "m"})
-	sc.toolResult("file_read", `{"path":"a.go"}`, "package a", false)
+	sc.toolResult("read", `{"path":"a.go"}`, "package a", false)
 	if txt := sc.transcriptText(); !strings.Contains(txt, "→ Read a.go") || strings.Contains(txt, "package a") {
 		t.Fatalf("single read (no output shown):\n%s", txt)
 	}
 	sc.toolResult("grep", `{"pattern":"func"}`, "a.go:1:func x\nb.go:2:func y", false)
-	sc.toolResult("file_read", `{"path":"b.go","start":10,"limit":5}`, "x", false)
+	sc.toolResult("read", `{"path":"b.go","offset":10,"limit":5}`, "x", false)
 	txt := sc.transcriptText()
 	if !strings.Contains(txt, "→ Explored: 2 reads, 1 search") {
 		t.Fatalf("group:\n%s", txt)
@@ -74,8 +74,8 @@ func TestExplorationGroup(t *testing.T) {
 		t.Fatalf("expanded group:\n%s", txt)
 	}
 	// A non-exploration tool ends the group.
-	sc.toolResult("edit", `{"path":"a.go","old_string":"x","new_string":"y"}`, "ok: 1 replacement(s) in a.go", false)
-	sc.toolResult("file_read", `{"path":"c.go"}`, "c", false)
+	sc.toolResult("edit", `{"path":"a.go","oldString":"x","newString":"y"}`, "ok: 1 replacement(s) in a.go", false)
+	sc.toolResult("read", `{"path":"c.go"}`, "c", false)
 	if n := strings.Count(sc.transcriptText(), "Explored"); n != 1 {
 		t.Fatalf("a new run starts a new group: %d", n)
 	}
@@ -122,8 +122,8 @@ func TestEditAndWriteBlocks(t *testing.T) {
 	colorsOn = true
 	defer func() { colorsOn = false }()
 	sc, _ := newTestScreen(t, 100, 40, panelState{model: "m"})
-	sc.toolResult("edit", `{"path":"x.go","old_string":"old line","new_string":"new line"}`, "ok", false)
-	sc.toolResult("file_write", `{"path":"y.txt","content":"l1\nl2"}`, "ok", false)
+	sc.toolResult("edit", `{"path":"x.go","oldString":"old line","newString":"new line"}`, "ok", false)
+	sc.toolResult("write", `{"path":"y.txt","content":"l1\nl2"}`, "ok", false)
 	txt := sc.transcriptText()
 	for _, want := range []string{"← Edit x.go", "- old line", "+ new line", "# Wrote y.txt", "  1 l1", "  2 l2"} {
 		if !strings.Contains(txt, want) {
@@ -137,7 +137,7 @@ func TestFailedToolExpandsError(t *testing.T) {
 	colorsOn = true
 	defer func() { colorsOn = false }()
 	sc, _ := newTestScreen(t, 100, 40, panelState{model: "m"})
-	sc.toolResult("web_fetch", `{"url":"https://x"}`, "error: 404 not found", true)
+	sc.toolResult("webfetch", `{"url":"https://x"}`, "error: 404 not found", true)
 	if strings.Contains(sc.transcriptText(), "404") {
 		t.Fatal("the error is behind a click")
 	}
@@ -203,7 +203,7 @@ func TestShellBlockCRLFOutput(t *testing.T) {
 	defer func() { colorsOn = false }()
 	sc, sb := newTestScreen(t, 120, 30, panelState{model: "m"})
 	sc.Usuario("que horas são")
-	sc.toolResult("terminal_run", `{"command":"Get-Date"}`,
+	sc.toolResult("shell", `{"command":"Get-Date"}`,
 		"exit_code: 0\r\nstdout+stderr:\r\n2026-10-20 02:01:34\r\n", false)
 	sb.Reset()
 	sc.mu.Lock()
@@ -222,7 +222,7 @@ func TestShellBlockCRLFOutput(t *testing.T) {
 // live output; the result completes the SAME block as "$ command".
 func TestRunningShellBlockBecomesResult(t *testing.T) {
 	sc, _ := newTestScreen(t, 100, 40, panelState{model: "m"})
-	sc.toolStarted("0/c0", "terminal_run", `{"command":"make test"}`)
+	sc.toolStarted("0/c0", "shell", `{"command":"make test"}`)
 	txt := sc.transcriptText()
 	if !strings.Contains(txt, "make test") || strings.Contains(txt, "$ make test") {
 		t.Fatalf("running block:\n%s", txt)
@@ -231,7 +231,7 @@ func TestRunningShellBlockBecomesResult(t *testing.T) {
 	if !strings.Contains(sc.transcriptText(), "building") {
 		t.Fatalf("live output missing:\n%s", sc.transcriptText())
 	}
-	sc.toolFinished("0/c0", "terminal_run", `{"command":"make test"}`, "exit_code: 0\nstdout+stderr:\nok all", false)
+	sc.toolFinished("0/c0", "shell", `{"command":"make test"}`, "exit_code: 0\nstdout+stderr:\nok all", false)
 	txt = sc.transcriptText()
 	if !strings.Contains(txt, "$ make test") || !strings.Contains(txt, "ok all") || strings.Contains(txt, "building") {
 		t.Fatalf("finished block:\n%s", txt)

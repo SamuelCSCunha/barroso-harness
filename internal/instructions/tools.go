@@ -116,16 +116,16 @@ func Especificacoes() []tools.Spec {
 				"type": "object",
 				"properties": map[string]any{
 					"scope":      scopeProp,
-					"old_string": map[string]any{"type": "string", "description": "exact passage to replace (must be unique)"},
-					"new_string": map[string]any{"type": "string", "description": "replacement"},
+					"oldString": map[string]any{"type": "string", "description": "exact passage to replace (must be unique)"},
+					"newString": map[string]any{"type": "string", "description": "replacement"},
 				},
-				"required": []string{"old_string", "new_string"},
+				"required": []string{"oldString", "newString"},
 			},
 			Exec: func(_ context.Context, cwd string, raw json.RawMessage) (string, error) {
 				var c struct {
 					Scope     string `json:"scope"`
-					OldString string `json:"old_string"`
-					NewString string `json:"new_string"`
+					OldString string `json:"oldString"`
+					NewString string `json:"newString"`
 				}
 				if err := parse(raw, &c); err != nil {
 					return "", err
@@ -141,11 +141,11 @@ func Especificacoes() []tools.Spec {
 				text := string(b)
 				switch n := strings.Count(text, c.OldString); {
 				case c.OldString == "":
-					return "", fmt.Errorf("old_string is empty")
+					return "", fmt.Errorf("oldString is empty")
 				case n == 0:
-					return "", fmt.Errorf("old_string not found in %s; read it with instructions_read", p)
+					return "", fmt.Errorf("oldString not found in %s; read it with instructions_read", p)
 				case n > 1:
-					return "", fmt.Errorf("old_string occurs %d times in %s: include more context", n, p)
+					return "", fmt.Errorf("oldString occurs %d times in %s: include more context", n, p)
 				}
 				text = strings.Replace(text, c.OldString, c.NewString, 1)
 				if err := os.WriteFile(p, []byte(text), 0o644); err != nil {

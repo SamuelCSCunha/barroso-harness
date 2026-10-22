@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ruanbarroso/barroso-harness/internal/config"
+	"github.com/ruanbarroso/barroso-harness/internal/pricing"
 )
 
 // 24-bit palette copied from the OpenCode default theme (dark), so the screen
@@ -68,6 +69,9 @@ type tuiTurn struct {
 	out     io.Writer
 	cfg     *config.Config
 	started time.Time
+	// custoUSD is the turn's money cost, accumulated by Custo (only called
+	// when the active model has a declared price). 0 = no price, no display.
+	custoUSD float64
 
 	mu          sync.Mutex
 	spin        chan struct{} // closed to stop the spinner
@@ -215,7 +219,7 @@ func (t *tuiTurn) Eco(output string) {
 	if output == "" {
 		return
 	}
-	if strings.HasPrefix(name, "web_") && !failed {
+	if (strings.HasPrefix(name, "webfetch") || strings.HasPrefix(name, "websearch")) && !failed {
 		return
 	}
 	lines := strings.Split(output, "\n")
@@ -275,6 +279,10 @@ func (t *tuiTurn) Resposta(text string) {
 // Tokens is the turn footer, one muted line: "12.3s · 25.3 tok/s". The model,
 // effort and context % are on the status line printed right below it.
 // No mode label: BH has no modes, it is always YOLO.
+//
+// The money cost joins the line only when prices.json declares a price for the
+// active model ("$0.12"): with no price declared nothing is shown, and tokens
+// remain the metric. bh never guesses a cost.
 func (t *tuiTurn) Tokens(prompt, output int, dur time.Duration, compacted bool) {
 	t.stopSpin()
 	parts := []string{fmtDur(dur)}
@@ -285,8 +293,20 @@ func (t *tuiTurn) Tokens(prompt, output int, dur time.Duration, compacted bool) 
 	if compacted {
 		line += grayf(" · ") + purplef("compacted")
 	}
+	if texto := pricing.Formato(t.custoUSD); texto != "" {
+		line += grayf(" · ") + yellowf(texto)
+	}
 	fmt.Fprintln(t.out)
 	fmt.Fprintln(t.out, "  "+line)
+}
+
+// Custo receives the turn's accumulated money cost, but ONLY when the active
+// model has a declared price in prices.json. No call = nothing to show: the
+// footer keeps tokens as the metric.
+func (t *tuiTurn) Custo(usd float64) {
+	t.mu.Lock()
+	t.custoUSD = usd
+	t.mu.Unlock()
 }
 
 // ── boxes: header, input, request ─────────────────────────────────────────

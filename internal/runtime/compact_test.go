@@ -19,8 +19,8 @@ func TestCompactHistoryKeepsCurrentRequestAndRound(t *testing.T) {
 		{Role: "user", Conteudo: "old request"},
 		{Role: "assistant", Conteudo: "old answer"},
 		{Role: "user", Conteudo: "current request"},
-		{Role: "tool_call", ToolID: "c1", ToolName: "ctx_compact", ToolArgs: `{"state":"x"}`},
-		{Role: "tool_result", ToolID: "c1", ToolName: "ctx_compact", Conteudo: "ok"},
+		{Role: "tool_call", ToolID: "c1", ToolName: "context_compact", ToolArgs: `{"state":"x"}`},
+		{Role: "tool_result", ToolID: "c1", ToolName: "context_compact", Conteudo: "ok"},
 	}
 	out := compactHistory(h, "goal: X")
 	if len(out) != 4 {
@@ -93,7 +93,7 @@ func TestCompactSpecValidates(t *testing.T) {
 	}
 }
 
-// The policy decides whether the model sees ctx_compact.
+// The policy decides whether the model sees context_compact.
 func TestPolicyControlsCatalog(t *testing.T) {
 	has := func(p string) bool {
 		s := NewSession(config.Config{PoliticaContexto: p})
@@ -105,14 +105,14 @@ func TestPolicyControlsCatalog(t *testing.T) {
 		return false
 	}
 	if !has("") || !has("agente") || !has("agent") {
-		t.Error("default/agent policy should expose ctx_compact")
+		t.Error("default/agent policy should expose context_compact")
 	}
 	if has("limiar") || has("LIMIAR") || has("threshold") || has("Threshold") {
-		t.Error("threshold policy should not expose ctx_compact")
+		t.Error("threshold policy should not expose context_compact")
 	}
 }
 
-// End to end: the model calls ctx_compact in the middle of the second
+// End to end: the model calls context_compact in the middle of the second
 // request; the following request already goes with the compacted history,
 // and the session ends with the state in place of the old conversation.
 func TestSendAppliesAgentCompaction(t *testing.T) {
@@ -139,7 +139,7 @@ func TestSendAppliesAgentCompaction(t *testing.T) {
 		if n == 2 { // second request, first round: compact
 			emit(map[string]any{"choices": []map[string]any{{"delta": map[string]any{"tool_calls": []map[string]any{{
 				"index": 0, "id": "cmp1", "type": "function",
-				"function": map[string]any{"name": "ctx_compact", "arguments": `{"state":"goal: parser bug; cause in parse.go:42"}`},
+				"function": map[string]any{"name": "context_compact", "arguments": `{"state":"goal: parser bug; cause in parse.go:42"}`},
 			}}}}}})
 		} else {
 			emit(map[string]any{"choices": []map[string]any{{"delta": map[string]any{"content": "done"}}}})
@@ -159,7 +159,7 @@ func TestSendAppliesAgentCompaction(t *testing.T) {
 		t.Fatalf("request 2: %v", err)
 	}
 
-	// The 3rd request (after the ctx_compact result) is already compacted:
+	// The 3rd request (after the context_compact result) is already compacted:
 	// system, state, current request, tool_call, tool_result.
 	mu.Lock()
 	msgs := last

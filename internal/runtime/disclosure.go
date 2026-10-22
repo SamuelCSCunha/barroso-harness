@@ -55,8 +55,14 @@ const (
 
 // deferrable reports whether a tool goes behind tool_search: management
 // tools and the tools of external MCP servers (injected, not sub-agents).
+// The subagent family (launcher "subagent" + subagent_status/subagent_result)
+// is always kept direct: results arrive as messages, deferring the launcher
+// changes the delegation contract.
 func deferrable(name string, injected map[string]bool) bool {
-	return managementTools[name] || (injected[name] && !strings.HasPrefix(name, "task_"))
+	if name == "subagent" || strings.HasPrefix(name, "subagent_") {
+		return false
+	}
+	return managementTools[name] || injected[name]
 }
 
 // disclose splits the catalog. direct is what goes to the provider; exec is

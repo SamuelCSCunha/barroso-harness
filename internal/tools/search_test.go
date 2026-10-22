@@ -71,14 +71,14 @@ func TestGrepSkipsBinary(t *testing.T) {
 
 func TestGrepFilesSortedAndGlob(t *testing.T) {
 	root := grepTree(t)
-	out, err := call(t, execGrep, root, map[string]any{"pattern": "alpha", "case_insensitive": true, "glob": "*.go", "output": "files"})
+	out, err := call(t, execGrep, root, map[string]any{"pattern": "alpha", "caseSensitive": false, "include": "*.go", "output": "files"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if out != "a.go\nsub/b.go\n" {
 		t.Fatalf("unexpected files output: %q", out)
 	}
-	out, err = call(t, execGrep, root, map[string]any{"pattern": "Alpha", "glob": "sub/**/*.txt", "output": "files"})
+	out, err = call(t, execGrep, root, map[string]any{"pattern": "Alpha", "include": "sub/**/*.txt", "output": "files"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,10 +159,10 @@ func TestGlobDoubleStarAndMtimeOrder(t *testing.T) {
 func TestEditErrors(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "f.txt", "one\ntwo\none\n")
-	if _, err := call(t, execEdit, root, map[string]any{"path": "f.txt", "old_string": "three", "new_string": "x"}); err == nil || !strings.Contains(err.Error(), "not found") {
+	if _, err := call(t, execEdit, root, map[string]any{"path": "f.txt", "oldString": "three", "newString": "x"}); err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("expected not found, got %v", err)
 	}
-	_, err := call(t, execEdit, root, map[string]any{"path": "f.txt", "old_string": "one", "new_string": "x"})
+	_, err := call(t, execEdit, root, map[string]any{"path": "f.txt", "oldString": "one", "newString": "x"})
 	if err == nil || !strings.Contains(err.Error(), "2 times") {
 		t.Fatalf("expected ambiguity error, got %v", err)
 	}
@@ -171,11 +171,11 @@ func TestEditErrors(t *testing.T) {
 func TestEditReplaceAllAndSingle(t *testing.T) {
 	root := t.TempDir()
 	p := writeFile(t, root, "f.txt", "one\ntwo\none\n")
-	out, err := call(t, execEdit, root, map[string]any{"path": "f.txt", "old_string": "one", "new_string": "1", "replace_all": true})
+	out, err := call(t, execEdit, root, map[string]any{"path": "f.txt", "oldString": "one", "newString": "1", "replaceAll": true})
 	if err != nil || out != "ok: 2 replacement(s) in f.txt" {
 		t.Fatalf("out=%q err=%v", out, err)
 	}
-	out, err = call(t, execEdit, root, map[string]any{"path": "f.txt", "old_string": "two\n", "new_string": ""})
+	out, err = call(t, execEdit, root, map[string]any{"path": "f.txt", "oldString": "two\n", "newString": ""})
 	if err != nil || out != "ok: 1 replacement(s) in f.txt" {
 		t.Fatalf("out=%q err=%v", out, err)
 	}
@@ -188,7 +188,7 @@ func TestEditReplaceAllAndSingle(t *testing.T) {
 func TestEditPreservesCRLF(t *testing.T) {
 	root := t.TempDir()
 	p := writeFile(t, root, "w.txt", "alpha\r\nbeta\r\ngamma\r\n")
-	_, err := call(t, execEdit, root, map[string]any{"path": "w.txt", "old_string": "alpha\nbeta", "new_string": "alpha\nBETA\nextra"})
+	_, err := call(t, execEdit, root, map[string]any{"path": "w.txt", "oldString": "alpha\nbeta", "newString": "alpha\nBETA\nextra"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +203,7 @@ func TestBuiltinsIncludeSearchTools(t *testing.T) {
 	for _, s := range SpecsBuiltins() {
 		names[s.Name] = true
 	}
-	for _, n := range []string{"grep", "glob", "edit"} {
+	for _, n := range []string{"grep", "glob", "edit", "edit_many"} {
 		if !names[n] {
 			t.Fatalf("%s missing from SpecsBuiltins", n)
 		}
@@ -252,5 +252,124 @@ func TestGrepNoNoteWhenComplete(t *testing.T) {
 	out, _ := call(t, execGrep, root, map[string]any{"pattern": "needle"})
 	if strings.Contains(out, "stopped early") {
 		t.Fatalf("unexpected note:\n%s", out)
+	}
+}
+
+// ── edit_many ──────────────────────────────────────────────────────────────
+
+// The whole point of the tool: many files change in ONE call, with the same
+// contract as `edit`.
+func TestEditManyAcrossFiles(t *testing.T) {
+	root := t.TempDir()
+	a := writeFile(t, root, "a.go", "package main\nfunc oldName() {}\n")
+	b := writeFile(t, root, "pkg/b.go", "package pkg\nfunc oldName() {}\n// keep\n")
+	c := writeFile(t, root, "pkg/c.go", "package pkg\n// only a comment\n")
+
+	out, err := call(t, execEditMany, root, map[string]any{"edits": []map[string]any{
+		{"path": "a.go", "oldString": "func oldName()", "newString": "func newName()"},
+		{"path": "pkg/b.go", "oldString": "func oldName()", "newString": "func newName()"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "a.go") || !strings.Contains(out, "pkg/b.go") || !strings.Contains(out, "(2 file(s) changed)") {
+		t.Fatalf("unexpected result:\n%s", out)
+	}
+	for _, p := range []string{a, b} {
+		got, _ := os.ReadFile(p)
+		if !strings.Contains(string(got), "func newName()") || strings.Contains(string(got), "oldName") {
+			t.Fatalf("%s not rewritten: %q", p, got)
+		}
+	}
+	// c.go was never mentioned.
+	got, _ := os.ReadFile(c)
+	if string(got) != "package pkg\n// only a comment\n" {
+		t.Fatalf("untouched file changed: %q", got)
+	}
+}
+
+// Two edits on the SAME file compose: the second sees the first's result.
+func TestEditManyComposesOnSameFile(t *testing.T) {
+	root := t.TempDir()
+	p := writeFile(t, root, "f.txt", "alpha beta gamma\n")
+	out, err := call(t, execEditMany, root, map[string]any{"edits": []map[string]any{
+		{"path": "f.txt", "oldString": "alpha", "newString": "alphaX"},
+		{"path": "f.txt", "oldString": "beta", "newString": "betaX"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "ok: 2 replacement(s) in f.txt") {
+		t.Fatalf("replacements on one file should be counted together:\n%s", out)
+	}
+	got, _ := os.ReadFile(p)
+	if string(got) != "alphaX betaX gamma\n" {
+		t.Fatalf("content %q", got)
+	}
+}
+
+// All-or-nothing: ONE unmatched edit and NOTHING is written, not even the
+// edits before it. A half-applied refactor is worse than a failed one.
+func TestEditManyWritesNothingWhenAnyEditFails(t *testing.T) {
+	root := t.TempDir()
+	a := writeFile(t, root, "a.txt", "one\n")
+	b := writeFile(t, root, "b.txt", "safe\n")
+
+	_, err := call(t, execEditMany, root, map[string]any{"edits": []map[string]any{
+		{"path": "a.txt", "oldString": "one", "newString": "ONE"},
+		{"path": "b.txt", "oldString": "not-there", "newString": "x"},
+	}})
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected the failing edit to be reported, got %v", err)
+	}
+	for _, p := range []string{a, b} {
+		got, _ := os.ReadFile(p)
+		if string(got) != "one\n" && string(got) != "safe\n" {
+			t.Fatalf("%s was written despite a later failure: %q", p, got)
+		}
+	}
+}
+
+func TestEditManyErrors(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "f.txt", "dup\ndup\n")
+	if _, err := call(t, execEditMany, root, map[string]any{"edits": []map[string]any{}}); err == nil {
+		t.Fatal("empty edits should fail")
+	}
+	// Ambiguity is the same error `edit` gives: replaceAll is the answer.
+	_, err := call(t, execEditMany, root, map[string]any{"edits": []map[string]any{
+		{"path": "f.txt", "oldString": "dup", "newString": "x"},
+	}})
+	if err == nil || !strings.Contains(err.Error(), "2 times") {
+		t.Fatalf("expected ambiguity error, got %v", err)
+	}
+	// A missing file names the path.
+	_, err = call(t, execEditMany, root, map[string]any{"edits": []map[string]any{
+		{"path": "nope.txt", "oldString": "x", "newString": "y"},
+	}})
+	if err == nil || !strings.Contains(err.Error(), "nope.txt") {
+		t.Fatalf("expected the path in the error, got %v", err)
+	}
+	// An empty oldString points at write, like `edit`.
+	_, err = call(t, execEditMany, root, map[string]any{"edits": []map[string]any{
+		{"path": "f.txt", "oldString": "", "newString": "y"},
+	}})
+	if err == nil || !strings.Contains(err.Error(), "write") {
+		t.Fatalf("expected the write hint, got %v", err)
+	}
+}
+
+func TestEditManyPreservesCRLF(t *testing.T) {
+	root := t.TempDir()
+	p := writeFile(t, root, "w.txt", "alpha\r\nbeta\r\n")
+	_, err := call(t, execEditMany, root, map[string]any{"edits": []map[string]any{
+		{"path": "w.txt", "oldString": "alpha\nbeta", "newString": "alpha\nBETA"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(p)
+	if string(got) != "alpha\r\nBETA\r\n" {
+		t.Fatalf("CRLF not preserved: %q", got)
 	}
 }

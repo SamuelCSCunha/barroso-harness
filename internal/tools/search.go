@@ -20,6 +20,11 @@ import (
 const (
 	maxSearchFileSize = 5 << 20 // files above this are skipped by grep
 	binarySniffBytes  = 8 << 10 // a NUL byte in this prefix marks a binary file
+
+	// maxEditManyFiles caps a single edit_many call. It is high enough for a
+	// project-wide refactor and low enough that a mistake stays bounded and
+	// reviewable; bigger work is split into a few calls on purpose.
+	maxEditManyFiles = 50
 )
 
 // Walk limits. Without them a grep over a home directory (130k+ files of
@@ -191,18 +196,20 @@ func walkFiles(ctx context.Context, root string, visit func(abs, rel string, d f
 func specGrep() Spec {
 	return Spec{
 		Name: "grep",
-		Description: "Searches file CONTENTS with a Go regular expression (RE2 syntax), recursively, in pure Go — " +
-			"works the same on every OS. ALWAYS use this instead of terminal_run with grep/findstr/git grep/Select-String. " +
-			"Skips .git, node_modules, vendor, dist, binary files and files over 5 MiB. Results are sorted by path. " +
-			"Examples: {\"pattern\":\"func Send\\\\(\",\"glob\":\"*.go\"}; {\"pattern\":\"TODO|FIXME\",\"path\":\"internal\",\"output\":\"files\"}; " +
-			"{\"pattern\":\"timeout\",\"case_insensitive\":true,\"context\":2}.",
+		Description: "Search file contents using a regular expression (Go's RE2 syntax), recursively, in pure Go — " +
+			"works identically on every OS. Use it to locate specific code, symbols, or text patterns, and narrow searches " +
+			"with `path` or `include`. ALWAYS use this instead of shell with grep/findstr/git grep/Select-String. " +
+			"Skips .git, node_modules, vendor, dist, binary files and files over 5 MiB. Returns matching file paths, " +
+			"line numbers, and line previews; results are sorted by path. " +
+			"Examples: {\"pattern\":\"func Send\\\\(\",\"include\":\"*.go\"}; {\"pattern\":\"TODO|FIXME\",\"path\":\"internal\",\"output\":\"files\"}; " +
+			"{\"pattern\":\"timeout\",\"caseSensitive\":false,\"context\":2}.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"pattern":          map[string]any{"type": "string", "description": "Go regexp (RE2), e.g. `func \\w+Handler` or `import \"fmt\"`; escape regex metacharacters for literal text"},
 				"path":             map[string]any{"type": "string", "description": "directory or single file to search (default: cwd)"},
-				"glob":             map[string]any{"type": "string", "description": "filename filter, e.g. \"*.go\" or \"internal/**/*_test.go\"; a pattern without '/' matches the base name at any depth; brace sets like {a,b} are not supported"},
-				"case_insensitive": map[string]any{"type": "boolean", "description": "case-insensitive match (default false)"},
+				"include":          map[string]any{"type": "string", "description": "filename filter, e.g. \"*.go\" or \"internal/**/*_test.go\"; a pattern without '/' matches the base name at any depth; brace sets like {a,b} are not supported"},
+				"caseSensitive":    map[string]any{"type": "boolean", "description": "case-sensitive match (default true)"},
 				"context":          map[string]any{"type": "integer", "description": "lines of context before and after each match (default 0; content output only)"},
 				"output":           map[string]any{"type": "string", "enum": []string{"content", "files", "count"}, "description": "\"content\" (default): `path:line: text`; \"files\": matching paths only; \"count\": matches per file"},
 			},
@@ -214,12 +221,12 @@ func specGrep() Spec {
 
 func execGrep(ctx context.Context, cwd string, raw json.RawMessage) (string, error) {
 	var c struct {
-		Pattern         string `json:"pattern"`
-		Path            string `json:"path"`
-		Glob            string `json:"glob"`
-		CaseInsensitive bool   `json:"case_insensitive"`
-		Context         int    `json:"context"`
-		Output          string `json:"output"`
+		Pattern       string `json:"pattern"`
+		Path          string `json:"path"`
+		Include       string `json:"include"`
+		CaseSensitive bool   `json:"caseSensitive"`
+		Context       int    `json:"context"`
+		Output        string `json:"output"`
 	}
 	if err := json.Unmarshal(raw, &c); err != nil {
 		return "", fmt.Errorf("invalid input: %w", err)
@@ -228,7 +235,7 @@ func execGrep(ctx context.Context, cwd string, raw json.RawMessage) (string, err
 		return "", fmt.Errorf("pattern is required")
 	}
 	expr := c.Pattern
-	if c.CaseInsensitive {
+	if !c.CaseSensitive {
 		expr = "(?i)" + expr
 	}
 	re, err := regexp.Compile(expr)
@@ -245,7 +252,7 @@ func execGrep(ctx context.Context, cwd string, raw json.RawMessage) (string, err
 	if c.Context < 0 {
 		c.Context = 0
 	}
-	match, err := globMatcher(c.Glob)
+	match, err := globMatcher(c.Include)
 	if err != nil {
 		return "", err
 	}
@@ -367,10 +374,10 @@ func execGrep(ctx context.Context, cwd string, raw json.RawMessage) (string, err
 func specGlob() Spec {
 	return Spec{
 		Name: "glob",
-		Description: "Finds files by NAME pattern with `**` support, in pure Go. Use it instead of terminal_run with dir/find/ls to locate files. " +
+		Description: "Search file paths using a glob pattern (examples: \"**/*.go\", \"internal/**/*_test.go\"), in pure Go — " +
+			"works identically on every OS. Use it instead of shell with dir/find/ls to locate files. " +
 			"Returns paths relative to the base dir, newest modification first. Skips .git, node_modules, vendor, dist. " +
-			"Examples: {\"pattern\":\"**/*.go\"}; {\"pattern\":\"internal/**/screen*.go\"}; {\"pattern\":\"*.md\",\"path\":\"docs\"} " +
-			"(a pattern without '/' matches only at the top level of the base dir; use **/ to recurse).",
+			"(A pattern without '/' matches only at the top level of the base dir; use **/ to recurse.)",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -448,20 +455,23 @@ func execGlob(ctx context.Context, cwd string, raw json.RawMessage) (string, err
 func specEdit() Spec {
 	return Spec{
 		Name: "edit",
-		Description: "Edits a file by EXACT string replacement: old_string must appear exactly once (include enough surrounding lines " +
-			"to make it unique) unless replace_all is true. Prefer this over file_write for any change to an existing file — " +
-			"send only the changed region, never the whole file. Copy old_string verbatim from file_read output, WITHOUT the " +
-			"`N: ` line-number prefix, keeping indentation exactly. CRLF files are handled: write plain \\n in old_string/new_string. " +
-			"To create a new file use file_write.",
+		Description: "Edit the contents of a file by finding and replacing exact text. When editing text from read " +
+			"output, preserve the exact indentation (tabs or spaces) and omit the line-number prefix, such as `1: `. " +
+			"Never include the prefix in oldString or newString values: write line breaks as \\n and the file's " +
+			"existing CRLF or LF line endings are matched and preserved. " +
+			"By default oldString must appear EXACTLY ONCE (include enough surrounding lines to make it unique); " +
+			"multiple matches FAIL unless replaceAll is true — set it to replace every occurrence, e.g. renaming a variable. " +
+			"Prefer this over write for any change to an existing file: send only the changed region, never the whole file. " +
+			"To create or overwrite a whole file use write.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"path":        map[string]any{"type": "string", "description": "file to edit"},
-				"old_string":  map[string]any{"type": "string", "description": "exact text to replace (non-empty)"},
-				"new_string":  map[string]any{"type": "string", "description": "replacement text (may be empty to delete)"},
-				"replace_all": map[string]any{"type": "boolean", "description": "replace every occurrence (default false: exactly one must exist)"},
+				"oldString":  map[string]any{"type": "string", "description": "exact text to replace (non-empty)"},
+				"newString":  map[string]any{"type": "string", "description": "replacement text (may be empty to delete)"},
+				"replaceAll": map[string]any{"type": "boolean", "description": "replace every occurrence (default false: exactly one must exist)"},
 			},
-			"required": []string{"path", "old_string", "new_string"},
+			"required": []string{"path", "oldString", "newString"},
 		},
 		Exec: execEdit,
 	}
@@ -470,9 +480,9 @@ func specEdit() Spec {
 func execEdit(_ context.Context, cwd string, raw json.RawMessage) (string, error) {
 	var c struct {
 		Path       string `json:"path"`
-		OldString  string `json:"old_string"`
-		NewString  string `json:"new_string"`
-		ReplaceAll bool   `json:"replace_all"`
+		OldString  string `json:"oldString"`
+		NewString  string `json:"newString"`
+		ReplaceAll bool   `json:"replaceAll"`
 	}
 	if err := json.Unmarshal(raw, &c); err != nil {
 		return "", fmt.Errorf("invalid input: %w", err)
@@ -481,10 +491,10 @@ func execEdit(_ context.Context, cwd string, raw json.RawMessage) (string, error
 		return "", fmt.Errorf("path is required")
 	}
 	if c.OldString == "" {
-		return "", fmt.Errorf("old_string is empty; to create or overwrite a whole file use file_write")
+		return "", fmt.Errorf("oldString is empty; to create or overwrite a whole file use write")
 	}
 	if c.OldString == c.NewString {
-		return "", fmt.Errorf("old_string and new_string are identical; nothing to change")
+		return "", fmt.Errorf("oldString and newString are identical; nothing to change")
 	}
 	p := resolvePath(cwd, c.Path)
 	info, err := os.Stat(p)
@@ -503,10 +513,10 @@ func execEdit(_ context.Context, cwd string, raw json.RawMessage) (string, error
 	}
 	n := strings.Count(content, oldS)
 	if n == 0 {
-		return "", fmt.Errorf("old_string not found in %s; re-read the file and copy the text exactly (indentation, whitespace, no line-number prefixes)", c.Path)
+		return "", fmt.Errorf("oldString not found in %s; re-read the file and copy the text exactly (indentation, whitespace, no line-number prefixes)", c.Path)
 	}
 	if n > 1 && !c.ReplaceAll {
-		return "", fmt.Errorf("old_string found %d times in %s; add more surrounding context to make it unique, or set replace_all to true", n, c.Path)
+		return "", fmt.Errorf("oldString found %d times in %s; add more surrounding context to make it unique, or set replaceAll to true", n, c.Path)
 	}
 	if c.ReplaceAll {
 		content = strings.ReplaceAll(content, oldS, newS)
@@ -522,4 +532,164 @@ func execEdit(_ context.Context, cwd string, raw json.RawMessage) (string, error
 // toCRLF turns bare LF into CRLF, leaving existing CRLF intact.
 func toCRLF(s string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\n", "\r\n")
+}
+
+// ── edit_many: several exact replacements in several files ──────────────────
+
+// UmEdicao is one replacement: the same contract as edit's arguments, plus the
+// path. decrescente order has no meaning — every edit is independent.
+type UmEdicao struct {
+	Path       string `json:"path"`
+	OldString  string `json:"oldString"`
+	NewString  string `json:"newString"`
+	ReplaceAll bool   `json:"replaceAll"`
+}
+
+func specEditMany() Spec {
+	return Spec{
+		Name: "edit_many",
+		Description: "Applies several EXACT string replacements across several files in ONE call, the way a multi-file patch does. " +
+			"Each edit has the same contract as the `edit` tool (oldString must appear exactly once in its file, unless " +
+			"replaceAll is set; CRLF is handled). Use it for a refactor that touches the same region of many files — one call " +
+			"instead of one `edit` per file, which is cheaper in tokens and rounds. Every edit is validated against the " +
+			"file's CURRENT content before anything is written: if ANY edit fails its match, NOTHING is written and the " +
+			"result names the edits that failed. To change one file only, prefer `edit`.",
+		Schema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"edits": map[string]any{
+					"type":        "array",
+					"description": "the replacements to apply; order is irrelevant",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"path":        map[string]any{"type": "string", "description": "file to edit"},
+							"oldString":  map[string]any{"type": "string", "description": "exact text to replace (non-empty)"},
+							"newString":  map[string]any{"type": "string", "description": "replacement text (may be empty to delete)"},
+							"replaceAll": map[string]any{"type": "boolean", "description": "replace every occurrence (default false: exactly one must exist)"},
+						},
+						"required": []string{"path", "oldString", "newString"},
+					},
+				},
+			},
+			"required": []string{"edits"},
+		},
+		Exec: execEditMany,
+	}
+}
+
+// editResult is one planned write: the file, its new content and the number of
+// replacements that produced it.
+type editResult struct {
+	path string
+	body string
+	mode fs.FileMode
+	n    int
+}
+
+func execEditMany(_ context.Context, cwd string, raw json.RawMessage) (string, error) {
+	var c struct {
+		Edits []UmEdicao `json:"edits"`
+	}
+	if err := json.Unmarshal(raw, &c); err != nil {
+		return "", fmt.Errorf("invalid input: %w", err)
+	}
+	if len(c.Edits) == 0 {
+		return "", fmt.Errorf("edits is empty; to change a single file use the `edit` tool")
+	}
+	if len(c.Edits) > maxEditManyFiles {
+		return "", fmt.Errorf("%d edits in one call exceeds the limit of %d; split the work into a few edit_many calls", len(c.Edits), maxEditManyFiles)
+	}
+
+	// ── phase 1: plan every write, against the CURRENT content ────────────
+	// The edits are grouped per file so two edits on the same file compose
+	// (the second sees the first's result), and an unmatched edit on file #12
+	// leaves files #1..#11 untouched.
+	order := make([]string, 0, len(c.Edits))
+	pending := map[string][]UmEdicao{}
+	for i, e := range c.Edits {
+		e.Path = strings.TrimSpace(e.Path)
+		if e.Path == "" {
+			return "", fmt.Errorf("edit %d: path is required", i)
+		}
+		if e.OldString == "" {
+			return "", fmt.Errorf("edit %d (%s): oldString is empty; to create or overwrite a whole file use write", i, e.Path)
+		}
+		if _, dup := pending[e.Path]; !dup {
+			order = append(order, e.Path)
+		}
+		pending[e.Path] = append(pending[e.Path], e)
+	}
+
+	type umResultado struct {
+		idx int
+		n   int
+	}
+	planned := map[string]*editResult{}
+	contagem := map[string][]umResultado{}
+	for _, path := range order {
+		p := resolvePath(cwd, path)
+		info, err := os.Stat(p)
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", path, err)
+		}
+		if info.IsDir() {
+			return "", fmt.Errorf("%s is a directory, not a file", path)
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", path, err)
+		}
+		content := string(b)
+		var count []umResultado
+		for j, e := range pending[path] {
+			oldS, newS := e.OldString, e.NewString
+			if strings.Contains(content, "\r\n") {
+				oldS, newS = toCRLF(oldS), toCRLF(newS)
+			}
+			if oldS == newS {
+				return "", fmt.Errorf("edit %d (%s): oldString and newString are identical; nothing to change", len(count)+j, e.Path)
+			}
+			n := strings.Count(content, oldS)
+			switch {
+			case n == 0:
+				return "", fmt.Errorf("edit %d (%s): oldString not found; re-read the file and copy the text exactly (indentation, whitespace, no line-number prefixes)", len(count)+j, e.Path)
+			case n > 1 && !e.ReplaceAll:
+				return "", fmt.Errorf("edit %d (%s): oldString found %d times; add surrounding context to make it unique, or set replaceAll", len(count)+j, e.Path, n)
+			}
+			if e.ReplaceAll {
+				content = strings.ReplaceAll(content, oldS, newS)
+			} else {
+				content = strings.Replace(content, oldS, newS, 1)
+			}
+			count = append(count, umResultado{idx: len(count) + j, n: n})
+		}
+		planned[path] = &editResult{path: path, body: content, mode: info.Mode().Perm()}
+		contagem[path] = count
+	}
+
+	// ── phase 2: every edit matched; write ────────────────────────────────
+	// Validation of EVERYTHING before writing ANYTHING is the point of the
+	// tool: a half-applied refactor is worse than a failed one, because the
+	// transcript no longer describes the code.
+	var sb strings.Builder
+	total := 0
+	for _, path := range order {
+		r := planned[path]
+		if err := os.WriteFile(resolvePath(cwd, path), []byte(r.body), r.mode); err != nil {
+			// A failure in the middle leaves the earlier writes in place (a
+			// rename over a locked file, a disk error). The message says so
+			// plainly: the log must not claim a state that is not real.
+			fmt.Fprintf(&sb, "ok: %d file(s) written, then FAILED on %s: %v\n", total, path, err)
+			return sb.String(), nil
+		}
+		n := 0
+		for _, a := range contagem[path] {
+			n += a.n
+		}
+		total++
+		fmt.Fprintf(&sb, "ok: %d replacement(s) in %s\n", n, path)
+	}
+	fmt.Fprintf(&sb, "(%d file(s) changed)\n", total)
+	return sb.String(), nil
 }

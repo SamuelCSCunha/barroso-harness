@@ -33,6 +33,7 @@ func SpecsBuiltins() []Spec {
 		specGrep(),
 		specGlob(),
 		specEdit(),
+		specEditMany(),
 		specCtxRead(),
 	}
 }
@@ -79,25 +80,29 @@ func truncateMiddle(s string, limit int) string {
 	return s[:head] + fmt.Sprintf("\n\n[... %d bytes omitted from the middle; rerun with a filter (e.g. only failing tests) to see them ...]\n\n", len(s)-limit) + s[len(s)-tail:]
 }
 
-// ── terminal_run ─────────────────────────────────────────────────────────
+// ── shell ─────────────────────────────────────────────────────────
 
 func specTerminalRun() Spec {
 	return Spec{
-		Name: "terminal_run",
-		Description: "Runs a command in the local machine's terminal (YOLO mode, no approval prompt). " +
+		Name: "shell",
+		Description: "Execute a shell command and return its output. " +
 			shellNote() +
-			" Use it for builds, tests, git, package managers and running programs. Do NOT use it to search or edit files: " +
-			"prefer grep (content search), glob (find files), file_read (read) and edit (change) — they are faster and need no quoting. " +
-			"Returns merged stdout+stderr with exit_code. Never blocks the turn for long: a command still running after ~60 s is " +
-			"moved to the background and you get its job_id and output so far (use terminal_output to wait/read, terminal_kill to stop). " +
-			"A command that prints nothing for 5 minutes is treated as stuck and killed. For servers/watchers pass background:true " +
-			"(returns at once, never killed for silence). Huge output is saved to a file whose path is given.",
+			" Quote file paths containing spaces or special characters. Prefer dedicated tools over shell commands " +
+			"when possible (use grep to search contents, glob to find files, read to read and edit to change); " +
+			"use this tool for builds, tests, git, package managers and running programs. " +
+			"Yolo mode: no approval prompt; the local process privileges apply. " +
+			"Returns merged stdout+stderr with exit_code. Rely on automatic truncation unless filtering the output " +
+			"is more useful (huge output is saved to a file whose path is given). " +
+			"Commands accept an optional timeout; a foreground command still running after ~60 s is moved to the " +
+			"background and you get its jobID and output so far (wait/read with shell_output, stop with shell_kill). " +
+			"A foreground command that prints nothing for 5 minutes is treated as stuck and killed. " +
+			"For servers/watchers pass background:true (they are never killed for silence).",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"command":      map[string]any{"type": "string", "description": "command to run"},
 				"workdir":      map[string]any{"type": "string", "description": "working directory (default: the agent's cwd)"},
-				"timeout_secs": map[string]any{"type": "integer", "description": "optional hard limit in seconds; the command is killed when it passes it (default none)"},
+				"timeout": map[string]any{"type": "integer", "description": "optional timeout in milliseconds; the command is killed when it passes it (default none; 0 = none)"},
 				"background":   map[string]any{"type": "boolean", "description": "start it as a background job and return immediately (servers, watchers, long jobs)"},
 			},
 			"required": []string{"command"},
@@ -106,7 +111,7 @@ func specTerminalRun() Spec {
 			var c struct {
 				Command    string `json:"command"`
 				Workdir    string `json:"workdir"`
-				Timeout    int    `json:"timeout_secs"`
+				Timeout    int    `json:"timeout"`
 				Background bool   `json:"background"`
 			}
 			if err := json.Unmarshal(raw, &c); err != nil {
@@ -138,27 +143,27 @@ func specTerminalRun() Spec {
 			}
 			// An explicit timeout is the model asking for a hard bound: honor it
 			// and do not auto-background.
-			return runForeground(ctx, j, time.Duration(c.Timeout)*time.Second, c.Timeout <= 0), nil
+			return runForeground(ctx, j, time.Duration(c.Timeout)*time.Millisecond, c.Timeout <= 0), nil
 		},
 	}
 }
 
 func specTerminalOutput() Spec {
 	return Spec{
-		Name: "terminal_output",
-		Description: "Waits for a background terminal_run job and returns its new output, or its final exit_code when it ended. " +
-			"Without job_id lists the jobs. Waits up to wait_secs (default 60, max 600) — prefer one long wait over many short polls.",
+		Name: "shell_output",
+		Description: "Waits for a background shell job and returns its new output, or its final exit_code when it ended. " +
+			"Without jobID lists the jobs. Waits up to waitSecs (default 60, max 600) — prefer one long wait over many short polls.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"job_id":    map[string]any{"type": "string"},
-				"wait_secs": map[string]any{"type": "integer", "description": "how long to wait for it to finish (default 60, max 600; 0 = just peek)"},
+				"jobID":    map[string]any{"type": "string"},
+				"waitSecs": map[string]any{"type": "integer", "description": "how long to wait for it to finish (default 60, max 600; 0 = just peek)"},
 			},
 		},
 		Exec: func(ctx context.Context, _ string, raw json.RawMessage) (string, error) {
 			var c struct {
-				JobID string `json:"job_id"`
-				Wait  *int   `json:"wait_secs"`
+				JobID string `json:"jobID"`
+				Wait  *int   `json:"waitSecs"`
 			}
 			if len(raw) > 0 {
 				if err := json.Unmarshal(raw, &c); err != nil {
@@ -170,7 +175,7 @@ func specTerminalOutput() Spec {
 			}
 			j, ok := lookupJob(c.JobID)
 			if !ok {
-				return "", fmt.Errorf("unknown job %q (it may have been reported finished already); call terminal_output without job_id to list", c.JobID)
+				return "", fmt.Errorf("unknown job %q (it may have been reported finished already); call shell_output without jobID to list", c.JobID)
 			}
 			wait := defaultOutputWait
 			if c.Wait != nil {
@@ -183,16 +188,16 @@ func specTerminalOutput() Spec {
 
 func specTerminalKill() Spec {
 	return Spec{
-		Name:        "terminal_kill",
-		Description: "Stops a background terminal_run job and its child processes, returning its final output.",
+		Name:        "shell_kill",
+		Description: "Stops a background shell job and its child processes, returning its final output.",
 		Schema: map[string]any{
 			"type":       "object",
-			"properties": map[string]any{"job_id": map[string]any{"type": "string"}},
-			"required":   []string{"job_id"},
+			"properties": map[string]any{"jobID": map[string]any{"type": "string"}},
+			"required":   []string{"jobID"},
 		},
 		Exec: func(ctx context.Context, _ string, raw json.RawMessage) (string, error) {
 			var c struct {
-				JobID string `json:"job_id"`
+				JobID string `json:"jobID"`
 			}
 			if err := json.Unmarshal(raw, &c); err != nil {
 				return "", fmt.Errorf("invalid input: %w", err)
@@ -202,14 +207,14 @@ func specTerminalKill() Spec {
 				return "", fmt.Errorf("unknown job %q", c.JobID)
 			}
 			if !j.finished() {
-				j.kill("killed by terminal_kill")
+				j.kill("killed by shell_kill")
 			}
 			return waitJob(ctx, j, 0), nil
 		},
 	}
 }
 
-// shellNote describes the shell terminal_run uses on this platform.
+// shellNote describes the shell the shell tool uses on this platform.
 func shellNote() string {
 	if runtime.GOOS == "windows" {
 		return "On this machine (Windows) the command runs via `cmd /C`: use cmd.exe syntax (dir, type, set, &&, double quotes), " +
@@ -218,7 +223,7 @@ func shellNote() string {
 	return "The command runs via `bash -c`."
 }
 
-// ShellName is the shell terminal_run uses on this platform, for the system prompt.
+// ShellName is the shell the shell tool uses on this platform, for the system prompt.
 func ShellName() string {
 	if runtime.GOOS == "windows" {
 		return "cmd.exe (via `cmd /C`; PowerShell available as `powershell -NoProfile -Command ...`)"
@@ -226,28 +231,30 @@ func ShellName() string {
 	return "bash (via `bash -c`)"
 }
 
-// ── file_read ────────────────────────────────────────────────────────────
+// ── read ────────────────────────────────────────────────────────────
 
 func specFileRead() Spec {
 	return Spec{
-		Name: "file_read",
-		Description: "Reads a file with line numbers (`N: text`). Read the WHOLE file when it is reasonably sized (a few thousand lines) " +
-			"instead of many tiny windows; for very large files use start (first line, 1-based) + limit, e.g. around a line found with grep. " +
-			"The result states the delivered range and the total line count. The `N: ` prefix is not part of the file content.",
+		Name: "read",
+		Description: "Read the contents of a file. Each text line is prefixed by its 1-based line number as " +
+			"`N: text`; the prefix is for reference and is not part of the file content. " +
+			"Prefer one larger read over many small slices: read the WHOLE file when it is reasonably sized " +
+			"(a few thousand lines); for very large files use offset (first line, 1-based) and limit, " +
+			"e.g. around a line found with grep. The result states the delivered range and the total line count.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"path":  map[string]any{"type": "string"},
-				"start": map[string]any{"type": "integer", "description": "first line (1-based)"},
+				"offset": map[string]any{"type": "integer", "description": "first line to read (1-based)"},
 				"limit": map[string]any{"type": "integer", "description": "maximum number of lines in this read"},
 			},
 			"required": []string{"path"},
 		},
 		Exec: func(_ context.Context, cwd string, raw json.RawMessage) (string, error) {
 			var c struct {
-				Path  string `json:"path"`
-				Start int    `json:"start"`
-				Limit int    `json:"limit"`
+				Path   string `json:"path"`
+				Offset int    `json:"offset"`
+				Limit  int    `json:"limit"`
 			}
 			if err := json.Unmarshal(raw, &c); err != nil {
 				return "", fmt.Errorf("invalid input: %w", err)
@@ -262,15 +269,15 @@ func specFileRead() Spec {
 			lines := strings.Split(strings.TrimSuffix(string(b), "\n"), "\n")
 			total := len(lines)
 			first := 0
-			if c.Start > 1 {
-				first = c.Start - 1
+			if c.Offset > 1 {
+				first = c.Offset - 1
 			}
 			end := total
 			if c.Limit > 0 && first+c.Limit < end {
 				end = first + c.Limit
 			}
 			if first >= total {
-				return fmt.Sprintf("file has %d lines (start=%d)", total, c.Start), nil
+				return fmt.Sprintf("file has %d lines (offset=%d)", total, c.Offset), nil
 			}
 			var sb strings.Builder
 			fmt.Fprintf(&sb, "lines %d–%d of %d\n", first+1, end, total)
@@ -286,12 +293,12 @@ func specFileRead() Spec {
 	}
 }
 
-// ── file_write / file_append ─────────────────────────────────────────────
+// ── append ─────────────────────────────────────────────
 
 func specFileWrite() Spec {
 	return Spec{
-		Name:        "file_write",
-		Description: "Writes (overwrites) a whole file, creating missing parent directories. Use it for NEW files or complete rewrites only; to change part of an existing file use edit.",
+		Name:        "write",
+		Description: "Writes a file to the local filesystem, overwriting if one exists. Missing parent directories are created automatically. Use this tool to create NEW files or overwrite existing ones; for partial changes, use the edit tool instead.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -325,8 +332,8 @@ func specFileWrite() Spec {
 
 func specFileAppend() Spec {
 	return Spec{
-		Name:        "file_append",
-		Description: "Appends content to the end of a file (creates it if missing).",
+		Name:        "append",
+		Description: "Appends content to the end of a file, creating it if missing. For partial changes in the middle of a file use edit; to create or overwrite a whole file use write.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -363,11 +370,11 @@ func specFileAppend() Spec {
 	}
 }
 
-// ── file_copy ────────────────────────────────────────────────────────────
+// ── copy ────────────────────────────────────────────────────────────
 
 func specFileCopy() Spec {
 	return Spec{
-		Name:        "file_copy",
+		Name:        "copy",
 		Description: "Copies a file to another path (overwrites the destination). Uses the system's privileges (cp/copy) — in YOLO there is no sandbox.",
 		Schema: map[string]any{
 			"type": "object",
@@ -404,12 +411,12 @@ func specFileCopy() Spec {
 	}
 }
 
-// ── list_dir ─────────────────────────────────────────────────────────────
+// ── list ─────────────────────────────────────────────────────────────
 
 func specListDir() Spec {
 	return Spec{
-		Name:        "list_dir",
-		Description: "Lists a directory (default: cwd), recursively down to depth (default 1, max 3). Directories end with '/'; files show their size.",
+		Name:        "list",
+		Description: "Lists a directory's entries one per line (default: the agent's cwd), recursively down to depth (default 1, max 3). Directories end with '/'; files show their size. To find files by name pattern, use glob; use read to read a file's contents.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -468,11 +475,11 @@ func specListDir() Spec {
 	}
 }
 
-// ── ctx_read (the agent's own live context file) ─────────────────────────
+// ── context_read (the agent's own live context file) ─────────────────────────
 
 func specCtxRead() Spec {
 	return Spec{
-		Name:        "ctx_read",
+		Name:        "context_read",
 		Description: "Reads the session's live context file (what the agent is doing, decisions and pending items). In slice 0, the context is BARROSO.md + the transcript itself; this returns a snapshot of the state.",
 		Schema:      map[string]any{"type": "object", "properties": map[string]any{}},
 		Exec: func(_ context.Context, cwd string, _ json.RawMessage) (string, error) {
@@ -483,7 +490,7 @@ func specCtxRead() Spec {
 }
 
 // liveContext returns an informative template; the editable version
-// (ctx_write/ctx_append) arrives with persistent sessions in slice 1.
+// (context_write/context_append) arrives with persistent sessions in slice 1.
 func liveContext(cwd string) (string, error) {
 	b, err := os.ReadFile(filepath.Join(cwd, "BARROSO.md"))
 	if err != nil {

@@ -29,28 +29,28 @@ import (
 )
 
 // Live context limits. READS are cut at 48 KiB because they enter the model
-// window on every ctx_read: the body may exceed 256 KiB on disk, but a single
+// window on every context_read: the body may exceed 256 KiB on disk, but a single
 // read cannot. The WRITE limit is what forces compaction — without it, a model
 // that only appends bloats the file until it becomes noise that no longer fits
 // in any read.
 const (
-	liveContextReadLimit = 48 << 10 // 48 KiB per ctx_read
+	liveContextReadLimit = 48 << 10 // 48 KiB per context_read
 	liveContextBodyLimit = 256 << 10
 )
 
 // Fixed texts. They are named because tools and tests compare them verbatim:
 // changing the string changes what the model reads.
 const (
-	// liveContextEmpty is what ctx_read returns before the first write — an
+	// liveContextEmpty is what context_read returns before the first write — an
 	// invitation to act, not an error.
-	liveContextEmpty = "(live context empty — use ctx_write to start)"
+	liveContextEmpty = "(live context empty — use context_write to start)"
 
 	// liveContextTooLarge is the write error: a single line, because a tool
 	// message with a newline in the middle becomes a malformed log event.
-	liveContextTooLarge = "live context exceeded 256 KiB; compact it with ctx_write"
+	liveContextTooLarge = "live context exceeded 256 KiB; compact it with context_write"
 
 	// liveContextCutMarker goes at the end of the body when the read was cut.
-	liveContextCutMarker = "... (live context cut at %d bytes; use ctx_write to rewrite it compactly)"
+	liveContextCutMarker = "... (live context cut at %d bytes; use context_write to rewrite it compactly)"
 
 	// liveContextVersionPrefix opens the file header line. It is an HTML
 	// comment: invisible in any markdown rendering, and stripped on read — the
@@ -270,7 +270,7 @@ func loadLiveContext(dir, sessionID string) (*liveContext, error) {
 	body, versions := splitLiveContextVersion(b)
 	cx := &liveContext{body: body}
 	// The version ledger is rebuilt from the header: without it, the first
-	// ctx_write after a Resume would announce "version 1" for a third edit of
+	// context_write after a Resume would announce "version 1" for a third edit of
 	// the file.
 	for i := 1; i <= versions; i++ {
 		cx.bumpVersion()
@@ -312,8 +312,8 @@ func (s *Session) ContextoVivoCarregar() error {
 // session's state.
 //
 // NOTE FOR INTEGRATORS: the static tool catalog (SpecsBuiltins) still carries
-// a placeholder ctx_read that reads BARROSO.md. The lists must be merged
-// WITHOUT duplicating names — two ctx_read in the schema is an ambiguous call
+// a placeholder context_read that reads BARROSO.md. The lists must be merged
+// WITHOUT duplicating names — two context_read in the schema is an ambiguous call
 // for the provider.
 func EspecificacoesContextoVivo() []tools.Spec {
 	return liveContextSpecs(sessionlessContext)
@@ -338,7 +338,7 @@ func liveContextSpecs(cx *liveContext) []tools.Spec {
 // state is already known to the spec.
 func ctxReadSpec(cx *liveContext) tools.Spec {
 	return tools.Spec{
-		Name: "ctx_read",
+		Name: "context_read",
 		Description: "Reads the session's live context: the file YOU maintain between turns with the " +
 			"working state (goal, confirmed facts, decisions, constraints, artifacts, " +
 			"progress, pending items). Read it at the start of a long task to pick up the thread, and " +
@@ -353,18 +353,18 @@ func ctxReadSpec(cx *liveContext) tools.Spec {
 // ctxWriteSpec REPLACES the whole body. The description carries the recipe of
 // what to keep and the provenance notice: since the file is replaceable, an
 // event that only existed in the log needs its seq/path noted HERE to be found
-// again later through log_search/log_retrieve.
+// again later through session_search/session_retrieve.
 func ctxWriteSpec(cx *liveContext) tools.Spec {
 	return tools.Spec{
-		Name: "ctx_write",
+		Name: "context_write",
 		Description: "REWRITES IN FULL the session's live context (the working-state file " +
 			"you maintain between turns). The new content completely replaces the previous one — it does " +
 			"not append. Keep: goal and completion criteria; confirmed facts WITH references " +
 			"(file path, event seq in the log); decisions and their rationale; constraints " +
 			"discovered; relevant artifacts and IDs; progress; pending items and open questions. " +
 			"References matter because the log is append-only and large results may leave the " +
-			"window: noting the seq/path lets you find everything again with log_search and " +
-			"log_retrieve. Also rewrite to COMPACT — drop what no longer matters — whenever " +
+			"window: noting the seq/path lets you find everything again with session_search and " +
+			"session_retrieve. Also rewrite to COMPACT — drop what no longer matters — whenever " +
 			"the file grows.",
 		Schema: map[string]any{
 			"type": "object",
@@ -385,13 +385,13 @@ func ctxWriteSpec(cx *liveContext) tools.Spec {
 
 // ctxAppendSpec appends to the end. It is the shortcut to record a fact
 // without rewriting everything — and the path that bloats the file, which is
-// why the description says to compact with ctx_write when it gets heavy.
+// why the description says to compact with context_write when it gets heavy.
 func ctxAppendSpec(cx *liveContext) tools.Spec {
 	return tools.Spec{
-		Name: "ctx_append",
+		Name: "context_append",
 		Description: "APPENDS an excerpt to the end of the session's live context, preserving what was already there. " +
 			"Use it to record a new fact, a decision made or a pending item without rewriting the " +
-			"whole file. If the file is already large, prefer ctx_write: appending without compacting " +
+			"whole file. If the file is already large, prefer context_write: appending without compacting " +
 			"is what makes the live context stop fitting in a read. Include references (path/seq) " +
 			"when the fact comes from something that may leave the window later.",
 		Schema: map[string]any{
@@ -422,7 +422,7 @@ func liveContextContent(raw json.RawMessage) (string, error) {
 		return "", fmt.Errorf("invalid input: %w", err)
 	}
 	if strings.TrimSpace(c.Content) == "" {
-		return "", fmt.Errorf("empty content: write the working state (or ctx_read to see the current one)")
+		return "", fmt.Errorf("empty content: write the working state (or context_read to see the current one)")
 	}
 	return c.Content, nil
 }

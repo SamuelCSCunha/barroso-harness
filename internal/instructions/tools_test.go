@@ -27,7 +27,7 @@ func TestInstructionsTools(t *testing.T) {
 	if _, err := call(t, cwd, "instructions_write", map[string]any{"content": "rule one\nrule two"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := call(t, cwd, "instructions_edit", map[string]any{"old_string": "rule two", "new_string": "rule 2"}); err != nil {
+	if _, err := call(t, cwd, "instructions_edit", map[string]any{"oldString": "rule two", "newString": "rule 2"}); err != nil {
 		t.Fatal(err)
 	}
 	out, _ := call(t, cwd, "instructions_read", nil)

@@ -255,7 +255,7 @@ func renderThought(it *item, width int, hover bool) []string {
 	return rows
 }
 
-// shellResult parses terminal_run's result: "exit_code: N\nstdout+stderr:\n…".
+// shellResult parses shell's result: "exit_code: N\nstdout+stderr:\n…".
 func shellResult(out string) (code int, body string, ok bool) {
 	head, rest, found := strings.Cut(out, "\n")
 	if !found || !strings.HasPrefix(head, "exit_code: ") {
@@ -376,13 +376,13 @@ func wrapPlain(s string, n int) string {
 }
 
 // renderBlock is a write/append block (the file with line numbers) or an edit
-// block (the diff of old_string → new_string), both from the call's arguments.
+// block (the diff of oldString → newString), both from the call's arguments.
 func renderBlock(it *item, width int, hover, full bool) []string {
 	var a struct {
 		Path      string `json:"path"`
 		Content   string `json:"content"`
-		OldString string `json:"old_string"`
-		NewString string `json:"new_string"`
+		OldString string `json:"oldString"`
+		NewString string `json:"newString"`
 	}
 	_ = json.Unmarshal([]byte(it.args), &a)
 	inner := max(10, width-5)
@@ -401,7 +401,7 @@ func renderBlock(it *item, width int, hover, full bool) []string {
 		}
 	default:
 		head = "# Wrote " + a.Path
-		if it.name == "file_append" {
+		if it.name == "append" {
 			head = "# Appended " + a.Path
 		}
 		lines := strings.Split(strings.TrimRight(a.Content, "\n"), "\n")
@@ -432,7 +432,7 @@ func toolLabel(name, args, out string, failed bool) (icon, label string) {
 		URL     string `json:"url"`
 		Query   string `json:"query"`
 		Name    string `json:"name"`
-		Start   int    `json:"start"`
+		Offset  int    `json:"offset"`
 		Limit   int    `json:"limit"`
 	}
 	_ = json.Unmarshal([]byte(args), &a)
@@ -443,21 +443,21 @@ func toolLabel(name, args, out string, failed bool) (icon, label string) {
 		return " in " + p
 	}
 	switch name {
-	case "file_read":
-		return "→", "Read " + pathRange(a.Path, a.Start, a.Limit)
+	case "read":
+		return "→", "Read " + pathRange(a.Path, a.Offset, a.Limit)
 	case "glob":
 		return "✱", fmt.Sprintf("Glob %q%s%s", a.Pattern, in(a.Path), matchCount(out, failed))
 	case "grep":
 		return "✱", fmt.Sprintf("Grep %q%s%s", a.Pattern, in(a.Path), matchCount(out, failed))
-	case "web_fetch":
+	case "webfetch":
 		return "%", "WebFetch " + a.URL
-	case "web_search":
+	case "websearch":
 		return "◈", fmt.Sprintf("Web Search %q", a.Query)
-	case "skill_read":
+	case "skill":
 		return "→", fmt.Sprintf("Skill %q", a.Name)
-	case "list_dir":
+	case "list":
 		return "→", "List " + a.Path
-	case "task_spawn":
+	case "subagent":
 		return "│", "Subagent — " + oneLine(spawnSummary(args), 80)
 	}
 	if failed {
@@ -500,7 +500,7 @@ func matchCount(out string, failed bool) string {
 	return fmt.Sprintf(" (%d %s)", n, unit)
 }
 
-// spawnSummary is task_spawn's argument in a few words.
+// spawnSummary is the subagent launcher's argument in a few words.
 func spawnSummary(args string) string {
 	var a struct {
 		Prompt  string   `json:"prompt"`
@@ -518,8 +518,8 @@ func spawnSummary(args string) string {
 
 // knownInline are the tools with their own label; any other shows its
 // arguments as "k=v" and expands into them (OpenCode's generic tool).
-var knownInline = map[string]bool{"file_read": true, "glob": true, "grep": true, "web_fetch": true,
-	"web_search": true, "skill_read": true, "list_dir": true, "task_spawn": true}
+var knownInline = map[string]bool{"read": true, "glob": true, "grep": true, "webfetch": true,
+	"websearch": true, "skill": true, "list": true, "subagent": true}
 
 // genericFields are the "key: value" lines of a generic tool's arguments.
 func (t *screen) genericFields(it *item) []string {
@@ -593,8 +593,8 @@ func (t *screen) renderTool(it *item, width int, hover bool) []string {
 }
 
 // exploreKind maps the exploration tools to OpenCode's group counters.
-var exploreKind = map[string]string{"file_read": "read", "list_dir": "read", "glob": "search",
-	"grep": "search", "web_search": "search", "web_fetch": "fetch"}
+var exploreKind = map[string]string{"read": "read", "list": "read", "glob": "search",
+	"grep": "search", "websearch": "search", "webfetch": "fetch"}
 
 // renderGroup is a run of exploration tools: one member draws as itself, more
 // collapse into "→ Explored: 2 reads, 1 search" that a click expands.
@@ -758,9 +758,9 @@ func (t *screen) stopRunningTools() {
 func (t *screen) placeTool(it *item) {
 	name := it.name
 	switch name {
-	case "terminal_run":
+	case "shell":
 		it.kind = "shell"
-	case "edit", "file_write", "file_append":
+	case "edit", "write", "append":
 		it.kind = "block"
 	}
 	if _, explore := exploreKind[name]; explore {

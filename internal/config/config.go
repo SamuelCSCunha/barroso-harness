@@ -69,12 +69,12 @@ type Config struct {
 	envOverride *Provider
 
 	// SearchURL is an optional SearXNG endpoint with the JSON API enabled.
-	// When set, web_search tries it FIRST; empty does not disable anything —
+	// When set, websearch tries it FIRST; empty does not disable anything —
 	// search goes to the hosted providers and then DuckDuckGo lite.
 	SearchURL string `json:"search_url,omitempty"`
 
 	// SearchProviders orders the anonymous hosted MCP providers used by
-	// web_search and web_fetch ("exa", "parallel"). Absent = both, in that
+	// websearch and webfetch ("exa", "parallel"). Absent = both, in that
 	// order; ["off"] (or any list without a known name) disables them. Only
 	// names: the endpoints are fixed in package web, never configurable.
 	SearchProviders []string `json:"search_providers,omitempty"`
@@ -84,7 +84,7 @@ type Config struct {
 	MCPServidores []MCPServidor `json:"mcp_servers,omitempty"`
 
 	// PoliticaContexto chooses who decides to compact: "agente" (default; the
-	// model calls ctx_compact at a task milestone, with the guardrail as a
+	// model calls context_compact at a task milestone, with the guardrail as a
 	// safety net) or "limiar" (threshold: only the guardrail, when the window
 	// overflows). These values are part of the on-disk format.
 	PoliticaContexto string `json:"context_policy,omitempty"`

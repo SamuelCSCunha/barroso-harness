@@ -11,7 +11,7 @@ import (
 // The agent once ran a cleanup script that killed the connector hosting its own
 // terminal, and with it the agent itself. ProtectedPIDs lists this process and
 // its ancestors (the shell, the terminal host, whatever spawned it); the system
-// prompt names them and terminal_run refuses a kill aimed at any of them.
+// prompt names them and shell refuses a kill aimed at any of them.
 
 // ProtectedPIDs is this process followed by its ancestors, nearest first, up to
 // (not including) init. Where /proc is missing it stops at the parent.

@@ -53,7 +53,7 @@ and a line break   </div>
 </body>
 </html>`
 
-// ── web_fetch: HTML ───────────────────────────────────────────────────────
+// ── webfetch: HTML ───────────────────────────────────────────────────────
 
 func TestWebFetchHTMLExtractsVisibleText(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -63,9 +63,9 @@ func TestWebFetchHTMLExtractsVisibleText(t *testing.T) {
 	defer srv.Close()
 
 	specs := specsByName(t, nil)
-	out, err := run(t, specs["web_fetch"], map[string]any{"url": srv.URL})
+	out, err := run(t, specs["webfetch"], map[string]any{"url": srv.URL})
 	if err != nil {
-		t.Fatalf("web_fetch: %v", err)
+		t.Fatalf("webfetch: %v", err)
 	}
 
 	// untrusted-content warning, inside the OUTPUT (not the schema).
@@ -110,7 +110,7 @@ func TestWebFetchSchemaWithoutWarning(t *testing.T) {
 	}
 }
 
-// ── web_fetch: JSON ───────────────────────────────────────────────────────
+// ── webfetch: JSON ───────────────────────────────────────────────────────
 
 func TestWebFetchJSONPassthrough(t *testing.T) {
 	payload := `{"name":"harness","version":1,"items":["a","b"],"nested":{"k":{"z":true}}}`
@@ -121,9 +121,9 @@ func TestWebFetchJSONPassthrough(t *testing.T) {
 	defer srv.Close()
 
 	specs := specsByName(t, nil)
-	out, err := run(t, specs["web_fetch"], map[string]any{"url": srv.URL})
+	out, err := run(t, specs["webfetch"], map[string]any{"url": srv.URL})
 	if err != nil {
-		t.Fatalf("web_fetch: %v", err)
+		t.Fatalf("webfetch: %v", err)
 	}
 	body := strings.TrimPrefix(out, untrustedWarning+"\n")
 	// full content, no truncation.
@@ -139,7 +139,7 @@ func TestWebFetchJSONPassthrough(t *testing.T) {
 	}
 }
 
-// ── web_fetch: refused content-type ───────────────────────────────────────
+// ── webfetch: refused content-type ───────────────────────────────────────
 
 func TestWebFetchRefusesOtherContentType(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -149,7 +149,7 @@ func TestWebFetchRefusesOtherContentType(t *testing.T) {
 	defer srv.Close()
 
 	specs := specsByName(t, nil)
-	out, err := run(t, specs["web_fetch"], map[string]any{"url": srv.URL})
+	out, err := run(t, specs["webfetch"], map[string]any{"url": srv.URL})
 	if err == nil {
 		t.Fatalf("expected refusal, got:\n%s", out)
 	}
@@ -165,16 +165,16 @@ func TestWebFetchRefusesOtherContentType(t *testing.T) {
 func TestWebFetchRefusesNonHTTPScheme(t *testing.T) {
 	specs := specsByName(t, nil)
 	for _, target := range []string{"file:///c:/windows/win.ini", "/relative/path", "example.com"} {
-		if _, err := run(t, specs["web_fetch"], map[string]any{"url": target}); err == nil {
+		if _, err := run(t, specs["webfetch"], map[string]any{"url": target}); err == nil {
 			t.Errorf("invalid scheme accepted: %q", target)
 		}
 	}
-	if _, err := run(t, specs["web_fetch"], map[string]any{"url": ""}); err == nil {
+	if _, err := run(t, specs["webfetch"], map[string]any{"url": ""}); err == nil {
 		t.Error("empty url accepted")
 	}
 }
 
-// ── web_fetch: non-2XX status ─────────────────────────────────────────────
+// ── webfetch: non-2XX status ─────────────────────────────────────────────
 
 func TestWebFetchNon2XXReturnsOneLineError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -184,7 +184,7 @@ func TestWebFetchNon2XXReturnsOneLineError(t *testing.T) {
 	defer srv.Close()
 
 	specs := specsByName(t, nil)
-	out, err := run(t, specs["web_fetch"], map[string]any{"url": srv.URL})
+	out, err := run(t, specs["webfetch"], map[string]any{"url": srv.URL})
 	if err == nil {
 		t.Fatalf("expected error, got:\n%s", out)
 	}
@@ -197,7 +197,7 @@ func TestWebFetchNon2XXReturnsOneLineError(t *testing.T) {
 	}
 }
 
-// ── web_fetch: redirects ──────────────────────────────────────────────────
+// ── webfetch: redirects ──────────────────────────────────────────────────
 
 func TestWebFetchFollowsRedirects(t *testing.T) {
 	var hops int
@@ -219,9 +219,9 @@ func TestWebFetchFollowsRedirects(t *testing.T) {
 	defer srv.Close()
 
 	specs := specsByName(t, nil)
-	out, err := run(t, specs["web_fetch"], map[string]any{"url": srv.URL + "/start"})
+	out, err := run(t, specs["webfetch"], map[string]any{"url": srv.URL + "/start"})
 	if err != nil {
-		t.Fatalf("web_fetch: %v", err)
+		t.Fatalf("webfetch: %v", err)
 	}
 	if !strings.Contains(out, "final destination reached") {
 		t.Errorf("redirect not followed:\n%s", out)
@@ -251,7 +251,7 @@ func TestNewHTTPClientLimitsRedirects(t *testing.T) {
 	}
 }
 
-// ── web_fetch: cap and truncation marker ──────────────────────────────────
+// ── webfetch: cap and truncation marker ──────────────────────────────────
 
 func TestWebFetchTruncatesWithMarker(t *testing.T) {
 	// 200 KB of text: over the 2 MiB body cap? No — over the character cap,
@@ -264,12 +264,12 @@ func TestWebFetchTruncatesWithMarker(t *testing.T) {
 	defer srv.Close()
 
 	specs := specsByName(t, nil)
-	out, err := run(t, specs["web_fetch"], map[string]any{"url": srv.URL, "max_chars": 500})
+	out, err := run(t, specs["webfetch"], map[string]any{"url": srv.URL, "maxChars": 500})
 	if err != nil {
-		t.Fatalf("web_fetch: %v", err)
+		t.Fatalf("webfetch: %v", err)
 	}
 	if len(out) > 500 {
-		t.Errorf("output exceeded the requested max_chars: %d bytes", len(out))
+		t.Errorf("output exceeded the requested maxChars: %d bytes", len(out))
 	}
 	if !strings.Contains(out, "(truncated at") || !strings.Contains(out, "bytes)") {
 		t.Errorf("truncation marker missing:\n%s", out)
@@ -289,7 +289,7 @@ func TestWebFetchDefaultCapAndHardCap(t *testing.T) {
 	defer srv.Close()
 
 	specs := specsByName(t, nil)
-	noCap, err := run(t, specs["web_fetch"], map[string]any{"url": srv.URL})
+	noCap, err := run(t, specs["webfetch"], map[string]any{"url": srv.URL})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,7 +300,7 @@ func TestWebFetchDefaultCapAndHardCap(t *testing.T) {
 		t.Errorf("no truncation marker at the default cap:\n%s", noCap[:200])
 	}
 
-	beyond, err := run(t, specs["web_fetch"], map[string]any{"url": srv.URL, "max_chars": 999999})
+	beyond, err := run(t, specs["webfetch"], map[string]any{"url": srv.URL, "maxChars": 999999})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -388,7 +388,7 @@ func TestCleanHTMLSelfClosingTags(t *testing.T) {
 	}
 }
 
-// ── web_search ────────────────────────────────────────────────────────────
+// ── websearch ────────────────────────────────────────────────────────────
 
 // searchFixture serves a SearXNG envelope with the given body.
 func searchFixture(t *testing.T, body string) *httptest.Server {
@@ -416,10 +416,10 @@ func TestWebSearchAgainstFakeSearXNG(t *testing.T) {
 	]}`)
 	defer srv.Close()
 
-	out, err := run(t, specsByName(t, &Busca{Endpoint: srv.URL + "/search"})["web_search"],
+	out, err := run(t, specsByName(t, &Busca{Endpoint: srv.URL + "/search"})["websearch"],
 		map[string]any{"query": "harness barroso"})
 	if err != nil {
-		t.Fatalf("web_search: %v", err)
+		t.Fatalf("websearch: %v", err)
 	}
 
 	// numbered format with title — URL and an indented snippet.
@@ -464,7 +464,7 @@ func TestWebSearchMaxResults(t *testing.T) {
 	defer srv.Close()
 
 	specs := specsByName(t, &Busca{Endpoint: srv.URL})
-	out, err := run(t, specs["web_search"], map[string]any{"query": "harness barroso", "max_results": 3})
+	out, err := run(t, specs["websearch"], map[string]any{"query": "harness barroso", "maxResults": 3})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -472,7 +472,7 @@ func TestWebSearchMaxResults(t *testing.T) {
 		t.Errorf("third result missing:\n%s", out)
 	}
 	if strings.Contains(out, "4. Item d") {
-		t.Errorf("max_results ignored:\n%s", out)
+		t.Errorf("maxResults ignored:\n%s", out)
 	}
 	if len(resultLines(out)) > 3 {
 		t.Errorf("more than 3 result lines: %d", len(resultLines(out)))
@@ -510,7 +510,7 @@ func TestWebSearchNon2XX(t *testing.T) {
 	t.Cleanup(func() { endpointDDG = prev })
 
 	specs := specsByName(t, &Busca{Endpoint: srv.URL})
-	out, err := run(t, specs["web_search"], map[string]any{"query": "x"})
+	out, err := run(t, specs["websearch"], map[string]any{"query": "x"})
 	if err == nil {
 		t.Fatalf("expected error, got:\n%s", out)
 	}
@@ -554,7 +554,7 @@ func TestWebSearchWithoutEndpointUsesDuckDuckGo(t *testing.T) {
 		"spaces": {Endpoint: "   "},
 	} {
 		t.Run(name, func(t *testing.T) {
-			out, err := run(t, specsByName(t, search)["web_search"], map[string]any{"query": "go release"})
+			out, err := run(t, specsByName(t, search)["websearch"], map[string]any{"query": "go release"})
 			if err != nil {
 				t.Fatalf("without search_url it should fall back to DuckDuckGo, got error: %v", err)
 			}
@@ -590,7 +590,7 @@ func TestWebSearchDuckDuckGoHTTPError(t *testing.T) {
 	endpointDDG = srv.URL
 	t.Cleanup(func() { endpointDDG = prev })
 
-	_, err := run(t, specsByName(t, nil)["web_search"], map[string]any{"query": "x"})
+	_, err := run(t, specsByName(t, nil)["websearch"], map[string]any{"query": "x"})
 	if err == nil {
 		t.Fatal("expected HTTP 429 error")
 	}
@@ -619,7 +619,7 @@ func TestWebSearchWithEndpointDoesNotUseDuckDuckGo(t *testing.T) {
 	}))
 	defer sx.Close()
 
-	out, err := run(t, specsByName(t, &Busca{Endpoint: sx.URL})["web_search"], map[string]any{"query": "x"})
+	out, err := run(t, specsByName(t, &Busca{Endpoint: sx.URL})["websearch"], map[string]any{"query": "x"})
 	if err != nil {
 		t.Fatalf("SearXNG: %v", err)
 	}
@@ -632,18 +632,18 @@ func TestWebSearchWithEndpointDoesNotUseDuckDuckGo(t *testing.T) {
 // see the schema in order to then get the configuration error.
 func TestEspecificacoesIncludesSearchWithoutConfig(t *testing.T) {
 	specs := specsByName(t, nil)
-	s, ok := specs["web_search"]
+	s, ok := specs["websearch"]
 	if !ok {
-		t.Fatal("web_search missing from the catalog with nil Busca")
+		t.Fatal("websearch missing from the catalog with nil Busca")
 	}
 	if len(s.Schema) == 0 {
-		t.Error("web_search without schema")
+		t.Error("websearch without schema")
 	}
 	if _, ok := s.Schema["properties"].(map[string]any)["query"]; !ok {
 		t.Errorf("schema without the query property: %v", s.Schema)
 	}
-	if _, ok := specs["web_fetch"]; !ok {
-		t.Error("web_fetch missing from the catalog")
+	if _, ok := specs["webfetch"]; !ok {
+		t.Error("webfetch missing from the catalog")
 	}
 }
 
@@ -696,9 +696,9 @@ func TestNoOutputExceedsCap(t *testing.T) {
 		args  map[string]any
 		limit int
 	}{
-		{"web_fetch", map[string]any{"url": srv.URL}, fetchCap},
-		{"web_fetch", map[string]any{"url": srv.URL, "max_chars": 1000}, 1000},
-		{"web_search", map[string]any{"query": "x"}, searchCap},
+		{"webfetch", map[string]any{"url": srv.URL}, fetchCap},
+		{"webfetch", map[string]any{"url": srv.URL, "maxChars": 1000}, 1000},
+		{"websearch", map[string]any{"query": "x"}, searchCap},
 	} {
 		out, err := run(t, specs[tc.name], tc.args)
 		if err != nil {
@@ -729,10 +729,10 @@ func TestHarnessUserAgent(t *testing.T) {
 		t.Fatalf("dealer UserAgent changed: %q", dealer.UserAgent)
 	}
 	specs := specsByName(t, &Busca{Endpoint: srv.URL})
-	if _, err := run(t, specs["web_fetch"], map[string]any{"url": srv.URL}); err != nil {
+	if _, err := run(t, specs["webfetch"], map[string]any{"url": srv.URL}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := run(t, specs["web_search"], map[string]any{"query": "x"}); err != nil {
+	if _, err := run(t, specs["websearch"], map[string]any{"query": "x"}); err != nil {
 		t.Fatal(err)
 	}
 	if len(seen) != 2 {

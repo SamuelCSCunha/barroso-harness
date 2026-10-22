@@ -6,7 +6,7 @@ import (
 	"sync"
 )
 
-// A tool that produces output over time (terminal_run) streams it to a sink
+// A tool that produces output over time (shell) streams it to a sink
 // carried by the context, so the screen can show it while the call runs. The
 // call's result is unchanged: the sink only sees a copy.
 type outputKey struct{}
@@ -48,5 +48,5 @@ func (b *liveBuffer) Bytes() []byte {
 }
 
 // OutputSinkForTest exposes the sink a tool would stream to (tests of other
-// packages use it to stand in for terminal_run).
+// packages use it to stand in for shell).
 func OutputSinkForTest(ctx context.Context) func(string) { return outputSink(ctx) }

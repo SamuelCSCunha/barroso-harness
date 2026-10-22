@@ -36,12 +36,12 @@ func SessaoSpecs(s *Session) []tools.Spec {
 
 func sessionSearchSpec(s *Session) tools.Spec {
 	return tools.Spec{
-		Name: "log_search",
+		Name: "session_search",
 		Description: "THIS SESSION ONLY by default: searches the history (substring, case-insensitive) and " +
 			"returns the matching excerpts, each with its event number (seq) and the session it came from. " +
 			"Use it to find again content that guardrail compaction removed from the window or that left the " +
-			"transcript: large tool outputs, old decisions, paths already read. Combined with log_retrieve it " +
-			"recovers the whole text. To search ANOTHER session, pass its id from sessions_list; the " +
+			"transcript: large tool outputs, old decisions, paths already read. Combined with session_retrieve it " +
+			"recovers the whole text. To search ANOTHER session, pass its id from session_list; the " +
 			"current session's id is the first line of every result. When you do not know which session the " +
 			"user means, ask instead of guessing.",
 		Schema: map[string]any{
@@ -49,7 +49,7 @@ func sessionSearchSpec(s *Session) tools.Spec {
 			"properties": map[string]any{
 				"query":      map[string]any{"type": "string", "description": "text to search for (substring, case-insensitive)"},
 				"limit":      map[string]any{"type": "integer", "description": "how many events to return; default 10"},
-				"session_id": map[string]any{"type": "string", "description": "ANOTHER session's id, from sessions_list; omit for THIS session"},
+				"sessionID": map[string]any{"type": "string", "description": "ANOTHER session's id, from session_list; omit for THIS session"},
 			},
 			"required": []string{"query"},
 		},
@@ -57,7 +57,7 @@ func sessionSearchSpec(s *Session) tools.Spec {
 			var c struct {
 				Query     string `json:"query"`
 				Limit     int    `json:"limit"`
-				SessionID string `json:"session_id"`
+				SessionID string `json:"sessionID"`
 			}
 			if err := json.Unmarshal(raw, &c); err != nil {
 				return "", fmt.Errorf("invalid input: %w", err)
@@ -75,7 +75,7 @@ func sessionSearchSpec(s *Session) tools.Spec {
 				return "(session without persistence: another session's log cannot be read)", nil
 			}
 			if !s.store.Known(target) {
-				return fmt.Sprintf("no session with id %q (see sessions_list)", target), nil
+				return fmt.Sprintf("no session with id %q (see session_list)", target), nil
 			}
 			limit := c.Limit
 			if limit <= 0 {
@@ -89,7 +89,7 @@ func sessionSearchSpec(s *Session) tools.Spec {
 				return fmt.Sprintf("no excerpt with %q in %s", c.Query, sessionLabel(s, target)), nil
 			}
 			var sb strings.Builder
-			fmt.Fprintf(&sb, "session %s: %d excerpt(s) with %q — use log_retrieve with the seq for the whole text:\n", sessionLabel(s, target), len(hits), c.Query)
+			fmt.Fprintf(&sb, "session %s: %d excerpt(s) with %q — use session_retrieve with the seq for the whole text:\n", sessionLabel(s, target), len(hits), c.Query)
 			for _, h := range hits {
 				fmt.Fprintf(&sb, "seq %d [%s] %s\n", h.Seq, h.Kind, h.Snippet)
 			}
@@ -100,17 +100,17 @@ func sessionSearchSpec(s *Session) tools.Spec {
 
 func sessionRetrieveSpec(s *Session) tools.Spec {
 	return tools.Spec{
-		Name: "log_retrieve",
+		Name: "session_retrieve",
 		Description: "Returns ONE event by its number (seq) with its FULL content — including large tool " +
 			"outputs archived in a blob during compaction. THIS SESSION ONLY by default: the seq comes from " +
-			"log_search, which states the session it belongs to; pass the same session_id to read an event of " +
+			"session_search, which states the session it belongs to; pass the same sessionID to read an event of " +
 			"ANOTHER session. Use it when an excerpt is not enough and you need the whole text back.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"seq":        map[string]any{"type": "integer", "description": "event number (seq), as returned by log_search"},
+				"seq":        map[string]any{"type": "integer", "description": "event number (seq), as returned by session_search"},
 				"limit":      map[string]any{"type": "integer", "description": "byte limit of the returned content; default 8192"},
-				"session_id": map[string]any{"type": "string", "description": "ANOTHER session's id, from sessions_list; omit for THIS session"},
+				"sessionID": map[string]any{"type": "string", "description": "ANOTHER session's id, from session_list; omit for THIS session"},
 			},
 			"required": []string{"seq"},
 		},
@@ -118,7 +118,7 @@ func sessionRetrieveSpec(s *Session) tools.Spec {
 			var c struct {
 				Seq       int    `json:"seq"`
 				Limit     int    `json:"limit"`
-				SessionID string `json:"session_id"`
+				SessionID string `json:"sessionID"`
 			}
 			if err := json.Unmarshal(raw, &c); err != nil {
 				return "", fmt.Errorf("invalid input: %w", err)
@@ -184,10 +184,10 @@ func sessionLabel(s *Session, id string) string {
 // conversation's text into this one.
 func sessionsListSpec(s *Session) tools.Spec {
 	return tools.Spec{
-		Name: "sessions_list",
+		Name: "session_list",
 		Description: "Lists the sessions recorded on THIS machine (id, title, last update), most recent first. " +
 			"Metadata only: it returns no conversation content. Use it to find the id of a session the user " +
-			"mentions (\"the one about the connector\"), then read that session with log_search/log_retrieve " +
+			"mentions (\"the one about the connector\"), then read that session with session_search/session_retrieve " +
 			"passing the id. The current session is marked. Sessions from other machines or accounts are not here.",
 		Schema: map[string]any{
 			"type": "object",

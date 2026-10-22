@@ -212,8 +212,8 @@ func TestLiveContextEmptyReadInvitesWriting(t *testing.T) {
 	if read != liveContextEmpty {
 		t.Fatalf("empty should return %q, returned %q", liveContextEmpty, read)
 	}
-	if !strings.Contains(read, "ctx_write") {
-		t.Fatalf("the invitation should mention ctx_write: %q", read)
+	if !strings.Contains(read, "context_write") {
+		t.Fatalf("the invitation should mention context_write: %q", read)
 	}
 }
 
@@ -249,7 +249,7 @@ func TestLiveContextSpecsContainTheThreeTools(t *testing.T) {
 	for _, s := range list {
 		names = append(names, s.Name)
 	}
-	want := []string{"ctx_read", "ctx_write", "ctx_append"}
+	want := []string{"context_read", "context_write", "context_append"}
 	if !reflect.DeepEqual(names, want) {
 		t.Fatalf("specs should be %v, were %v", want, names)
 	}
@@ -270,11 +270,11 @@ func TestLiveContextSpecsRequiredFields(t *testing.T) {
 	for _, s := range EspecificacoesContextoVivo() {
 		required, _ := s.Schema["required"].([]string)
 		switch s.Name {
-		case "ctx_read":
+		case "context_read":
 			if len(required) != 0 {
-				t.Fatalf("ctx_read should require no argument, requires %v", required)
+				t.Fatalf("context_read should require no argument, requires %v", required)
 			}
-		case "ctx_write", "ctx_append":
+		case "context_write", "context_append":
 			if !reflect.DeepEqual(required, []string{"content"}) {
 				t.Fatalf("%s should require exactly [content], requires %v", s.Name, required)
 			}
@@ -295,19 +295,19 @@ func TestLiveContextReadSpecOnEmptyState(t *testing.T) {
 	cx := &liveContext{}
 	specs := liveContextSpecs(cx)
 	for _, s := range specs {
-		if s.Name != "ctx_read" {
+		if s.Name != "context_read" {
 			continue
 		}
 		output, err := s.Exec(context.Background(), "", nil)
 		if err != nil {
-			t.Fatalf("ctx_read on empty: %v", err)
+			t.Fatalf("context_read on empty: %v", err)
 		}
 		if output != liveContextEmpty {
-			t.Fatalf("empty ctx_read should return %q, returned %q", liveContextEmpty, output)
+			t.Fatalf("empty context_read should return %q, returned %q", liveContextEmpty, output)
 		}
 		return
 	}
-	t.Fatal("ctx_read missing from the specs")
+	t.Fatal("context_read missing from the specs")
 }
 
 func TestLiveContextWriteAndAppendSpecsExecute(t *testing.T) {
@@ -318,15 +318,15 @@ func TestLiveContextWriteAndAppendSpecsExecute(t *testing.T) {
 		byName[s.Name] = s
 	}
 	// Raw JSON, as it comes from the provider — the path Exec actually gets.
-	output, err := byName["ctx_write"].Exec(context.Background(), "", json.RawMessage(`{"content":"initial state"}`))
+	output, err := byName["context_write"].Exec(context.Background(), "", json.RawMessage(`{"content":"initial state"}`))
 	if err != nil {
-		t.Fatalf("ctx_write: %v", err)
+		t.Fatalf("context_write: %v", err)
 	}
 	if !strings.Contains(output, "live context rewritten (version 1") {
-		t.Fatalf("ctx_write should confirm the version: %q", output)
+		t.Fatalf("context_write should confirm the version: %q", output)
 	}
-	if _, err := byName["ctx_append"].Exec(context.Background(), "", json.RawMessage(`{"content":"new pending item"}`)); err != nil {
-		t.Fatalf("ctx_append: %v", err)
+	if _, err := byName["context_append"].Exec(context.Background(), "", json.RawMessage(`{"content":"new pending item"}`)); err != nil {
+		t.Fatalf("context_append: %v", err)
 	}
 	read, _ := cx.apply("read", "")
 	if read != "initial state\n\nnew pending item" {
@@ -337,7 +337,7 @@ func TestLiveContextWriteAndAppendSpecsExecute(t *testing.T) {
 func TestLiveContextSpecWithoutContentFailsClearly(t *testing.T) {
 	cx := &liveContext{}
 	specs := liveContextSpecs(cx)
-	for _, name := range []string{"ctx_write", "ctx_append"} {
+	for _, name := range []string{"context_write", "context_append"} {
 		for _, s := range specs {
 			if s.Name != name {
 				continue
@@ -364,15 +364,15 @@ func TestLiveContextWriteSpecAboveLimitPropagatesError(t *testing.T) {
 	}
 	// And the tool must propagate it, not swallow it into "ok".
 	for _, s := range liveContextSpecs(cx) {
-		if s.Name != "ctx_write" {
+		if s.Name != "context_write" {
 			continue
 		}
 		if _, terr := s.Exec(context.Background(), "", json.RawMessage(`{"content":"`+strings.Repeat("x", liveContextBodyLimit+1)+`"}`)); terr == nil {
-			t.Fatal("ctx_write above the limit should fail")
+			t.Fatal("context_write above the limit should fail")
 		}
 		return
 	}
-	t.Fatal("ctx_write missing")
+	t.Fatal("context_write missing")
 }
 
 // ── persistence ─────────────────────────────────────────────────────────────
@@ -546,9 +546,9 @@ func TestLiveContextSessionSpecsCloseOverItsState(t *testing.T) {
 	s := NewSession(emptyLocalConfig())
 	defer contextBySession.Delete(s)
 	for _, sp := range EspecificacoesContextoVivoSessao(s) {
-		if sp.Name == "ctx_write" {
+		if sp.Name == "context_write" {
 			if _, err := sp.Exec(context.Background(), "", json.RawMessage(`{"content":"state of this session"}`)); err != nil {
-				t.Fatalf("session ctx_write: %v", err)
+				t.Fatalf("session context_write: %v", err)
 			}
 		}
 	}

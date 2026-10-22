@@ -7,7 +7,7 @@ import (
 	"os/exec"
 )
 
-// terminalCmd is the non-Windows half of terminal_run's spawn. On Unix the
+// terminalCmd is the non-Windows half of shell's spawn. On Unix the
 // child is bash -c with a single argument, which Go's argv passing delivers
 // verbatim — there is no escaping layer to work around. Minimal systems
 // without bash (Alpine, iSH, BusyBox images) fall back to POSIX sh.

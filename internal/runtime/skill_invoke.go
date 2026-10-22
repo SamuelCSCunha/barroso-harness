@@ -7,7 +7,7 @@ import (
 )
 
 // SkillsDisponiveis returns the skills a turn in this cwd would see — the same
-// sources and the same precedence as skills_list.
+// sources and the same precedence as skills.
 func SkillsDisponiveis(cwd string) []skills.Skill {
 	found, err := skills.Descobrir(skillSources(cwd))
 	if err != nil {
@@ -18,7 +18,7 @@ func SkillsDisponiveis(cwd string) []skills.Skill {
 
 // ExpandirSkill turns "/<name> [arguments]" into the prompt of a turn that
 // runs the skill. Until now a skill was only READ by the model when it decided
-// to call skill_read; invoking it by name is the user saying "do this now,
+// to call skill; invoking it by name is the user saying "do this now,
 // following this skill" — the body goes in the prompt, without depending on
 // the model finding it.
 //

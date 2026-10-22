@@ -94,11 +94,11 @@ func (s *Session) pendingUpdate(cwd string) string {
 			now, has := cur.skills[n]
 			switch {
 			case !had && has:
-				lines = append(lines, "skill "+n+" was created: "+strings.SplitN(now, "\x00", 2)[0]+" (load it with skill_read)")
+				lines = append(lines, "skill "+n+" was created: "+strings.SplitN(now, "\x00", 2)[0]+" (load it with skill)")
 			case had && !has:
 				lines = append(lines, "skill "+n+" was removed")
 			case was != now:
-				lines = append(lines, "skill "+n+" was edited; load it again with skill_read before using it")
+				lines = append(lines, "skill "+n+" was edited; load it again with skill before using it")
 			}
 		}
 	}

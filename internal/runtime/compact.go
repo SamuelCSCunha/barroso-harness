@@ -12,10 +12,10 @@ import (
 
 // Context policies (config.json, field context_policy).
 //
-//   - PoliticaAgente (default): the model has ctx_compact and decides WHEN to
+//   - PoliticaAgente (default): the model has context_compact and decides WHEN to
 //     compact, at a task milestone, by writing the working state. The budget
 //     guardrail stays on as a safety net.
-//   - PoliticaLimiar: no ctx_compact; only the guardrail compacts, on overflow.
+//   - PoliticaLimiar: no context_compact; only the guardrail compacts, on overflow.
 //
 // Both record every compaction in the log (event "compactacao" or
 // "guardrail", both with the politica field), so they can be compared under
@@ -50,7 +50,7 @@ const (
 	eventCompactionEN = "compaction"
 )
 
-const compactToolName = "ctx_compact"
+const compactToolName = "context_compact"
 
 // maxSummary caps the state written by the model: a summary larger than this
 // is no longer a compaction.
@@ -66,7 +66,7 @@ func compactSpec() tools.Spec {
 			"working state you write. Use it at a natural milestone of the task (e.g. you found the cause and are " +
 			"about to edit; you finished exploring) — do not wait for the context to fill up. The state must be " +
 			"enough to carry on: goal, decisions, discovered facts (paths, signatures, values), what has " +
-			"already been changed and the next step. The full log remains retrievable through log_search.",
+			"already been changed and the next step. The full log remains retrievable through session_search.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -84,7 +84,7 @@ func compactSpec() tools.Spec {
 	}
 }
 
-// readCompactState parses ctx_compact arguments. The legacy "estado" key is
+// readCompactState parses context_compact arguments. The legacy "estado" key is
 // still accepted, for calls from models primed with the old schema.
 func readCompactState(raw json.RawMessage) (string, error) {
 	var c struct {
@@ -153,7 +153,7 @@ func historyBytes(h []dealer.Mensagem) int {
 }
 
 // compactedState returns the state of the round's last SUCCESSFUL
-// ctx_compact, or "" when there was none. A failed call (empty state, over the
+// context_compact, or "" when there was none. A failed call (empty state, over the
 // limit) compacts nothing: the model got the error and may try again.
 func compactedState(calls []dealer.ToolChamada, results []dealer.Mensagem) string {
 	state := ""

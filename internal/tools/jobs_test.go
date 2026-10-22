@@ -46,7 +46,7 @@ func TestTerminalRunQuickCommandUnchanged(t *testing.T) {
 }
 
 // A long command returns control after autoBackground and keeps running;
-// terminal_output then waits for it and reports the exit code.
+// shell_output then waits for it and reports the exit code.
 func TestTerminalRunAutoBackground(t *testing.T) {
 	shrinkJobs(t)
 	autoBackground, inactivityTimeout = 300*time.Millisecond, time.Minute
@@ -56,7 +56,7 @@ func TestTerminalRunAutoBackground(t *testing.T) {
 		t.Fatalf("took %v: %s", time.Since(start), out)
 	}
 	id := regexp.MustCompile(`job-\d+`).FindString(out)
-	b, _ := json.Marshal(map[string]any{"job_id": id, "wait_secs": 30})
+	b, _ := json.Marshal(map[string]any{"jobID": id, "waitSecs": 30})
 	res, err := specTerminalOutput().Exec(context.Background(), "", b)
 	if err != nil || !strings.Contains(res, "finished") || !strings.Contains(res, "exit_code: 0") {
 		t.Fatalf("err=%v\n%s", err, res)
@@ -76,7 +76,7 @@ func TestTerminalRunInactivityKill(t *testing.T) {
 
 func TestTerminalRunExplicitTimeout(t *testing.T) {
 	shrinkJobs(t)
-	out := runTerm(t, context.Background(), map[string]any{"command": sleepCmd(20), "timeout_secs": 1})
+	out := runTerm(t, context.Background(), map[string]any{"command": sleepCmd(20), "timeout": 1000})
 	if !strings.Contains(out, "timed out after 1s") || !strings.HasPrefix(out, "exit_code: 124") && !strings.HasPrefix(out, "exit_code: 1") {
 		t.Fatalf("%s", out)
 	}
@@ -100,9 +100,9 @@ func TestTerminalRunBackgroundAndKill(t *testing.T) {
 	if id == "" {
 		t.Fatal(out)
 	}
-	b, _ := json.Marshal(map[string]any{"job_id": id})
+	b, _ := json.Marshal(map[string]any{"jobID": id})
 	res, err := specTerminalKill().Exec(context.Background(), "", b)
-	if err != nil || !strings.Contains(res, "killed by terminal_kill") {
+	if err != nil || !strings.Contains(res, "killed by shell_kill") {
 		t.Fatalf("err=%v\n%s", err, res)
 	}
 }

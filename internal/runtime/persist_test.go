@@ -206,11 +206,11 @@ func TestResumeRebuildsTranscript(t *testing.T) {
 	}{
 		{"user_message", map[string]any{"role": "user", "content": "read the file"}},
 		{"tool_call", map[string]any{
-			"role": "tool_call", "tool_id": "call_1", "tool_name": "file_read",
+			"role": "tool_call", "tool_id": "call_1", "tool_name": "read",
 			"tool_args": `{"path":"x.txt"}`,
 		}},
 		{"tool_result", map[string]any{
-			"role": "tool_result", "tool_id": "call_1", "tool_name": "file_read",
+			"role": "tool_result", "tool_id": "call_1", "tool_name": "read",
 			"content": "1: content",
 		}},
 		{"assistant", map[string]any{"role": "assistant", "content": "done, read it"}},
@@ -231,7 +231,7 @@ func TestResumeRebuildsTranscript(t *testing.T) {
 	if h[0].Role != "user" || h[0].Conteudo != "read the file" {
 		t.Fatalf("message 0 wrong: %+v", h[0])
 	}
-	if h[1].Role != "tool_call" || h[1].ToolName != "file_read" || h[1].ToolArgs != `{"path":"x.txt"}` {
+	if h[1].Role != "tool_call" || h[1].ToolName != "read" || h[1].ToolArgs != `{"path":"x.txt"}` {
 		t.Fatalf("tool_call did not come back intact: %+v", h[1])
 	}
 	if h[2].Role != "tool_result" || h[2].Conteudo != "1: content" {
@@ -283,7 +283,7 @@ func TestResumeRehydratesBlob(t *testing.T) {
 	large := strings.Repeat("tool output line\n", 2000) // > 16 KiB
 
 	s := NewSessionWithStore(config.Config{}, st, id)
-	s.recordResult("call_9", "terminal_run", large, false)
+	s.recordResult("call_9", "shell", large, false)
 
 	// The recorded event is short: preview + blob reference.
 	events, _ := st.ListEvents(id, 0, 0)
@@ -319,7 +319,7 @@ func TestSearchAndRetrieve(t *testing.T) {
 	s := NewSessionWithStore(config.Config{}, st, id)
 	s.record("user_message", map[string]any{"role": "user", "content": "I need the path of FileX"})
 	toolSeq, _ := st.StoreEvent(id, "tool_result", map[string]any{
-		"role": "tool_result", "tool_name": "file_read", "content": "C:\\data\\FileX.txt",
+		"role": "tool_result", "tool_name": "read", "content": "C:\\data\\FileX.txt",
 	})
 
 	// Case-insensitive search over the content field.
@@ -374,7 +374,7 @@ func TestSessionSpecsSearchAndRetrieve(t *testing.T) {
 	const id = "bh-20240101130000-0001"
 	s := NewSessionWithStore(config.Config{}, st, id)
 	s.record("tool_result", map[string]any{
-		"role": "tool_result", "tool_name": "terminal_run",
+		"role": "tool_result", "tool_name": "shell",
 		"content": "exit_code: 0\ngit status --short",
 	})
 
@@ -386,51 +386,51 @@ func TestSessionSpecsSearchAndRetrieve(t *testing.T) {
 	for _, sp := range specs {
 		byName[sp.Name] = sp
 	}
-	search, ok := byName["log_search"]
+	search, ok := byName["session_search"]
 	if !ok {
-		t.Fatal("log_search is not in the specs")
+		t.Fatal("session_search is not in the specs")
 	}
 	if !strings.Contains(strings.ToLower(search.Description), "compact") {
-		t.Fatalf("log_search description does not mention compaction:\n%s", search.Description)
+		t.Fatalf("session_search description does not mention compaction:\n%s", search.Description)
 	}
-	rtr, ok := byName["log_retrieve"]
+	rtr, ok := byName["session_retrieve"]
 	if !ok {
-		t.Fatal("log_retrieve is not in the specs")
+		t.Fatal("session_retrieve is not in the specs")
 	}
-	list, ok := byName["sessions_list"]
+	list, ok := byName["session_list"]
 	if !ok {
-		t.Fatal("sessions_list is not in the specs")
+		t.Fatal("session_list is not in the specs")
 	}
 	if !strings.Contains(strings.ToLower(list.Description), "metadata only") {
-		t.Fatalf("sessions_list description must say it lists metadata only:\n%s", list.Description)
+		t.Fatalf("session_list description must say it lists metadata only:\n%s", list.Description)
 	}
 	if !strings.Contains(strings.ToLower(rtr.Description), "seq") {
-		t.Fatalf("log_retrieve description does not mention seq:\n%s", rtr.Description)
+		t.Fatalf("session_retrieve description does not mention seq:\n%s", rtr.Description)
 	}
 	// Schemas with the promised parameters.
 	if _, ok := search.Schema["properties"].(map[string]any)["query"]; !ok {
-		t.Fatal("log_search without query parameter")
+		t.Fatal("session_search without query parameter")
 	}
 	if _, ok := search.Schema["properties"].(map[string]any)["limit"]; !ok {
 		t.Fatal("session_search without limit parameter")
 	}
 	if _, ok := rtr.Schema["properties"].(map[string]any)["seq"]; !ok {
-		t.Fatal("log_retrieve without seq parameter")
-		// Optional session_id: omitted means THIS session. The scope must be
+		t.Fatal("session_retrieve without seq parameter")
+		// Optional sessionID: omitted means THIS session. The scope must be
 		// stated in the parameter, not left to the tool name.
 		for _, sp := range []tools.Spec{search, rtr} {
-			p, ok := sp.Schema["properties"].(map[string]any)["session_id"]
+			p, ok := sp.Schema["properties"].(map[string]any)["sessionID"]
 			if !ok {
-				t.Fatalf("%s without session_id parameter", sp.Name)
+				t.Fatalf("%s without sessionID parameter", sp.Name)
 			}
 			desc, _ := p.(map[string]any)["description"].(string)
 			if !strings.Contains(strings.ToLower(desc), "this session") {
-				t.Fatalf("%s session_id must say it defaults to this session: %q", sp.Name, desc)
+				t.Fatalf("%s sessionID must say it defaults to this session: %q", sp.Name, desc)
 			}
 		}
 	}
 	if _, ok := rtr.Schema["properties"].(map[string]any)["limit"]; !ok {
-		t.Fatal("log_retrieve without limit parameter")
+		t.Fatal("session_retrieve without limit parameter")
 	}
 
 	// Exec of session_search finds the recorded content.
@@ -447,7 +447,7 @@ func TestSessionSpecsSearchAndRetrieve(t *testing.T) {
 	if err != nil {
 		t.Fatalf("exec session_retrieve: %v", err)
 	}
-	if !strings.Contains(output, "terminal_run") {
+	if !strings.Contains(output, "shell") {
 		t.Fatalf("session_retrieve did not return the event:\n%s", output)
 	}
 }
@@ -456,11 +456,11 @@ func TestSessionSpecsWithoutPersistenceExplain(t *testing.T) {
 	s := NewSession(config.Config{})
 	for _, sp := range SessaoSpecs(s) {
 		args := `{}`
-		if sp.Name == "log_search" {
+		if sp.Name == "session_search" {
 			args = `{"query":"x"}`
-		} else if sp.Name == "log_retrieve" {
+		} else if sp.Name == "session_retrieve" {
 			args = `{"seq":1}`
-		} else if sp.Name == "sessions_list" {
+		} else if sp.Name == "session_list" {
 			args = `{}`
 		}
 		output, err := sp.Exec(nil, t.TempDir(), json.RawMessage(args))
@@ -487,11 +487,11 @@ func TestSendExposesSessionToolsInSchema(t *testing.T) {
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		for _, tl := range req.Tools {
 			switch tl.Function.Name {
-			case "log_search":
+			case "session_search":
 				sawSearch = true
-			case "log_retrieve":
+			case "session_retrieve":
 				sawRetrieve = true
-			case "sessions_list":
+			case "session_list":
 				sawList = true
 			}
 		}
@@ -531,15 +531,15 @@ func TestLastContext(t *testing.T) {
 // not crash the process.
 func TestLargeResultWithoutStoreDoesNotCrash(t *testing.T) {
 	s := NewSession(config.Config{})
-	if p := s.recordResult("c1", "file_read", strings.Repeat("x", blobThreshold+10), false); p != nil {
+	if p := s.recordResult("c1", "read", strings.Repeat("x", blobThreshold+10), false); p != nil {
 		t.Fatalf("without store it should not record: %v", p)
 	}
 }
 
 // ── cross-session log tools ───────────────────────────────────────────────
 
-// log_search/log_retrieve read another session when given its id, and
-// sessions_list returns the ids (metadata only) that make that possible.
+// session_search/session_retrieve read another session when given its id, and
+// session_list returns the ids (metadata only) that make that possible.
 func TestLogToolsReadAnotherSession(t *testing.T) {
 	st := testStore(t)
 	// Two sessions, each with one event to find.
@@ -561,29 +561,29 @@ func TestLogToolsReadAnotherSession(t *testing.T) {
 		return out
 	}
 
-	// sessions_list names the other session and marks mine.
-	list := run("sessions_list", `{}`)
+	// session_list names the other session and marks mine.
+	list := run("session_list", `{}`)
 	if !strings.Contains(list, "bh-20240102090000-aaaa") || !strings.Contains(list, "[current]") {
-		t.Fatalf("sessions_list must list the other id and mark the current one:\n%s", list)
+		t.Fatalf("session_list must list the other id and mark the current one:\n%s", list)
 	}
 	if strings.Contains(list, "connector was restarted") {
-		t.Fatal("sessions_list returns metadata only: no conversation content")
+		t.Fatal("session_list returns metadata only: no conversation content")
 	}
 
 	// Default (omitted id) searches MY session only.
-	def := run("log_search", `{"query":"connector"}`)
+	def := run("session_search", `{"query":"connector"}`)
 	if !strings.Contains(def, "my own note") || strings.Contains(def, "was restarted") {
-		t.Fatalf("omitting session_id must search this session:\n%s", def)
+		t.Fatalf("omitting sessionID must search this session:\n%s", def)
 	}
 	if !strings.Contains(def, "current") {
 		t.Fatalf("a result must name the session it came from:\n%s", def)
 	}
 
 	// With the id, the other session's log is reachable, and the full event
-	// comes back from log_retrieve with the same id.
-	cross := run("log_search", `{"query":"connector","session_id":"bh-20240102090000-aaaa"}`)
+	// comes back from session_retrieve with the same id.
+	cross := run("session_search", `{"query":"connector","sessionID":"bh-20240102090000-aaaa"}`)
 	if !strings.Contains(cross, "was restarted") || strings.Contains(cross, "my own note") {
-		t.Fatalf("session_id must read that session:\n%s", cross)
+		t.Fatalf("sessionID must read that session:\n%s", cross)
 	}
 	// The seq comes from a "seq N [...]" line, not from the header.
 	seq := 0
@@ -597,13 +597,13 @@ func TestLogToolsReadAnotherSession(t *testing.T) {
 	if seq == 0 {
 		t.Fatalf("could not read the seq back:\n%s", cross)
 	}
-	got := run("log_retrieve", fmt.Sprintf(`{"seq":%d,"session_id":"bh-20240102090000-aaaa"}`, seq))
+	got := run("session_retrieve", fmt.Sprintf(`{"seq":%d,"sessionID":"bh-20240102090000-aaaa"}`, seq))
 	if !strings.Contains(got, "connector was restarted") {
-		t.Fatalf("log_retrieve of another session:\n%s", got)
+		t.Fatalf("session_retrieve of another session:\n%s", got)
 	}
 
 	// A wrong id is an honest "no session", not a crash.
-	bad := run("log_search", `{"query":"x","session_id":"nope"}`)
+	bad := run("session_search", `{"query":"x","sessionID":"nope"}`)
 	if !strings.Contains(bad, "no session with id") {
 		t.Fatalf("unknown id:\n%s", bad)
 	}

@@ -1,6 +1,6 @@
 // Package web provides the Barroso Harness's two network tools:
-// web_fetch (downloads a URL and returns the text a person would read) and
-// web_search (SearXNG, anonymous hosted MCP providers, DuckDuckGo lite).
+// webfetch (downloads a URL and returns the text a person would read) and
+// websearch (SearXNG, anonymous hosted MCP providers, DuckDuckGo lite).
 //
 // Stdlib only — no external dependencies. The hosted providers speak MCP
 // through internal/jsonrpc, never through internal/mcp (that would be a cycle),
@@ -20,12 +20,12 @@ import (
 )
 
 const (
-	// defaultFetchMax is web_fetch's character cap when the agent asks for
+	// defaultFetchMax is webfetch's character cap when the agent asks for
 	// nothing.
 	defaultFetchMax = 20000
-	// fetchCap is web_fetch's absolute hard cap.
+	// fetchCap is webfetch's absolute hard cap.
 	fetchCap = 60000
-	// searchCap is web_search's character cap.
+	// searchCap is websearch's character cap.
 	searchCap = 20000
 	// fetchBodyCap limits the downloaded body (2 MiB): stops memory abuse
 	// before any parsing.

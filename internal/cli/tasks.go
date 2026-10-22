@@ -1,6 +1,6 @@
 // /tasks: the user sees and controls the sub-agents the model spawned.
 //
-// task_spawn / task_status / task_result are MODEL tools. Without this
+// subagent / subagent_status / subagent_result are MODEL tools. Without this
 // command, background tasks were only visible by asking the model itself —
 // and there was no way to cancel a stuck one.
 package cli

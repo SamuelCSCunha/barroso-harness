@@ -15,7 +15,7 @@ import (
 
 func toolList() []tools.Spec { return tools.SpecsBuiltins() }
 
-// fake httptest provider: a two-round script — asks for terminal_run, then
+// fake httptest provider: a two-round script — asks for shell, then
 // closes with text streamed piece by piece with usage at the end.
 func fakeProvider() *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -44,8 +44,8 @@ func fakeProvider() *httptest.Server {
 				"delta": map[string]any{"tool_calls": []map[string]any{{
 					"index": 0, "id": "call_1", "type": "function",
 					"function": map[string]any{
-						"name":      "terminal_run",
-						"arguments": `{"command":"echo loop-tuple","timeout_secs":10}`,
+						"name":      "shell",
+						"arguments": `{"command":"echo loop-tuple","timeout":10000}`,
 					},
 				}}},
 			}}})
@@ -70,7 +70,7 @@ func TestTurnWithToolAndStreaming(t *testing.T) {
 		t.Fatalf("turn failed: %v", err)
 	}
 	out := sb.String()
-	for _, want := range []string{"loop-tuple", "[tool terminal_run ok", "result received and closing."} {
+	for _, want := range []string{"loop-tuple", "[tool shell ok", "result received and closing."} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output without %q:\n%s", want, out)
 		}
@@ -90,23 +90,23 @@ func TestFileReadTool(t *testing.T) {
 	list := toolList()
 	found := false
 	for _, s := range list {
-		if s.Name == "file_read" {
+		if s.Name == "read" {
 			found = true
 			output, err := s.Exec(nil, cwd, json.RawMessage(`{"path":"missing.txt"}`))
 			if err == nil {
-				t.Fatalf("file_read of a missing file should fail, got %q", output)
+				t.Fatalf("read of a missing file should fail, got %q", output)
 			}
 		}
 	}
 	if !found {
-		t.Fatal("file_read is not in the tool list")
+		t.Fatal("read is not in the tool list")
 	}
 }
 
 func TestPrunePreservesTail(t *testing.T) {
 	var h []historyMessage
 	for i := 0; i < 40; i++ {
-		h = append(h, historyMessage{Role: "tool_result", Conteudo: strings.Repeat("x", 4096), ToolName: "file_read"})
+		h = append(h, historyMessage{Role: "tool_result", Conteudo: strings.Repeat("x", 4096), ToolName: "read"})
 	}
 	floor := 0
 	pruned := prune(h, &floor, 2000)

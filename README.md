@@ -8,8 +8,8 @@ An agent harness written in **Go** from scratch: a single binary, no third-party
 - **`BARROSO.md`** becomes the system instruction: from the project directory (and its parents) and/or the global one at `~/.barroso-harness/BARROSO.md`.
 - **Context with a guardrail**: a budget per model window, an estimator calibrated by the real `usage`, and monotonic proactive/reactive compaction. Each turn's transcript is only committed after a complete round.
 - **Persistent sessions** in append-only SQLite (`sessions.db`), with `/resume` and blobs for large tool results.
-- **Built-in tools**: `terminal_run` (`cmd /C` on Windows, `bash -c` elsewhere), `file_read`, `file_write`, `file_append`, `file_copy`, `list_dir`, `grep` (pure-Go regex content search), `glob` (`**` file patterns, newest first) and `edit` (exact string replacement, CRLF-aware). Independent tool calls of one round run in parallel; rounds that touch the catalog or session (`mcp_add`, `ctx_write`, `task_spawn`, ...) run sequentially.
-- **Subsystems**: MCP (stdio and streamable HTTP), skills (`SKILL.md`), `web_fetch`/`web_search`, async sub-agents (`task_spawn`/`task_status`/`task_result`, with no recursive delegation) and **ACP** (`bh -acp`) for editors.
+- **Built-in tools**: `shell` (`cmd /C` on Windows, `bash -c` elsewhere), `read`, `write`, `append`, `copy`, `list`, `grep` (pure-Go regex content search), `glob` (`**` file patterns, newest first) and `edit` (exact string replacement, CRLF-aware). Independent tool calls of one round run in parallel; rounds that touch the catalog or session (`mcp_add`, `context_write`, `subagent`, ...) run sequentially.
+- **Subsystems**: MCP (stdio and streamable HTTP), skills (`SKILL.md`), `webfetch`/`websearch`, async subagents (`subagent`/`subagent_status`/`subagent_result`, with no recursive delegation) and **ACP** (`bh -acp`) for editors.
 - **Self-update from the CLI**: `/update` downloads, verifies the SHA256 and installs the newest release.
 - **Installation and recipes**: https://harness.barroso.tec.br
 
@@ -96,7 +96,7 @@ bh -acp
 
 `stdout` is the protocol wire — no banner or log on it; diagnostics go to `stderr`. Methods: `initialize`, `session/new`, `session/prompt`, `session/cancel` and the `session/update` notification (including `tool_call`, so the client can render tools in real time).
 
-`session/new` returns a `sessionId` that is **always filled in** and stores the session in the same `sessions.db` as the REPL — a conversation started in an editor can be resumed in the terminal with `/resume`. Each session gets the same subsystem wiring (MCP, sub-agents) that the REPL builds, so the client sees the full tool catalog, and the child never gets `task_spawn` (delegation is not recursive).
+`session/new` returns a `sessionId` that is **always filled in** and stores the session in the same `sessions.db` as the REPL - a conversation started in an editor can be resumed in the terminal with `/resume`. Each session gets the same subsystem wiring (MCP, sub-agents) that the REPL builds, so the client sees the full tool catalog, and the child never gets `subagent` (delegation is not recursive).
 
 A failing MCP server becomes a warning on `stderr` and does not bring the protocol down; the config is captured once, so `session/new` does not re-read the disk.
 
@@ -110,7 +110,7 @@ type /help for commands · plain text goes to the model
 
 provider keys-barroso · effort high · model barroso-chat · window 250k
 > barroso-chat ·high
-▶ terminal_run 120ms ok
+▶ shell 120ms ok
   exit_code: 0
 tokens ↑1200 ↓45 · 890ms
 ```
@@ -119,7 +119,7 @@ As for what you type: the prompt has a space before the effort marker, and the s
 
 The ANSI-256 palette and the glyphs (`▶` tool, `✗` error, `✓` ok, `⚠` warning, `◆` guardrail) are only emitted when `Out` and `ErrOut` are real terminals — `x/term.IsTerminal`, no TUI framework. `NO_COLOR` (with a value) and `TERM=dumb` turn color off even in a terminal.
 
-What changes when output is **not** a terminal — pipe (`bh | cat`), redirection (`bh > log`), input from a file (`bh < cmds`) and `-p`: it falls back to the **plain** renderer, raw text, not a single escape character. That is why the website recipes and the deploy log stay clean, and why tests always see the same literal substring (`[tool terminal_run ok`).
+What changes when output is **not** a terminal — pipe (`bh | cat`), redirection (`bh > log`), input from a file (`bh < cmds`) and `-p`: it falls back to the **plain** renderer, raw text, not a single escape character. That is why the website recipes and the deploy log stay clean, and why tests always see the same literal substring (`[tool shell ok`).
 
 ## Development
 
@@ -133,8 +133,8 @@ Releases are automatic: push to `main` → `deploy.barroso.tec.br` webhook → b
 
 `"context_policy"` in `config.json` selects the policy:
 
-- `agente` (default): the model has the `ctx_compact` tool and compacts at a task milestone, writing the working state that replaces the history before the current request. The budget guardrail remains as a safety net.
-- `limiar`: no `ctx_compact`; only the guardrail compacts, when the window overflows.
+- `agente` (default): the model has the `context_compact` tool and compacts at a task milestone, writing the working state that replaces the history before the current request. The budget guardrail remains as a safety net.
+- `limiar`: no `context_compact`; only the guardrail compacts, when the window overflows.
 
 Each compaction is stored in `sessions.db` with the policy that produced it, and `/context` (old alias `/contexto`) aggregates by policy (agent compactions, proactive guardrail, **reactive** guardrail — the sign that the policy came too late — and how much the history shrank). `/resume` and `session/load` re-apply the compaction, so the resumed session comes back with the state, not with the already-summarized conversation.
 
@@ -142,11 +142,11 @@ Each compaction is stored in `sessions.db` with the policy that produced it, and
 
 Search and fetch work out of the box, with **no account and no API key**.
 
-- `web_search` tries, in order: the SearXNG at `search_url` (only when configured — it keeps precedence), the anonymous hosted MCP providers **Exa** (`mcp.exa.ai`) and **Parallel** (`search.parallel.ai`), and finally DuckDuckGo lite. A failing source only moves on to the next one; the error surfaces (on one line, naming each source) only when all of them fail.
-- `web_fetch` reads **public** URLs through the same providers first and falls back to a direct GET. Loopback, private, link-local and single-label hosts never leave the machine — they always go straight to the direct GET.
+- `websearch` tries, in order: the SearXNG at `search_url` (only when configured — it keeps precedence), the anonymous hosted MCP providers **Exa** (`mcp.exa.ai`) and **Parallel** (`search.parallel.ai`), and finally DuckDuckGo lite. A failing source only moves on to the next one; the error surfaces (on one line, naming each source) only when all of them fail.
+- `webfetch` reads **public** URLs through the same providers first and falls back to a direct GET. Loopback, private, link-local and single-label hosts never leave the machine — they always go straight to the direct GET.
 - `search_providers` in `config.json` reorders or disables the providers: `["parallel", "exa"]`, `["exa"]`, or `["off"]` for none. Absent = `["exa", "parallel"]`. Only names are accepted; the endpoints are fixed in the code.
-- The providers are internal: their tools never enter the catalog (the model still sees only `web_search`/`web_fetch`). Requests carry only `Content-Type`, `Accept`, `User-Agent` and the server's own `Mcp-Session-Id` — never a key, cookie or `Authorization`.
-- Everything they return is untrusted external data: same warning, same caps (`web_search` 20000 chars, `web_fetch` `max_chars` up to 60000), 4 MiB per response, 20 s (search) / 30 s (fetch) per call. A provider that fails (including an anonymous rate limit) is skipped for 2 minutes.
+- The providers are internal: their tools never enter the catalog (the model still sees only `websearch`/`webfetch`). Requests carry only `Content-Type`, `Accept`, `User-Agent` and the server's own `Mcp-Session-Id` — never a key, cookie or `Authorization`.
+- Everything they return is untrusted external data: same warning, same caps (`websearch` 20000 chars, `webfetch` `maxChars` up to 60000), 4 MiB per response, 20 s (search) / 30 s (fetch) per call. A provider that fails (including an anonymous rate limit) is skipped for 2 minutes.
 
 ## ACP: `session/load`
 

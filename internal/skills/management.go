@@ -147,7 +147,7 @@ func specSkillEdit(roots map[string]string) tools.Spec {
 	return tools.Spec{
 		Name: "skill_edit",
 		Description: "Edits an existing skill (<scope>/<name>/SKILL.md) in place. Give only what changes: " +
-			"description (new one-line description); old_string + new_string (replace one exact, unique passage of the body, like the edit tool); " +
+			"description (new one-line description); oldString + newString (replace one exact, unique passage of the body, like the edit tool); " +
 			"body (replace the whole body); new_name (rename: the command becomes /<new_name>); new_scope (move between project and global). " +
 			"The change applies to every open session on their next request.",
 		Schema: map[string]any{
@@ -156,9 +156,9 @@ func specSkillEdit(roots map[string]string) tools.Spec {
 				"name":        map[string]any{"type": "string", "description": "current skill name"},
 				"scope":       map[string]any{"type": "string", "enum": scopeEnum, "description": "where it is now (default project)"},
 				"description": map[string]any{"type": "string", "description": "new one-line description"},
-				"old_string":  map[string]any{"type": "string", "description": "exact passage of the body to replace (must be unique)"},
-				"new_string":  map[string]any{"type": "string", "description": "replacement for old_string"},
-				"body":        map[string]any{"type": "string", "description": "new full body (instead of old_string/new_string)"},
+				"oldString":  map[string]any{"type": "string", "description": "exact passage of the body to replace (must be unique)"},
+				"newString":  map[string]any{"type": "string", "description": "replacement for oldString"},
+				"body":        map[string]any{"type": "string", "description": "new full body (instead of oldString/newString)"},
 				"new_name":    map[string]any{"type": "string", "description": "rename to this name"},
 				"new_scope":   map[string]any{"type": "string", "enum": scopeEnum, "description": "move to this scope"},
 			},
@@ -169,8 +169,8 @@ func specSkillEdit(roots map[string]string) tools.Spec {
 				Name        string  `json:"name"`
 				Scope       string  `json:"scope"`
 				Description *string `json:"description"`
-				OldString   string  `json:"old_string"`
-				NewString   *string `json:"new_string"`
+				OldString   string  `json:"oldString"`
+				NewString   *string `json:"newString"`
 				Body        *string `json:"body"`
 				NewName     string  `json:"new_name"`
 				NewScope    string  `json:"new_scope"`
@@ -199,7 +199,7 @@ func specSkillEdit(roots map[string]string) tools.Spec {
 			}
 			switch {
 			case c.Body != nil && c.OldString != "":
-				return "", fmt.Errorf("give either body or old_string/new_string, not both")
+				return "", fmt.Errorf("give either body or oldString/newString, not both")
 			case c.Body != nil:
 				if strings.TrimSpace(*c.Body) == "" {
 					return "", fmt.Errorf("empty body: the skill needs instructions")
@@ -208,15 +208,15 @@ func specSkillEdit(roots map[string]string) tools.Spec {
 				changed = append(changed, "body")
 			case c.OldString != "":
 				if c.NewString == nil {
-					return "", fmt.Errorf("old_string needs new_string")
+					return "", fmt.Errorf("oldString needs newString")
 				}
 				switch n := strings.Count(body, c.OldString); n {
 				case 0:
-					return "", fmt.Errorf("old_string not found in the body of %q; read it with skill_read", name)
+					return "", fmt.Errorf("oldString not found in the body of %q; read it with skill", name)
 				case 1:
 					body = strings.Replace(body, c.OldString, *c.NewString, 1)
 				default:
-					return "", fmt.Errorf("old_string occurs %d times in the body: include more context to make it unique", n)
+					return "", fmt.Errorf("oldString occurs %d times in the body: include more context to make it unique", n)
 				}
 				changed = append(changed, "body passage")
 			}
@@ -238,7 +238,7 @@ func specSkillEdit(roots map[string]string) tools.Spec {
 				}
 			}
 			if len(changed) == 0 {
-				return "", fmt.Errorf("nothing to change: give description, body, old_string/new_string, new_name or new_scope")
+				return "", fmt.Errorf("nothing to change: give description, body, oldString/newString, new_name or new_scope")
 			}
 			dest := filepath.Join(newRoot, newName, fileName)
 			if dest != path {

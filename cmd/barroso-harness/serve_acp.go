@@ -53,7 +53,7 @@ func serveACP() {
 		for _, set := range open {
 			_ = set.Fechar()
 		}
-		tools.KillJobs() // background terminal_run jobs die with the agent
+		tools.KillJobs() // background shell jobs die with the agent
 	}()
 	ag := acp.NovoComFabrica(cfg, factory).ComLog(func(line string) {
 		os.Stderr.WriteString(line + "\n")

@@ -1,5 +1,5 @@
 // Extended turn catalog: everything that is NOT a built-in and NOT part of the
-// session subsystem (log_search/log_retrieve/sessions_list, which live in
+// session subsystem (session_search/session_retrieve/session_list, which live in
 // tools_session.go because they close over the store).
 //
 // The split of responsibility is:
@@ -15,8 +15,8 @@
 //     here: subagent imports this package, and importing back would be a
 //     cycle. See Injetar.
 //
-// A tool name is unique in the catalog. Two ctx_read in a schema is an
-// ambiguous call for the provider, and an external tool called terminal_run
+// A tool name is unique in the catalog. Two context_read in a schema is an
+// ambiguous call for the provider, and an external tool called shell
 // would hijack a built-in. dedupe and noShadow handle the two cases with
 // different policies, on purpose.
 package runtime
@@ -113,7 +113,7 @@ func (s *Session) search() *web.Busca {
 
 // skillSpecs discovers the skills on disk and returns their tools. Discovery
 // only errors when ALL sources exist and none could be read; the right answer
-// then is an empty catalog (skills_list explains there are no skills), not an
+// then is an empty catalog (skills explains there are no skills), not an
 // aborted turn — a skill is a convenience, not a prerequisite.
 //
 // Discovery happens every turn, on purpose: reading three directories and the
@@ -160,7 +160,7 @@ func skillSources(cwd string) []skills.Fonte {
 
 // dedupe collapses repeated names keeping the LAST definition, at the
 // POSITION of the first. It is the policy for catalogs the runtime controls:
-// the placeholder ctx_read from tools/specs.go is replaced by the one from
+// the placeholder context_read from tools/specs.go is replaced by the one from
 // live_context.go (which has a real body), and the stable position keeps the
 // schema order predictable across turns.
 //
@@ -187,7 +187,7 @@ func dedupe(specs []tools.Spec) []tools.Spec {
 // noShadow appends the external specs ONLY with names the base does not have
 // yet. The opposite policy of dedupe, deliberately:
 //
-// An MCP server publishing a tool called terminal_run must not take the place
+// An MCP server publishing a tool called shell must not take the place
 // of the built-in — the name would become a Trojan horse looking like a local
 // privilege. The same goes for a subagent. Coming from outside, the name loses
 // to the inside one; the legitimate owner stays in the catalog and the
@@ -217,15 +217,15 @@ func noShadow(base, external []tools.Spec) []tools.Spec {
 // entry points (REPL, -p and ACP — ACP arrives through the same Session.Send).
 // The order matters for dedup and for the provider:
 //
-//  1. built-ins (terminal, files, list_dir) — the base;
-//  2. log retrieval (log_search/log_retrieve/sessions_list) — closes over the
+//  1. built-ins (terminal, files, list) — the base;
+//  2. log retrieval (session_search/session_retrieve/session_list) — closes over the
 //     session, so it enters here and not in package tools;
-//  3. live context (ctx_read/ctx_write/ctx_append) — replaces the ctx_read
+//  3. live context (context_read/context_write/context_append) — replaces the context_read
 //     placeholder that comes with the built-ins;
 //  4. web + skills — a function of config and cwd, rebuilt every turn;
 //  5. injected (subagents, MCP) — only with names the base does not have.
 //
-// dedupe resolves the duplicated ctx_read (placeholder vs live) keeping the
+// dedupe resolves the duplicated context_read (placeholder vs live) keeping the
 // LAST definition; noShadow prevents an external tool from hijacking a local
 // name.
 func (s *Session) toolCatalog(cwd string) []tools.Spec {

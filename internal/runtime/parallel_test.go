@@ -128,7 +128,7 @@ func TestParallelToolCallsRunConcurrentlyInOrder(t *testing.T) {
 }
 
 func TestMutatingToolForcesSequentialRound(t *testing.T) {
-	srv := twoCallProvider("slow_a", "ctx_write")
+	srv := twoCallProvider("slow_a", "context_write")
 	defer srv.Close()
 	s := NewSession(config.Config{BaseURL: srv.URL, Model: "fake", APIKey: "k", Janela: 100_000})
 	s.Injetar(slowTool("slow_a", 50*time.Millisecond))
@@ -149,7 +149,7 @@ func TestSystemPromptFacts(t *testing.T) {
 		"ISSUE THEM ALL IN THE SAME RESPONSE",
 		`C:\work`,
 		"2026-10-19",
-		"task_spawn",
+		"subagent",
 		"## BARROSO.md (system instructions)\nproject rule",
 	} {
 		if !strings.Contains(p, want) {
@@ -159,7 +159,7 @@ func TestSystemPromptFacts(t *testing.T) {
 	if runtime.GOOS == "windows" && !strings.Contains(p, "cmd.exe") {
 		t.Fatalf("windows prompt must name cmd.exe:\n%s", p)
 	}
-	if strings.Contains(systemPrompt("x", "", false, time.Now(), ""), "task_spawn") {
-		t.Fatal("task_spawn line must only appear when the tool exists")
+	if strings.Contains(systemPrompt("x", "", false, time.Now(), ""), "subagent") {
+		t.Fatal("subagent line must only appear when the tool exists")
 	}
 }

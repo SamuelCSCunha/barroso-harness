@@ -28,9 +28,9 @@ func TestContextAggregatesByPolicy(t *testing.T) {
 	s := out.String()
 	for _, want := range []string{
 		"active policy: agente",
-		"agente    1 sessions · 1 ctx_compact",
+		"agente    1 sessions · 1 context_compact",
 		"history 40→10 KiB (75% smaller)",
-		"limiar    1 sessions · 0 ctx_compact · 1 proactive guardrail · 1 reactive",
+		"limiar    1 sessions · 0 context_compact · 1 proactive guardrail · 1 reactive",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("output missing %q:\n%s", want, s)

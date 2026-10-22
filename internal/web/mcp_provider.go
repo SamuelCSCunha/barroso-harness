@@ -41,9 +41,9 @@ const (
 	mcpProtocolVersion = "2025-06-18"
 )
 
-// ProvedorMCP is ONE hosted MCP server used internally by web_search and
-// web_fetch. Its tools never enter the catalog: the model keeps seeing only
-// web_search/web_fetch, and the remote names cannot shadow anything.
+// ProvedorMCP is ONE hosted MCP server used internally by websearch and
+// webfetch. Its tools never enter the catalog: the model keeps seeing only
+// websearch/webfetch, and the remote names cannot shadow anything.
 //
 // Discovery (initialize, notifications/initialized, tools/list) is lazy and
 // cached; the search and fetch tools are resolved from the published names,

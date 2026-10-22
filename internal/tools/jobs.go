@@ -1,6 +1,6 @@
 package tools
 
-// terminal_run jobs. A command used to run until it ended, with no bound at
+// shell jobs. A command used to run until it ended, with no bound at
 // all: a build waiting on a prompt, a server started in the foreground or a
 // grandchild holding the pipe open kept the turn silent forever. The surveyed
 // harnesses solve it without killing useful work, and this follows them:
@@ -9,8 +9,8 @@ package tools
 //     never dies; one silent for inactivityTimeout is killed;
 //   - auto-background (Crush, Codex): a command still running after
 //     autoBackground returns control to the model with the output so far, and
-//     keeps running as a job the model can wait on (terminal_output) or stop
-//     (terminal_kill);
+//     keeps running as a job the model can wait on (shell_output) or stop
+//     (shell_kill);
 //   - the whole process tree is killed, and Wait is bounded by waitDelay so a
 //     grandchild holding the pipe cannot hang the tool (Codex's drain guard);
 //   - output over outputCap is saved whole to a file and the model gets the
@@ -36,7 +36,7 @@ var (
 	autoBackground    = 60 * time.Second
 	inactivityTimeout = 300 * time.Second
 	waitDelay         = 2 * time.Second
-	// defaultOutputWait / maxOutputWait bound one terminal_output call.
+	// defaultOutputWait / maxOutputWait bound one shell_output call.
 	defaultOutputWait = 60 * time.Second
 	maxOutputWait     = 10 * time.Minute
 	spillRetention    = 7 * 24 * time.Hour
@@ -64,7 +64,7 @@ type jobOutput struct {
 	path  string
 	sink  func(string)
 	last  atomic.Int64 // unix nanos of the last write
-	read  int64        // bytes already shown to the model (terminal_output)
+	read  int64        // bytes already shown to the model (shell_output)
 }
 
 func newJobOutput(sink func(string)) *jobOutput {
@@ -133,7 +133,7 @@ func (o *jobOutput) render(final bool) string {
 	omitted := o.total - int64(len(o.head)) - int64(len(o.tail))
 	where := "the full output could not be saved"
 	if o.path != "" {
-		where = "full output (" + strconv.FormatInt(o.total, 10) + " bytes) saved to " + o.path + " — read it with file_read/grep"
+		where = "full output (" + strconv.FormatInt(o.total, 10) + " bytes) saved to " + o.path + " — read it with read/grep"
 	}
 	return fmt.Sprintf("%s\n\n[... %d bytes omitted from the middle; %s ...]\n\n%s", o.head, omitted, where, o.tail)
 }
@@ -167,7 +167,7 @@ func cleanSpill() {
 	}
 }
 
-// job is one running (or finished) terminal_run command.
+// job is one running (or finished) shell command.
 type job struct {
 	id         string
 	command    string
@@ -270,7 +270,7 @@ func (j *job) status(why string) string {
 	if j.out.path != "" {
 		sb.WriteString("full output file: " + j.out.path + "\n")
 	}
-	fmt.Fprintf(&sb, "Call terminal_output {\"job_id\":%q} to wait for it and read new output, or terminal_kill to stop it. Do something else meanwhile if you can.", j.id)
+	fmt.Fprintf(&sb, "Call shell_output {\"jobID\":%q} to wait for it and read new output, or shell_kill to stop it. Do something else meanwhile if you can.", j.id)
 	return sb.String()
 }
 
@@ -287,7 +287,7 @@ func lookupJob(id string) (*job, bool) {
 	return j, ok
 }
 
-// runForeground waits for j the way terminal_run promises: until it ends, the
+// runForeground waits for j the way shell promises: until it ends, the
 // ctx is cancelled, the explicit timeout fires, it goes quiet for
 // inactivityTimeout, or (when auto is set) it is moved to the background.
 func runForeground(ctx context.Context, j *job, timeout time.Duration, auto bool) string {
@@ -307,7 +307,7 @@ func runForeground(ctx context.Context, j *job, timeout time.Duration, auto bool
 			j.kill("cancelled: the turn was interrupted")
 			return j.result()
 		case <-deadline:
-			j.kill(fmt.Sprintf("timed out after %s (timeout_secs) and was killed with its child processes; output above is partial — retry with a larger timeout_secs, or run it with background:true", timeout))
+			j.kill(fmt.Sprintf("timed out after %s (timeout) and was killed with its child processes; output above is partial — retry with a larger timeout, or run it with background:true", timeout))
 			return j.result()
 		case <-tick.C:
 			if inactivityTimeout > 0 && j.out.idleFor() >= inactivityTimeout {
@@ -344,7 +344,7 @@ func watchInactive(j *job) {
 	}
 }
 
-// waitJob is terminal_output: wait up to wait for j to end, then report.
+// waitJob is shell_output: wait up to wait for j to end, then report.
 func waitJob(ctx context.Context, j *job, wait time.Duration) string {
 	t := time.NewTimer(wait)
 	defer t.Stop()

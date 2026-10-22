@@ -56,7 +56,7 @@ func cutProvider(t *testing.T, steps []struct {
 		}
 		if p.tool {
 			delta["tool_calls"] = []map[string]any{{"index": 0, "id": "c1", "type": "function",
-				"function": map[string]any{"name": "terminal_run", "arguments": `{"command":"echo must-not-run"`}}}
+				"function": map[string]any{"name": "shell", "arguments": `{"command":"echo must-not-run"`}}}
 		}
 		emit(map[string]any{"choices": []map[string]any{{"delta": delta}}})
 		emit(map[string]any{"choices": []map[string]any{{"delta": map[string]any{}, "finish_reason": p.reason}},
@@ -103,7 +103,7 @@ func TestCutWithTextContinues(t *testing.T) {
 		t.Fatalf("requests = %+v", v)
 	}
 	out := sb.String()
-	if strings.Contains(out, "[tool terminal_run") || !strings.Contains(out, "part one") || !strings.Contains(out, "part two") {
+	if strings.Contains(out, "[tool shell") || !strings.Contains(out, "part one") || !strings.Contains(out, "part two") {
 		t.Fatalf("output:\n%s", out)
 	}
 }

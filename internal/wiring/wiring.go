@@ -21,6 +21,7 @@ import (
 
 	"github.com/ruanbarroso/barroso-harness/internal/config"
 	"github.com/ruanbarroso/barroso-harness/internal/mcp"
+	"github.com/ruanbarroso/barroso-harness/internal/pricing"
 	"github.com/ruanbarroso/barroso-harness/internal/runtime"
 	"github.com/ruanbarroso/barroso-harness/internal/subagent"
 )
@@ -29,7 +30,7 @@ import (
 // resources that must be CLOSED at the end of the process. A Conjunto with no
 // open resource (no MCP server; or the Conjunto{} of a nil session) is valid —
 // Fechar is a no-op. The sub-agent manager is ALWAYS created: every main
-// session has task_spawn/task_status/task_result; the CHILD session does not
+// session has subagent/subagent_status/subagent_result; the CHILD session does not
 // get them because the runtime builds it from tools.SpecsBuiltins() (an
 // invariant by construction, not by configuration).
 type Conjunto struct {
@@ -101,13 +102,21 @@ func Montar(ctx context.Context, cfg config.Config, sess *runtime.Session, cwd s
 	// ALWAYS on, no config flag: delegating is part of the main session's base
 	// catalog. The child does not inherit delegation by construction — the
 	// runtime.Session.Send builds its list from tools.SpecsBuiltins(), which
-	// has no task_* — so there is no recursion risk to manage.
+	// has no subagent_* — so there is no recursion risk to manage.
 	manager := subagent.Novo(subagent.Config{Nome: subagentName()})
 	manager.DefinirCwd(cwd)
 	// Bind to the long-lived ctx BEFORE the first Spawn: tasks derive their
 	// child context from here, and the turn ctx dies at the end of the line.
 	manager.Vincular(ctx)
 	sess.Injetar(subagent.Especificacoes(manager, cfg)...)
+
+	// ── prices (optional) ─────────────────────────────────────────────────
+	// prices.json in the harness home, hand-declared. A missing or invalid
+	// file is NOT an error: bh simply never shows a money cost and tokens
+	// stay the metric. Nothing here can block a session.
+	if precos, err := pricing.Load(cfg.Home); err == nil && !precos.Empty() {
+		sess.DefinirPrecos(precos)
+	}
 
 	return &Conjunto{manager: manager, mcpManager: mm}, warnings
 }
@@ -191,8 +200,9 @@ func mcpType(t string) string {
 	}
 }
 
-// subagentName returns the prefix of the task tools (task_spawn/
-// task_status/task_result). Fixed, not derived from the model: a configurable
+// subagentName returns the subagent family name (the launcher tool's name
+// "subagent", also the prefix of subagent_status/subagent_result). Fixed, not
+// derived from the model: a configurable
 // prefix only matters to someone running two managers in the SAME catalog, and
 // there the risk of ambiguous tool names outweighs the gain.
 func subagentName() string { return subagent.PrefixoPadrao }

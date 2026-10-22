@@ -160,8 +160,8 @@ func TestProviderSearchExaShape(t *testing.T) {
 	f := &fakeHosted{tools: []map[string]any{exaResearchTool, exaFetchTool, exaSearchTool}, callText: exaSearchText, sse: true}
 	p := newFakeProvider(t, "exa", f)
 
-	out, err := run(t, specsByName(t, &Busca{Providers: []*ProvedorMCP{p}})["web_search"],
-		map[string]any{"query": "go release", "max_results": 3})
+	out, err := run(t, specsByName(t, &Busca{Providers: []*ProvedorMCP{p}})["websearch"],
+		map[string]any{"query": "go release", "maxResults": 3})
 	if err != nil {
 		t.Fatalf("web_search: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestProviderSearchParallelShape(t *testing.T) {
 	f := &fakeHosted{tools: []map[string]any{parFetchTool, parSearchTool}, callText: parSearchText}
 	p := newFakeProvider(t, "parallel", f)
 
-	out, err := run(t, specsByName(t, &Busca{Providers: []*ProvedorMCP{p}})["web_search"], map[string]any{"query": "go"})
+	out, err := run(t, specsByName(t, &Busca{Providers: []*ProvedorMCP{p}})["websearch"], map[string]any{"query": "go"})
 	if err != nil {
 		t.Fatalf("web_search: %v", err)
 	}
@@ -272,7 +272,7 @@ func TestProviderFallbackChain(t *testing.T) {
 	b := &Busca{Providers: []*ProvedorMCP{
 		newFakeProvider(t, "broken", broken), newFakeProvider(t, "notool", noTool), newFakeProvider(t, "good", good)}}
 
-	out, err := run(t, specsByName(t, b)["web_search"], map[string]any{"query": "x"})
+	out, err := run(t, specsByName(t, b)["websearch"], map[string]any{"query": "x"})
 	if err != nil {
 		t.Fatalf("web_search: %v", err)
 	}
@@ -294,7 +294,7 @@ func TestSearXNGPrecedesProviders(t *testing.T) {
 	}))
 	defer sx.Close()
 	b := &Busca{Endpoint: sx.URL, Providers: []*ProvedorMCP{newFakeProvider(t, "trip", tripwire)}}
-	out, err := run(t, specsByName(t, b)["web_search"], map[string]any{"query": "x"})
+	out, err := run(t, specsByName(t, b)["websearch"], map[string]any{"query": "x"})
 	if err != nil || !strings.Contains(out, "https://sx.example/a") {
 		t.Fatalf("SearXNG result: %v\n%s", err, out)
 	}
@@ -320,7 +320,7 @@ func TestProvidersAllFailFallsToDDG(t *testing.T) {
 	t.Cleanup(func() { endpointDDG = prev })
 
 	b := &Busca{Providers: []*ProvedorMCP{newFakeProvider(t, "exa", rl), newFakeProvider(t, "parallel", ie)}}
-	_, err := run(t, specsByName(t, b)["web_search"], map[string]any{"query": "x"})
+	_, err := run(t, specsByName(t, b)["websearch"], map[string]any{"query": "x"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -336,7 +336,7 @@ func TestProvidersAllFailFallsToDDG(t *testing.T) {
 	// The failed providers are now cooling down: the next call skips them
 	// without any request.
 	before := len(rl.methods)
-	_, _ = run(t, specsByName(t, b)["web_search"], map[string]any{"query": "x"})
+	_, _ = run(t, specsByName(t, b)["websearch"], map[string]any{"query": "x"})
 	if len(rl.methods) != before {
 		t.Error("provider in cooldown was contacted again")
 	}
@@ -353,8 +353,8 @@ func TestProviderFetchPathsAndFallback(t *testing.T) {
 		f := &fakeHosted{tools: []map[string]any{exaSearchTool, exaFetchTool},
 			callText: "# Example Domain\nURL: https://example.com\n\nExample text."}
 		p := newFakeProvider(t, "exa", f)
-		out, err := run(t, specsByName(t, &Busca{Providers: []*ProvedorMCP{p}})["web_fetch"],
-			map[string]any{"url": "https://example.com", "max_chars": 500})
+		out, err := run(t, specsByName(t, &Busca{Providers: []*ProvedorMCP{p}})["webfetch"],
+			map[string]any{"url": "https://example.com", "maxChars": 500})
 		if err != nil {
 			t.Fatalf("web_fetch: %v", err)
 		}
@@ -371,8 +371,8 @@ func TestProviderFetchPathsAndFallback(t *testing.T) {
 		f := &fakeHosted{tools: []map[string]any{parFetchTool},
 			callText: `{"results":[{"url":"https://example.com","title":"Example Domain","excerpts":["` + long + `"]}]}`}
 		p := newFakeProvider(t, "parallel", f)
-		out, err := run(t, specsByName(t, &Busca{Providers: []*ProvedorMCP{p}})["web_fetch"],
-			map[string]any{"url": "https://example.com", "max_chars": 1000})
+		out, err := run(t, specsByName(t, &Busca{Providers: []*ProvedorMCP{p}})["webfetch"],
+			map[string]any{"url": "https://example.com", "maxChars": 1000})
 		if err != nil {
 			t.Fatalf("web_fetch: %v", err)
 		}
@@ -392,7 +392,7 @@ func TestProviderFetchPathsAndFallback(t *testing.T) {
 			!strings.Contains(err.Error(), "500") {
 			t.Errorf("provider error = %v", err)
 		}
-		out, err := run(t, specsByName(t, &Busca{Providers: []*ProvedorMCP{p}})["web_fetch"], map[string]any{"url": page.URL})
+		out, err := run(t, specsByName(t, &Busca{Providers: []*ProvedorMCP{p}})["webfetch"], map[string]any{"url": page.URL})
 		if err != nil || !strings.Contains(out, "direct body") {
 			t.Errorf("direct GET: %v\n%s", err, out)
 		}
@@ -400,7 +400,7 @@ func TestProviderFetchPathsAndFallback(t *testing.T) {
 	t.Run("private URL never reaches the provider", func(t *testing.T) {
 		f := &fakeHosted{tools: []map[string]any{parFetchTool}, callText: `{"results":[]}`}
 		p := newFakeProvider(t, "trip", f)
-		out, err := run(t, specsByName(t, &Busca{Providers: []*ProvedorMCP{p}})["web_fetch"], map[string]any{"url": page.URL})
+		out, err := run(t, specsByName(t, &Busca{Providers: []*ProvedorMCP{p}})["webfetch"], map[string]any{"url": page.URL})
 		if err != nil || !strings.Contains(out, "direct body") {
 			t.Errorf("direct GET: %v\n%s", err, out)
 		}

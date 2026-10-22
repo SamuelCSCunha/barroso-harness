@@ -272,9 +272,9 @@ func TestSearchCaseInsensitiveSubstring(t *testing.T) {
 	st := openTestStore(t)
 	const id = "bh-20240101140000-0002"
 	corpus := []map[string]any{
-		{"role": "user", "content": "I need to fix the Windows Terminal_Run"},
+		{"role": "user", "content": "I need to fix the Windows Shell_Quoting"},
 		{"role": "assistant", "content": "sure, let's look at the shell"},
-		{"role": "tool_call", "tool_name": "terminal_run", "tool_id": "call_1", "args": `{"command":"echo hi"}`},
+		{"role": "tool_call", "tool_name": "shell", "tool_id": "call_1", "args": `{"command":"echo hi"}`},
 		{"role": "tool_result", "content": "exit_code: 0\nhi"},
 	}
 	for _, p := range corpus {
@@ -283,18 +283,18 @@ func TestSearchCaseInsensitiveSubstring(t *testing.T) {
 		}
 	}
 	// Case-insensitive search over the content field.
-	hits, err := st.Buscar(id, "TERMINAL_RUN", 10)
+	hits, err := st.Buscar(id, "SHELL_QUOTING", 10)
 	if err != nil {
 		t.Fatalf("Buscar: %v", err)
 	}
 	if len(hits) == 0 {
 		t.Fatal("search returned nothing")
 	}
-	if !strings.Contains(strings.ToLower(hits[0].Snippet), "terminal_run") {
+	if !strings.Contains(strings.ToLower(hits[0].Snippet), "shell") {
 		t.Fatalf("snippet missing the term: %q", hits[0].Snippet)
 	}
 	// Search over tool_name (an indexed human field).
-	hits, err = st.Buscar(id, "terminal_run", 10)
+	hits, err = st.Buscar(id, "shell", 10)
 	if err != nil {
 		t.Fatal(err)
 	}

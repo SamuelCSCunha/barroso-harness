@@ -81,7 +81,7 @@ type RendererResultado interface {
 
 // RendererAoVivo is OPTIONAL and takes precedence over ToolInicio and
 // ToolResultado: each call is announced when it starts, its live output
-// (terminal_run) arrives while it runs, and the result closes the same call.
+// (shell) arrives while it runs, and the result closes the same call.
 // id tells concurrent calls of a round apart. ToolSaida may be called from
 // the tool's own goroutine.
 type RendererAoVivo interface {
@@ -101,6 +101,14 @@ type RendererSteer interface {
 // stopped.
 type RendererCorte interface {
 	Cortada(limit int, gaveUp bool)
+}
+
+// RendererCusto is OPTIONAL: it receives the turn's money cost in USD at the
+// end of each request, but ONLY when the active model has a declared price
+// (prices.json in the harness home). No price = no call, so the UI never shows
+// an invented number: tokens remain the metric.
+type RendererCusto interface {
+	Custo(usd float64)
 }
 
 // RendererPuro is the unadorned implementation.

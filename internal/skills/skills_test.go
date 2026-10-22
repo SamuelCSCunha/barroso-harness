@@ -326,11 +326,11 @@ func TestSkillsListNumberedCatalog(t *testing.T) {
 	if len(specs) != 2 {
 		t.Fatalf("expected 2 specs, got %d", len(specs))
 	}
-	if specs[0].Name != "skills_list" || specs[1].Name != "skill_read" {
+	if specs[0].Name != "skills" || specs[1].Name != "skill" {
 		t.Fatalf("specs out of order: %s, %s", specs[0].Name, specs[1].Name)
 	}
 
-	out, err := call(t, "skills_list", specs, map[string]any{})
+	out, err := call(t, "skills", specs, map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,13 +343,13 @@ func TestSkillsListNumberedCatalog(t *testing.T) {
 	if !strings.Contains(out, "1. alpha") || !strings.Contains(out, "2. beta") {
 		t.Fatalf("catalog should be numbered and sorted:\n%s", out)
 	}
-	if !strings.Contains(out, "skill_read") {
-		t.Fatalf("catalog should point to skill_read:\n%s", out)
+	if !strings.Contains(out, "skill") {
+		t.Fatalf("catalog should point to skill:\n%s", out)
 	}
 }
 
 func TestSkillsListEmpty(t *testing.T) {
-	out, err := call(t, "skills_list", Especificacoes(nil), map[string]any{})
+	out, err := call(t, "skills", Especificacoes(nil), map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,7 +368,7 @@ func TestSkillReadReturnsExactBody(t *testing.T) {
 		t.Fatal(err)
 	}
 	specs := Especificacoes(list)
-	out, err := call(t, "skill_read", specs, map[string]any{"name": "exact"})
+	out, err := call(t, "skill", specs, map[string]any{"id": "exact"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -390,7 +390,7 @@ func TestSkillReadUnknownNameErrorsInOneLine(t *testing.T) {
 	}
 	specs := Especificacoes(list)
 
-	out, err := call(t, "skill_read", specs, map[string]any{"name": "does-not-exist"})
+	out, err := call(t, "skill", specs, map[string]any{"id": "does-not-exist"})
 	if err == nil {
 		t.Fatalf("unknown name should fail, got %q", out)
 	}
@@ -398,12 +398,12 @@ func TestSkillReadUnknownNameErrorsInOneLine(t *testing.T) {
 	if strings.Contains(msg, "\n") {
 		t.Fatalf("error should be one line, got %q", msg)
 	}
-	if msg != "skill does-not-exist not found; use skills_list" {
+	if msg != "skill does-not-exist not found; use skills" {
 		t.Fatalf("unexpected message: %q", msg)
 	}
 
 	// an empty name hits the same one-liner
-	if _, err := call(t, "skill_read", specs, map[string]any{"name": "  "}); err == nil ||
+	if _, err := call(t, "skill", specs, map[string]any{"id": "  "}); err == nil ||
 		strings.Contains(err.Error(), "\n") {
 		t.Fatalf("empty name should fail in one line, got %v", err)
 	}
@@ -418,7 +418,7 @@ func TestSkillReadTruncatesLargeBody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := call(t, "skill_read", Especificacoes(list), map[string]any{"name": "large"})
+	out, err := call(t, "skill", Especificacoes(list), map[string]any{"id": "large"})
 	if err != nil {
 		t.Fatal(err)
 	}

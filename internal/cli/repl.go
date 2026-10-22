@@ -539,7 +539,7 @@ func repl(io IO, cfg *config.Config) {
 		if strings.TrimSpace(line) == subagentsLine {
 			ts := wired.Gerente().Terminadas()
 			if len(ts) == 0 {
-				continue // already delivered (task_result or an earlier notice)
+				continue // already delivered (subagent_result or an earlier notice)
 			}
 			subNotice = subagent.AvisoTerminadas(ts, wired.Gerente().Ativas())
 			line = subNotice
@@ -613,7 +613,7 @@ func repl(io IO, cfg *config.Config) {
 				continue
 			}
 			// Resume = new active id + transcript rebuilt from the log, in the
-			// SAME session: tools injected by wiring (task_spawn, MCP) stay in the
+			// SAME session: tools injected by wiring (subagent, MCP) stay in the
 			// session they were injected into. Swapping in a new session left the
 			// resumed one without sub-agents and without MCP.
 			activeID = chosen

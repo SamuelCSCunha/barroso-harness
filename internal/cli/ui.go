@@ -10,6 +10,7 @@ import (
 
 	"github.com/ruanbarroso/barroso-harness/internal/config"
 	"github.com/ruanbarroso/barroso-harness/internal/dealer"
+	"github.com/ruanbarroso/barroso-harness/internal/pricing"
 	"github.com/ruanbarroso/barroso-harness/internal/runtime"
 	"golang.org/x/term"
 )
@@ -220,7 +221,11 @@ func listModels(out io.Writer, ls []dealer.CatalogModel, current string) {
 
 // basicTUITurn is the TUI dress of a turn: ▶ glyph with the tool name in
 // magenta, dim duration, echo indented by 2, ◆ guardrail and a token footer.
-type basicTUITurn struct{ out io.Writer }
+type basicTUITurn struct {
+	out io.Writer
+	// custoUSD is the turn's money cost (only set when the model has a declared price).
+	custoUSD float64
+}
 
 func (t basicTUITurn) Resposta(text string) { fmt.Fprintln(t.out, text) }
 
@@ -252,22 +257,31 @@ func (t basicTUITurn) Guardrail(proactive bool) {
 }
 
 func (t basicTUITurn) Tokens(prompt, output int, dur time.Duration, compacted bool) {
-	if prompt <= 0 && output <= 0 {
+	if prompt <= 0 && output <= 0 && t.custoUSD <= 0 {
 		return
 	}
 	line := fmt.Sprintf("tokens ↑%d ↓%d · %s", prompt, output, dur.Round(time.Millisecond))
 	if compacted {
 		line += " · compacted"
 	}
+	// Only when the model has a DECLARED price (prices.json): never a
+	// guessed number, and tokens stay the metric otherwise.
+	if texto := pricing.Formato(t.custoUSD); texto != "" {
+		line += " · " + texto
+	}
 	fmt.Fprintln(t.out, dimf(line))
 }
+
+// Custo receives the turn's money cost — only when the active model has a
+// declared price. No call = nothing to show.
+func (t *basicTUITurn) Custo(usd float64) { t.custoUSD = usd }
 
 // turnRenderer picks the facade: glyphs+palette when the session turned
 // colors on (real terminal), plain text otherwise — including test buffers,
 // which then see the same literal line runtime_test pins in plain mode.
 func turnRenderer(out io.Writer) runtime.Renderer {
 	if colorsOn {
-		return basicTUITurn{out: out}
+		return &basicTUITurn{out: out}
 	}
 	return runtime.RendererDe(out)
 }

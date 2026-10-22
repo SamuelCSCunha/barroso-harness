@@ -17,6 +17,7 @@ import (
 	"github.com/ruanbarroso/barroso-harness/internal/config"
 	"github.com/ruanbarroso/barroso-harness/internal/dealer"
 	"github.com/ruanbarroso/barroso-harness/internal/instructions"
+	"github.com/ruanbarroso/barroso-harness/internal/pricing"
 	"github.com/ruanbarroso/barroso-harness/internal/store"
 	"github.com/ruanbarroso/barroso-harness/internal/tools"
 )
@@ -67,6 +68,15 @@ type Session struct {
 	// progressive and deferredCatalog: see disclosure.go.
 	progressive     bool
 	deferredCatalog *string
+
+	// precos is the OPTIONAL price table (prices.json in the harness home).
+	// Empty = no money cost is ever computed: tokens stay the metric and
+	// nothing is invented. custoUSD/temPreco accumulate the turn's cost so the
+	// renderer can show what the round actually cost.
+	precos   pricing.Tabela
+	muPreco  sync.Mutex
+	custoUSD float64
+	temPreco bool
 }
 
 // Steer is a message sent into a running turn.
@@ -180,6 +190,61 @@ func (s *Session) UltimoContexto() int {
 	return 0
 }
 
+// zerarCusto resets the turn's money cost. Each turn is accounted separately
+// (like promptUsage/outputUsage), so the footer shows THIS turn's cost.
+func (s *Session) zerarCusto() {
+	s.muPreco.Lock()
+	s.custoUSD = 0
+	s.temPreco = false
+	s.muPreco.Unlock()
+}
+
+// DefinirPrecos installs the optional price table. An empty table means bh
+// never computes a money cost — tokens stay the only metric. Called by the
+// wiring, which loads prices.json from the harness home.
+func (s *Session) DefinirPrecos(t pricing.Tabela) {
+	s.muPreco.Lock()
+	s.precos = t
+	s.muPreco.Unlock()
+}
+
+// addCost accumulates the cost of one round, when the active model has a
+// declared price. Called from the turn loop with the round's usage.
+func (s *Session) addCost(u *dealer.Usage) {
+	if u == nil {
+		return
+	}
+	s.muPreco.Lock()
+	defer s.muPreco.Unlock()
+	if s.precos.Empty() {
+		return
+	}
+	priced, ok := s.precos.Price(s.config.Model)
+	if !ok {
+		return
+	}
+	// The cached part is priced separately when the provider reports it;
+	// otherwise the whole prompt is billed at the full price.
+	fresh := u.PromptTokens - u.CachedTokens
+	if fresh < 0 {
+		fresh = 0
+	}
+	c := priced.Calc(fresh, u.CachedTokens, u.OutputTokens)
+	if !c.HasPrice {
+		return
+	}
+	s.custoUSD += c.USD
+	s.temPreco = true
+}
+
+// Custo returns the turn's accumulated cost in USD and whether any price
+// applied. false means "no price declared", which is never a zero cost.
+func (s *Session) Custo() (float64, bool) {
+	s.muPreco.Lock()
+	defer s.muPreco.Unlock()
+	return s.custoUSD, s.temPreco
+}
+
 // ClearHistory clears the transcript. Used only when it makes sense to start a
 // new conversation explicitly; it is not called when switching models.
 //
@@ -244,8 +309,10 @@ func (s *Session) SendWithImages(ctx context.Context, r Renderer, cwd, prompt st
 	reactiveDone := false
 	compacted := false
 	// Whole-turn totals: each tool cycle spends request and response, and the
-	// UI footer shows the total, not the last cycle's.
+	// UI footer shows the total, not the last cycle's. Same for the money cost:
+	// it restarts on every turn.
 	promptUsage, outputUsage := 0, 0
+	s.zerarCusto()
 
 	// The user prompt enters the log BEFORE the loop: if the turn fails midway,
 	// the log still records what was asked.
@@ -281,7 +348,7 @@ func (s *Session) SendWithImages(ctx context.Context, r Renderer, cwd, prompt st
 		if s.day.IsZero() {
 			s.day = time.Now()
 		}
-		system := systemPrompt(cwd, baroMD, hasTool(list, "task_spawn"), s.day, deferred)
+		system := systemPrompt(cwd, baroMD, hasTool(list, "subagent"), s.day, deferred)
 
 		// Measured without the image bytes: see dealer.CorpoEstimativa.
 		body, err := s.dealer.CorpoEstimativa(system, working, schemas)
@@ -375,6 +442,12 @@ func (s *Session) SendWithImages(ctx context.Context, r Renderer, cwd, prompt st
 				promptUsage += round.Usage.PromptTokens
 			}
 			outputUsage += round.Usage.OutputTokens
+			s.addCost(round.Usage)
+			if rc, ok := r.(RendererCusto); ok {
+				if usd, tem := s.Custo(); tem {
+					rc.Custo(usd)
+				}
+			}
 		}
 		if round.Cortada {
 			// A response cut at the output limit is never a final answer: no
@@ -521,10 +594,10 @@ var sequentialTools = map[string]bool{
 	"instructions_delete": true,
 	"skill_create":        true,
 	"skill_remove":        true,
-	"ctx_compact":         true,
-	"ctx_write":           true,
-	"ctx_append":          true,
-	"task_spawn":          true,
+	"context_compact":         true,
+	"context_write":           true,
+	"context_append":          true,
+	"subagent":            true,
 }
 
 // runRound executes the round's tool calls and returns their outcomes in the
@@ -642,16 +715,18 @@ func systemPrompt(cwd, baroMD string, canSpawn bool, now time.Time, deferred str
 		"You help with software engineering tasks: reading and changing code, running builds and tests, using git, investigating problems.\n")
 
 	sb.WriteString("\n## Tool policy\n" +
-		"- Find things with grep (file contents) and glob (file names). Do not search through terminal_run (findstr, git grep, dir /s, find).\n" +
-		"- Read files with file_read; read whole files when reasonably sized rather than many small windows.\n" +
-		"- Change existing files with edit (exact string replacement of only the changed region). Use file_write only for new files or full rewrites.\n" +
-		"- Use terminal_run for builds, tests, git, package managers and running programs.\n" +
+		"- Find things with grep (file contents) and glob (file names). Do not search through shell (findstr, git grep, dir /s, find).\n" +
+		"- Read files with read; read whole files when reasonably sized rather than many small windows.\n" +
+		"- Change existing files with edit (exact string replacement of only the changed region). Use write only for new files or full rewrites.\n" +
+		"- When the SAME change touches SEVERAL files (a rename, a signature change, a repeated import), use edit_many: one call with every edit. " +
+		"It validates all of them against the current content and writes NOTHING if any edit fails. Use edit for a single file.\n" +
+		"- Use shell for builds, tests, git, package managers and running programs.\n" +
 		"- PARALLEL CALLS: when several tool calls are independent (reading several files, several searches, a build plus a git status), " +
 		"ISSUE THEM ALL IN THE SAME RESPONSE: they run in parallel. Only chain calls across responses when one needs the result of another.\n" +
 		"- If a call fails, read the error and adapt. Never repeat a failing command unchanged.\n" +
 		"- Avoid exploratory loops: decide what you need, gather it in as few rounds as possible, then act.\n")
 	if canSpawn {
-		sb.WriteString("- task_spawn is available: use it for independent work that can proceed in parallel, at most once per turn, and end your turn right after spawning.\n")
+		sb.WriteString("- subagent is available: use it for independent work that can proceed in parallel, at most once per turn, and end your turn right after spawning.\n")
 	}
 
 	sb.WriteString("\n## Working style\n" +
@@ -682,9 +757,9 @@ func systemPrompt(cwd, baroMD string, canSpawn bool, now time.Time, deferred str
 		osName = "Linux"
 	}
 	fmt.Fprintf(&sb, "- OS: %s (%s/%s)\n", osName, goruntime.GOOS, goruntime.GOARCH)
-	fmt.Fprintf(&sb, "- Shell used by terminal_run: %s\n", tools.ShellName())
+	fmt.Fprintf(&sb, "- Shell used by shell: %s\n", tools.ShellName())
 	if goruntime.GOOS == "windows" {
-		sb.WriteString("- This is Windows: do not use bash/POSIX syntax or tools (grep, sed, ls, cat, rm -rf) in terminal_run. " +
+		sb.WriteString("- This is Windows: do not use bash/POSIX syntax or tools (grep, sed, ls, cat, rm -rf) in shell. " +
 			"File tools accept both backslashes and forward slashes in paths.\n")
 	}
 	sb.WriteString(tools.ProtectedNote())

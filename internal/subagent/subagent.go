@@ -40,9 +40,10 @@ import (
 )
 
 const (
-	// PrefixoPadrao is the tool prefix when Config.Nome is empty:
-	// task_spawn / task_status / task_result.
-	PrefixoPadrao = "task"
+	// PrefixoPadrao is the launcher tool's name (and the status/result
+	// prefix) when Config.Nome is empty: subagent / subagent_status /
+	// subagent_result. Single lowercase tool name, opencode-style.
+	PrefixoPadrao = "subagent"
 
 	// TetoTranscript caps the number of tool-trace lines per task.
 	TetoTranscript = 200
@@ -57,8 +58,9 @@ const (
 	Cancelled = "cancelled"
 )
 
-// Config is the manager's configuration. Nome is the prefix of the tools
-// exposed to the parent ("task" → task_spawn/task_status/task_result). There
+// Config is the manager's configuration. Nome is the launcher tool's name
+// exposed to the parent ("subagent"; status/result get it as a prefix:
+// subagent_status/subagent_result). There
 // is no concurrency or count cap: every task starts running on Spawn.
 type Config struct {
 	Nome string
@@ -211,7 +213,7 @@ func (g *Gerente) Terminadas() []Tarefa {
 	return out
 }
 
-// markDelivered: the parent already read the result (task_result), so the
+// markDelivered: the parent already read the result (subagent_result), so the
 // automatic notice for that task need not repeat the text.
 func (g *Gerente) markDelivered(id string) {
 	g.mu.Lock()

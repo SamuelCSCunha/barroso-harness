@@ -35,14 +35,14 @@ type reqView struct {
 
 // fakeProvider serves /chat/completions from a script. It returns text for
 // the round; while a tool request has no tool result yet, it asks for a real
-// built-in tool (list_dir) to exercise the loop.
+// built-in tool (list) to exercise the loop.
 type fakeProvider struct {
 	mu          sync.Mutex
 	calls       int
 	views       []reqView
 	text        string
 	delay       time.Duration
-	requestTool bool // if true, round 1 asks for list_dir before answering
+	requestTool bool // if true, round 1 asks for list before answering
 }
 
 func (f *fakeProvider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -77,7 +77,7 @@ func (f *fakeProvider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"delta": map[string]any{"tool_calls": []map[string]any{{
 				"index": 0, "id": "call_1", "type": "function",
 				"function": map[string]any{
-					"name":      "list_dir",
+					"name":      "list",
 					"arguments": `{"depth":1}`,
 				},
 			}}},
@@ -155,7 +155,7 @@ func runTool(t *testing.T, s tools.Spec, args string) (string, error) {
 
 // Test A: the sub-agent runs the full loop (tool + text), the result comes
 // back through task_result and — central invariant — the provider NEVER sees a
-// delegation tool (task_spawn/task_status/task_result) in the catalog sent.
+// delegation tool (the spawn launcher, task_status/task_result) in the catalog sent.
 func TestSpawnRunsAndResultReturnsWithoutDelegationTools(t *testing.T) {
 	f, cfg := newServer(t, "task done", 0, true)
 	g := Novo(Config{Nome: "task"})
@@ -170,13 +170,13 @@ func TestSpawnRunsAndResultReturnsWithoutDelegationTools(t *testing.T) {
 	if len(byName) != 3 {
 		t.Fatalf("expected 3 tools, got %d", len(specs))
 	}
-	for _, name := range []string{"task_spawn", "task_status", "task_result"} {
+	for _, name := range []string{"task", "task_status", "task_result"} {
 		if _, ok := byName[name]; !ok {
 			t.Fatalf("tool %q missing from the catalog: %v", name, keys(byName))
 		}
 	}
 
-	out, err := runTool(t, byName["task_spawn"], `{"prompt":"list the directory and answer"}`)
+	out, err := runTool(t, byName["task"], `{"prompt":"list the directory and answer"}`)
 	if err != nil {
 		t.Fatalf("spawn failed: %v", err)
 	}
@@ -199,8 +199,8 @@ func TestSpawnRunsAndResultReturnsWithoutDelegationTools(t *testing.T) {
 	if cp.Resultado != "task done" {
 		t.Fatalf("unexpected result: %q", cp.Resultado)
 	}
-	if len(cp.Transcricao()) != 1 || !strings.Contains(cp.Transcricao()[0], "list_dir") {
-		t.Fatalf("tool trace should contain list_dir: %v", cp.Transcricao())
+	if len(cp.Transcricao()) != 1 || !strings.Contains(cp.Transcricao()[0], "list") {
+		t.Fatalf("tool trace should contain list: %v", cp.Transcricao())
 	}
 
 	// Result through the tool.
@@ -219,12 +219,12 @@ func TestSpawnRunsAndResultReturnsWithoutDelegationTools(t *testing.T) {
 		}
 		for _, tl := range v.Tools {
 			name := tl.Function.Name
-			if strings.HasPrefix(name, "task_") {
+			if name == "task" || strings.HasPrefix(name, "task_") {
 				t.Fatalf("request %d offered %q: a sub-agent must NOT have delegation tools", i, name)
 			}
 		}
-		if !hasBuiltin(v, "list_dir") {
-			t.Fatalf("request %d should offer the runtime built-ins (list_dir among them)", i)
+		if !hasBuiltin(v, "list") {
+			t.Fatalf("request %d should offer the runtime built-ins (list among them)", i)
 		}
 	}
 }
@@ -240,7 +240,7 @@ func TestSpawnManyWithoutCapAndNotifies(t *testing.T) {
 	specs := append(Especificacoes(g, cfg), statusSpec(g, "task"), resultSpec(g, "task"))
 	var spawn tools.Spec
 	for _, s := range specs {
-		if s.Name == "task_spawn" {
+		if s.Name == "task" {
 			spawn = s
 		}
 	}
@@ -371,7 +371,7 @@ func TestResultUnknownIdAndInputErrors(t *testing.T) {
 	}
 
 	// spawn without arguments also fails (prompt is required).
-	if _, err := runTool(t, byName["task_spawn"], `{}`); err == nil {
+	if _, err := runTool(t, byName["task"], `{}`); err == nil {
 		t.Fatal("spawn without a prompt should fail")
 	}
 
@@ -445,11 +445,12 @@ func hasBuiltin(v reqView, name string) bool {
 	return false
 }
 
-// The model only gets task_spawn: without status/result it has no way to keep
+// The model only gets the launcher ("task" here, "subagent" by default):
+// without status/result it has no way to keep
 // polling in a loop, and results arrive through the automatic notice.
 func TestModelOnlyGetsSpawn(t *testing.T) {
 	specs := Especificacoes(Novo(Config{Nome: "task"}), config.Config{})
-	if len(specs) != 1 || specs[0].Name != "task_spawn" {
+	if len(specs) != 1 || specs[0].Name != "task" {
 		t.Fatalf("model tools = %v", specs)
 	}
 }

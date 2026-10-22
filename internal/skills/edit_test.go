@@ -32,7 +32,7 @@ func TestSkillCreateEditRemove(t *testing.T) {
 	if _, err := runSpec(t, "skill_create", roots, map[string]any{"name": "deploy", "description": "d", "body": "x"}); err == nil || !strings.Contains(err.Error(), "skill_edit") {
 		t.Fatalf("create over an existing skill must point to skill_edit, got %v", err)
 	}
-	if _, err := runSpec(t, "skill_edit", roots, map[string]any{"name": "deploy", "old_string": "step two", "new_string": "step 2", "description": "new desc"}); err != nil {
+	if _, err := runSpec(t, "skill_edit", roots, map[string]any{"name": "deploy", "oldString": "step two", "newString": "step 2", "description": "new desc"}); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(filepath.Join(roots["projeto"], "deploy", fileName))

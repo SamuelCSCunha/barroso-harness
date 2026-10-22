@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// terminal_run streams its output to the context's sink while it runs, and
+// shell streams its output to the context's sink while it runs, and
 // still returns the whole output as its result.
 func TestTerminalRunStreamsOutput(t *testing.T) {
 	var mu sync.Mutex

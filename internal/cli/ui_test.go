@@ -22,14 +22,14 @@ func TestBasicTUITurnGlyphsAndPalette(t *testing.T) {
 
 	var sb strings.Builder
 	tui := basicTUITurn{out: &sb}
-	tui.Tool("terminal_run", 120*time.Millisecond, false)
+	tui.Tool("shell", 120*time.Millisecond, false)
 	tui.Eco("exit_code: 0")
 	tui.Guardrail(false)
 	tui.Tokens(1200, 45, 890*time.Millisecond, true)
 	output := sb.String()
 
 	for _, want := range []string{
-		glyphTool, "terminal_run", "120ms", paletteMagenta,
+		glyphTool, "shell", "120ms", paletteMagenta,
 		glyphGuard, "tokens ↑1200 ↓45", "890ms", "compacted",
 	} {
 		if !strings.Contains(output, want) {
@@ -44,8 +44,8 @@ func TestPlainHasNoEscapes(t *testing.T) {
 	defer func() { colorsOn = prevColors }()
 
 	var sb strings.Builder
-	turnRenderer(&sb).Tool("terminal_run", 120*time.Millisecond, false)
-	if !strings.Contains(sb.String(), "[tool terminal_run ok in 120ms]") {
+	turnRenderer(&sb).Tool("shell", 120*time.Millisecond, false)
+	if !strings.Contains(sb.String(), "[tool shell ok in 120ms]") {
 		t.Fatalf("plain mode lost the runtime_test literal:\n%q", sb.String())
 	}
 	if strings.Contains(sb.String(), "\033") {

@@ -27,6 +27,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ruanbarroso/barroso-harness/internal/dealer"
+	"github.com/ruanbarroso/barroso-harness/internal/pricing"
 	"github.com/ruanbarroso/barroso-harness/internal/runtime"
 	"github.com/ruanbarroso/barroso-harness/internal/store"
 	"golang.org/x/term"
@@ -218,6 +219,10 @@ type screen struct {
 	// ticker that advances it while a turn runs.
 	spinnerSeqVal int
 	busyStop      chan struct{}
+	// custoUSD is the turn's money cost, delivered by runtime.RendererCusto
+	// only when the active model has a declared price (prices.json). 0 = no
+	// price, so the footer shows no cost and tokens stay the metric.
+	custoUSD float64
 }
 
 // interruptLabel is the footer text while a turn runs: "esc interrupt", and
@@ -1786,7 +1791,7 @@ func runScreen(io IO) int {
 					t.escAt = time.Time{}
 				}
 				// Reassert the tab name: child processes run through cmd.exe
-				// (npx.cmd for the Playwright MCP, terminal_run with cmd /C) overwrite
+				// (npx.cmd for the Playwright MCP, shell with cmd /C) overwrite
 				// the console title, and bh cannot prevent it. Clearing forces a
 				// resend on the next frame.
 				t.lastTabTitle = ""
@@ -2565,7 +2570,20 @@ func (r *screenTurn) Tokens(_, output int, dur time.Duration, _ bool) {
 	if output > 0 && dur > 0 {
 		extra = append(extra, fmt.Sprintf("%.1f tok/s", float64(output)/dur.Seconds()))
 	}
+	// Money cost, only with a declared price (see RendererCusto): no
+	// prices.json, no number — tokens stay the metric.
+	if texto := pricing.Formato(r.t.custoUSD); texto != "" {
+		extra = append(extra, texto)
+	}
 	r.t.turnFooter(r.model, dur, extra...)
+}
+
+// Custo implements runtime.RendererCusto: the turn's accumulated cost, called
+// only when the active model has a price in prices.json.
+func (r *screenTurn) Custo(usd float64) {
+	r.t.mu.Lock()
+	r.t.custoUSD = usd
+	r.t.mu.Unlock()
 }
 
 // currentTitle is the session name: the stored one (/rename, /save) or,

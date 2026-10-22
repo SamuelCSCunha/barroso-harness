@@ -16,7 +16,7 @@ import (
 // policyAggregate sums the compactions of one policy.
 type policyAggregate struct {
 	Sessoes     map[string]bool
-	Agente      int // ctx_compact called by the model
+	Agente      int // context_compact called by the model
 	Proativa    int // guardrail on predicted overflow
 	Reativa     int // guardrail on provider rejection
 	BytesAntes  int
@@ -97,7 +97,7 @@ func cmdContext(out io.Writer, cfg *config.Config, db *store.Store) {
 		if a == nil {
 			continue
 		}
-		line := fmt.Sprintf("%-7s %3d sessions · %d ctx_compact · %d proactive guardrail · %d reactive",
+		line := fmt.Sprintf("%-7s %3d sessions · %d context_compact · %d proactive guardrail · %d reactive",
 			name, len(a.Sessoes), a.Agente, a.Proativa, a.Reativa)
 		if a.BytesAntes > 0 {
 			line += fmt.Sprintf(" · history %d→%d KiB (%.0f%% smaller)",

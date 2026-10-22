@@ -41,11 +41,13 @@ func Especificacoes(g *Gerente, parentCfg config.Config) []tools.Spec {
 	return []tools.Spec{spawnSpec(g, p)}
 }
 
-// ── <prefix>_spawn ─────────────────────────────────────────────────────────
+// ── spawn: the manager's launcher tool; its name IS the prefix ────────────
+// (opencode convention: the tool exposed to the parent is a single lowercase
+// name, "subagent" by default; status/result get the prefix as a family).
 
 func spawnSpec(g *Gerente, prefix string) tools.Spec {
 	return tools.Spec{
-		Name: prefix + "_spawn",
+		Name: prefix,
 		Description: "Call it ONCE per turn, with all requests in prompts[]. Launches one or SEVERAL sub-agents at once, in the BACKGROUND, and returns their ids immediately. " +
 			"Each sub-agent runs autonomously with the built-in tools (terminal, files), but CANNOT " +
 			"create other sub-agents. There is no limit on count or concurrency: they all start together. " +
@@ -89,7 +91,7 @@ func spawnSpec(g *Gerente, prefix string) tools.Spec {
 			// in the same turn is rejected and told to end the turn.
 			if !g.firstSpawnOfTurn(ctx) {
 				return "", fmt.Errorf("%s", "sub-agents were already launched this turn; put them all in a single "+
-					prefix+"_spawn with prompts[]. Do not launch tasks to wait: END THE TURN now "+
+					prefix+" call with prompts[]. Do not launch tasks to wait: END THE TURN now "+
 					"telling the user — the results arrive on their own in a new turn")
 			}
 			var ids []string
@@ -103,9 +105,9 @@ func spawnSpec(g *Gerente, prefix string) tools.Spec {
 				ids = append(ids, id)
 			}
 			return fmt.Sprintf("%d sub-agent(s) launched: %s. Each result arrives on its own as a new message "+
-				"when it finishes. Do not call %s_spawn again this turn: only do work that does not depend on the "+
+				"when it finishes. Do not spawn again this turn: only do work that does not depend on the "+
 				"results, or end the turn now telling the user what you launched.",
-				len(ids), strings.Join(ids, ", "), prefix), nil
+				len(ids), strings.Join(ids, ", ")), nil
 		},
 	}
 }
