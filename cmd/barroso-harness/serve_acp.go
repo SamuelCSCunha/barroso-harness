@@ -6,14 +6,17 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/ruanbarroso/barroso-harness/internal/acp"
 	"github.com/ruanbarroso/barroso-harness/internal/config"
 	"github.com/ruanbarroso/barroso-harness/internal/runtime"
 	"github.com/ruanbarroso/barroso-harness/internal/store"
 	"github.com/ruanbarroso/barroso-harness/internal/tools"
+	"github.com/ruanbarroso/barroso-harness/internal/update"
 	"github.com/ruanbarroso/barroso-harness/internal/wiring"
 )
 
@@ -49,11 +52,20 @@ func serveACP() {
 	defer func() {
 		for _, set := range open {
 			_ = set.Fechar()
-			tools.KillJobs() // background terminal_run jobs die with the agent
 		}
+		tools.KillJobs() // background terminal_run jobs die with the agent
 	}()
 	ag := acp.NovoComFabrica(cfg, factory).ComLog(func(line string) {
 		os.Stderr.WriteString(line + "\n")
+	})
+	// Auto-update, as in the REPL: agents run as `bh -acp` under a connector
+	// and nobody opens the interactive bh on that machine, so without this
+	// they stayed on the old release forever. This process keeps its version;
+	// the connector's next `bh -acp` starts on the new one.
+	updCtx, stopUpd := context.WithCancel(context.Background())
+	defer stopUpd()
+	go update.LoopAuto(updCtx, strings.TrimSpace(Versao), func(v string) {
+		os.Stderr.WriteString("acp: installed " + v + " in the background; new sessions start on it\n")
 	})
 	// session/load is only advertised when there is a database to read: with
 	// no store there is nothing to reopen, and the agent answers
