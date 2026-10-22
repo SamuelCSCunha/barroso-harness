@@ -54,9 +54,14 @@ type Config struct {
 	JanelaSource    string               `json:"context_window_source,omitempty"` // FonteCatalogo | FonteManual | ""
 	MaxTokens       int                  `json:"max_tokens"`                      // reserved for the provider; 0 = dealer default
 	BytesPorToken   int                  `json:"bytes_per_token"`                 // manual calibration; 0 = default estimator (4)
-	BaseURL         string               `json:"-"`                               // resolved from the active provider
-	APIKey          string               `json:"-"`                               // resolved from the active provider; never log
-	Home            string               `json:"-"`
+	// Provider watchdog, in seconds. Absent = dealer default (150 s to the
+	// first byte, 300 s of stream silence); 0 = disabled. There is no total
+	// deadline by design — only silence is bounded.
+	FirstByteSecs *int   `json:"provider_first_byte_secs,omitempty"`
+	IdleSecs      *int   `json:"provider_idle_secs,omitempty"`
+	BaseURL       string `json:"-"` // resolved from the active provider
+	APIKey        string `json:"-"` // resolved from the active provider; never log
+	Home          string `json:"-"`
 
 	// envOverride is the provider built from BARROSO_BASE_URL /
 	// BARROSO_AUTH_TOKEN. It wins over providers/current_provider and lives

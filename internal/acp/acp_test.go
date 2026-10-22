@@ -695,6 +695,111 @@ func TestPromptWithTurnErrorReturns32000(t *testing.T) {
 	}
 }
 
+// ── keepalive ───────────────────────────────────────────────────────────────
+
+func TestKeepaliveSpeaksWhileTurnRuns(t *testing.T) {
+	// A long turn must not leave the wire silent: the connector gives up on
+	// 10 minutes of silence, and session/prompt never got an answer in the
+	// 2026-10-22 incident. Progress, not content, keeps it alive.
+	old := keepaliveInterval
+	keepaliveInterval = 5 * time.Millisecond
+	t.Cleanup(func() { keepaliveInterval = old })
+
+	f := &fakeTurn{started: make(chan struct{}), delay: 150 * time.Millisecond, text: "ok"}
+	h := setup(t, f)
+	h.send(t, MetSessionNovo, 2, map[string]any{"cwd": "."})
+	ls := waitLines(t, h.out, 1)
+	id := ls[0].Result["sessionId"].(string)
+
+	h.send(t, MetPrompt, 3, map[string]any{
+		"sessionId": id,
+		"prompt":    []map[string]string{{"type": "text", "text": "slow"}},
+	})
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		lines := readLines(t, h.out)
+		kept := false
+		for _, l := range lines {
+			if l.Params.Update.SessionUpdate == "agent_thought_chunk" &&
+				strings.Contains(l.Params.Update.Content.Blocks[0].Text, "keepalive") {
+				kept = true
+			}
+		}
+		if kept {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no keepalive while the turn ran:\n%s", h.out.String())
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+func TestKeepaliveStopsWhenTurnEnds(t *testing.T) {
+	// Without a stop, the ticker would keep emitting notifications after the
+	// response arrived — the client would see a turn that never ends.
+	old := keepaliveInterval
+	keepaliveInterval = 2 * time.Millisecond
+	t.Cleanup(func() { keepaliveInterval = old })
+
+	f := &fakeTurn{started: make(chan struct{}), text: "ok"}
+	h := setup(t, f)
+	h.send(t, MetSessionNovo, 2, map[string]any{"cwd": "."})
+	ls := waitLines(t, h.out, 1)
+	h.send(t, MetPrompt, 3, map[string]any{
+		"sessionId": ls[0].Result["sessionId"],
+		"prompt":    []map[string]string{{"type": "text", "text": "quick"}},
+	})
+	// session/new response + message chunk + prompt response = 3 lines; wait for
+	// the turn to be over before checking that the ticker went quiet.
+	waitLines(t, h.out, 3)
+
+	before := len(readLines(t, h.out))
+	time.Sleep(60 * time.Millisecond) // several ticker periods
+	after := readLines(t, h.out)
+	if len(after) != before {
+		t.Fatalf("keepalive kept writing after the response:\n%s", h.out.String())
+	}
+	for _, l := range after {
+		if l.Params.Update.SessionUpdate == "agent_thought_chunk" {
+			t.Fatalf("keepalive survived the end of the turn:\n%s", h.out.String())
+		}
+	}
+}
+
+func TestCancelStopsKeepalive(t *testing.T) {
+	// Cancelling a stalled turn must also silence the keepalive: otherwise the
+	// wire keeps talking about a turn that no longer exists.
+	old := keepaliveInterval
+	keepaliveInterval = 5 * time.Millisecond
+	t.Cleanup(func() { keepaliveInterval = old })
+
+	f := newBlockingTurn()
+	h := setup(t, f)
+	h.send(t, MetSessionNovo, 2, map[string]any{"cwd": "."})
+	ls := waitLines(t, h.out, 1)
+	id := ls[0].Result["sessionId"].(string)
+	h.send(t, MetPrompt, 3, map[string]any{
+		"sessionId": id,
+		"prompt":    []map[string]string{{"type": "text", "text": "hang"}},
+	})
+	<-f.started
+	h.send(t, MetCancel, 4, map[string]any{"sessionId": id})
+	<-f.released
+
+	time.Sleep(80 * time.Millisecond)
+	kept := false
+	for _, l := range readLines(t, h.out) {
+		if l.Params.Update.SessionUpdate == "agent_thought_chunk" {
+			kept = true
+		}
+	}
+	if kept {
+		t.Fatalf("keepalive kept writing after cancellation:\n%s", h.out.String())
+	}
+}
+
 // ── session/cancel ─────────────────────────────────────────────────────────
 
 func TestCancelInterruptsInFlightTurn(t *testing.T) {

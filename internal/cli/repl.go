@@ -21,6 +21,7 @@ import (
 	"github.com/ruanbarroso/barroso-harness/internal/dealer"
 	"github.com/ruanbarroso/barroso-harness/internal/runtime"
 	"github.com/ruanbarroso/barroso-harness/internal/subagent"
+	"github.com/ruanbarroso/barroso-harness/internal/tools"
 	"github.com/ruanbarroso/barroso-harness/internal/update"
 	"github.com/ruanbarroso/barroso-harness/internal/wiring"
 	"golang.org/x/term"
@@ -473,7 +474,7 @@ func repl(io IO, cfg *config.Config) {
 	}
 	// Close on exit: the set's Fechar() stops MCP subprocesses; the sub-agent
 	// manager is in-memory and dies with the process.
-	defer func() { _ = wired.Fechar() }()
+	defer func() { _ = wired.Fechar(); tools.KillJobs() }()
 	if g := wired.Gerente(); g != nil && io.inject != nil {
 		g.AoTerminar(func() { io.inject(subagentsLine) })
 	}

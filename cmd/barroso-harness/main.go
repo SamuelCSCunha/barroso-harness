@@ -16,6 +16,7 @@ import (
 	"github.com/ruanbarroso/barroso-harness/internal/runtime"
 	"github.com/ruanbarroso/barroso-harness/internal/store"
 	"github.com/ruanbarroso/barroso-harness/internal/subagent"
+	"github.com/ruanbarroso/barroso-harness/internal/tools"
 	"github.com/ruanbarroso/barroso-harness/internal/wiring"
 	"golang.org/x/term"
 )
@@ -134,7 +135,7 @@ func runWithWiring(out io.Writer, cfg config.Config, cwd, prompt string, st *sto
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	set, warnings := wiring.Montar(ctx, cfg, sess, cwd)
-	defer func() { _ = set.Fechar() }()
+	defer func() { _ = set.Fechar(); tools.KillJobs() }()
 	for _, warning := range warnings {
 		fmt.Fprintln(os.Stderr, "warning:", warning)
 	}

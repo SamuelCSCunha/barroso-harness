@@ -13,6 +13,7 @@ import (
 	"github.com/ruanbarroso/barroso-harness/internal/config"
 	"github.com/ruanbarroso/barroso-harness/internal/runtime"
 	"github.com/ruanbarroso/barroso-harness/internal/store"
+	"github.com/ruanbarroso/barroso-harness/internal/tools"
 	"github.com/ruanbarroso/barroso-harness/internal/wiring"
 )
 
@@ -48,6 +49,7 @@ func serveACP() {
 	defer func() {
 		for _, set := range open {
 			_ = set.Fechar()
+			tools.KillJobs() // background terminal_run jobs die with the agent
 		}
 	}()
 	ag := acp.NovoComFabrica(cfg, factory).ComLog(func(line string) {

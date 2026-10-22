@@ -37,6 +37,9 @@ type Config struct {
 	MaxTokens    int    `json:"max_tokens"`     // output cap; 0 = per-effort default (TetoPadrao)
 	JanelaTokens int    `json:"context_window"` // 0 = unknown
 	Effort       string `json:"effort"`         // empty = omit reasoning_effort from the request
+	// Watchdog overrides: nil = package default, ≤0 = disabled.
+	FirstByte *time.Duration `json:"-"`
+	Idle      *time.Duration `json:"-"`
 }
 
 // Usage is the provider's token usage.
@@ -96,7 +99,8 @@ type Rodada struct {
 // Cliente is instantiated per turn.
 type Cliente struct {
 	cfg    Config
-	maxOut int // output cap for this request (ComTeto); 0 = MaxTokens()
+	maxOut int        // output cap for this request (ComTeto); 0 = MaxTokens()
+	aviso  AvisoRetry // reported before each retry (ComAviso); nil = silent
 }
 
 // Novo returns a client for cfg.
@@ -331,46 +335,36 @@ type sseChunk struct {
 }
 
 // RodarContext is Rodar with real cancellation: the request and the stream
-// read abort when ctx expires or is canceled (the REPL uses Ctrl+C).
+// read abort when ctx expires or is canceled (the REPL uses Ctrl+C). Silence
+// is bounded by firstByteTimeout/idleTimeout and transient failures are
+// retried (retry.go).
 func (c *Cliente) RodarContext(ctx context.Context, system string, msgs []Mensagem, tools []map[string]any) (*Rodada, error) {
 	if ctx == nil {
-		return c.Rodar(system, msgs, tools)
+		ctx = context.Background()
 	}
 	body, err := c.Corpo(system, msgs, tools)
 	if err != nil {
 		return nil, err
 	}
-	endpoint := NormalizarURL(c.cfg.BaseURL) + "/chat/completions"
-	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", UserAgent)
-	if c.cfg.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
-	}
-	req.Header.Set("Accept", "text/event-stream")
-	httpc := &http.Client{Timeout: 15 * time.Minute}
-	sent := time.Now()
-	resp, err := httpc.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("provider: %w", err)
-	}
-	defer resp.Body.Close()
-	return readRound(resp, ctx, sent)
+	return c.comRetry(ctx, func(ctx context.Context) (*Rodada, error) {
+		return c.tentativa(ctx, body)
+	})
 }
 
 // Rodar runs one round: streams, accumulates text, assembles tool calls and
 // captures usage. system and tools go in untouched — the dealer never edits
 // history.
 func (c *Cliente) Rodar(system string, msgs []Mensagem, tools []map[string]any) (*Rodada, error) {
-	body, err := c.Corpo(system, msgs, tools)
-	if err != nil {
-		return nil, err
-	}
-	url := NormalizarURL(c.cfg.BaseURL) + "/chat/completions"
-	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
+	return c.RodarContext(context.Background(), system, msgs, tools)
+}
+
+// tentativa is one attempt: one POST and the read of its stream, under the
+// watchdog.
+func (c *Cliente) tentativa(ctx context.Context, body []byte) (*Rodada, error) {
+	wctx, wd := newWatchdog(ctx, pick(c.cfg.FirstByte, firstByteTimeout), pick(c.cfg.Idle, idleTimeout))
+	defer wd.stop()
+	endpoint := NormalizarURL(c.cfg.BaseURL) + "/chat/completions"
+	req, err := http.NewRequestWithContext(wctx, "POST", endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -380,27 +374,25 @@ func (c *Cliente) Rodar(system string, msgs []Mensagem, tools []map[string]any) 
 		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
 	}
 	req.Header.Set("Accept", "text/event-stream")
-
-	httpc := &http.Client{Timeout: 15 * time.Minute}
+	// No http.Client.Timeout: the watchdog bounds silence, and a total cap
+	// would cut a model that is still streaming (see retry.go).
 	sent := time.Now()
-	resp, err := httpc.Do(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("provider: %w", err)
+		return nil, fmt.Errorf("provider: %w", cause(wctx, err))
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		return nil, fmt.Errorf("provider HTTP %d: %s", resp.StatusCode, errorSummary(b, 300))
-	}
-	return readRound(resp, context.Background(), sent)
+	r, err := readRound(resp, wctx, sent, wd.kick)
+	return r, cause(wctx, err)
 }
 
 // readRound consumes the already-open SSE stream and builds the Rodada. start
-// is when the request went out: TTFT and Dur are measured from it.
-func readRound(resp *http.Response, ctx context.Context, start time.Time) (*Rodada, error) {
+// is when the request went out: TTFT and Dur are measured from it. kick (may
+// be nil) is called after every line read, to feed the idle watchdog.
+func readRound(resp *http.Response, ctx context.Context, start time.Time, kick func()) (*Rodada, error) {
 	if resp.StatusCode != 200 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		return nil, fmt.Errorf("provider HTTP %d: %s", resp.StatusCode, errorSummary(b, 300))
+		return nil, newHTTPError(resp, b)
 	}
 	r := &Rodada{}
 	sc := bufio.NewScanner(resp.Body)
@@ -414,7 +406,10 @@ func readRound(resp *http.Response, ctx context.Context, start time.Time) (*Roda
 		}
 		line := sc.Text()
 		if !strings.HasPrefix(line, "data:") {
-			continue
+			continue // blank separators and ": ping" comments are not progress
+		}
+		if kick != nil {
+			kick()
 		}
 		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if payload == "[DONE]" {
@@ -468,6 +463,9 @@ func readRound(resp *http.Response, ctx context.Context, start time.Time) (*Roda
 	}
 	if err := sc.Err(); err != nil {
 		return nil, fmt.Errorf("stream: %w", err)
+	}
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
 	}
 	// close tool calls in index order
 	idx := make([]int, 0, len(pending))

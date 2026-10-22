@@ -439,9 +439,14 @@ func (a *Agente) prompt(ctx context.Context, w io.Writer, req Request) error {
 
 	rend := &acpRenderer{a: a, w: w, session: s.id}
 	a.running.Add(1)
+	// Keepalive: the turn is long (a provider round can take minutes) and the
+	// connector gives up on 10 minutes of silence. A periodic notification —
+	// progress, not content — keeps the wire speaking while the turn runs.
+	stop := a.keepalive(rend, tctx)
 	go func() {
 		defer a.running.Done()
 		err := s.turn.Send(tctx, rend, s.cwd, promptText)
+		stop()
 		a.mu.Lock()
 		s.cancel = nil
 		a.mu.Unlock()
@@ -455,6 +460,32 @@ func (a *Agente) prompt(ctx context.Context, w io.Writer, req Request) error {
 		a.logf("acp: turn of session %s completed", s.id)
 	}()
 	return nil
+}
+
+// keepalive emits a periodic notification while a turn runs. A long turn (a
+// provider round can take minutes) would otherwise leave the wire silent, and
+// the connector gives up on 10 minutes of silence — the session/prompt never
+// got an answer even though the turn was still alive. The returned stop() ends
+// the ticker.
+func (a *Agente) keepalive(rend *acpRenderer, ctx context.Context) func() {
+	t := time.NewTicker(keepaliveInterval)
+	done := make(chan struct{})
+	var once sync.Once
+	go func() {
+		for {
+			select {
+			case <-t.C:
+				rend.Pensando()
+			case <-done:
+				t.Stop()
+				return
+			case <-ctx.Done():
+				t.Stop()
+				return
+			}
+		}
+	}()
+	return func() { once.Do(func() { close(done) }) }
 }
 
 // errorMessage swaps Go's terse "context canceled" for a sentence the ACP
@@ -603,6 +634,28 @@ func (r *acpRenderer) Guardrail(proactive bool) {
 	}
 	r.emit("agent_message_chunk", map[string]any{
 		"content": map[string]any{"type": "text", "text": text},
+	})
+}
+
+// Retentando tells the client the dealer is repeating a failed request, as
+// an agent_thought_chunk: it is progress, not part of the answer.
+func (r *acpRenderer) Retentando(attempt, max int, wait time.Duration, reason error) {
+	text := fmt.Sprintf("[retry] provider failed (%v); attempt %d/%d in %s", reason, attempt, max, wait.Round(time.Second))
+	r.emit("agent_thought_chunk", map[string]any{
+		"content": map[string]any{"type": "text", "text": text},
+	})
+	r.a.logf("acp: session %s: %s", r.session, text)
+}
+
+// KeepaliveInterval is how often a running turn speaks on the wire. A variable,
+// not a constant, so tests can shrink it.
+var keepaliveInterval = 20 * time.Second
+
+// Pensando is the keepalive notification: progress, not content. Emitted as an
+// agent_thought_chunk so the client does not read it as part of the answer.
+func (r *acpRenderer) Pensando() {
+	r.emit("agent_thought_chunk", map[string]any{
+		"content": map[string]any{"type": "text", "text": "[keepalive] turn still running"},
 	})
 }
 

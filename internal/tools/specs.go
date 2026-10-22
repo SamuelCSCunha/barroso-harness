@@ -23,6 +23,8 @@ const (
 func SpecsBuiltins() []Spec {
 	return []Spec{
 		specTerminalRun(),
+		specTerminalOutput(),
+		specTerminalKill(),
 		specFileRead(),
 		specFileWrite(),
 		specFileAppend(),
@@ -86,22 +88,26 @@ func specTerminalRun() Spec {
 			shellNote() +
 			" Use it for builds, tests, git, package managers and running programs. Do NOT use it to search or edit files: " +
 			"prefer grep (content search), glob (find files), file_read (read) and edit (change) — they are faster and need no quoting. " +
-			"Returns merged stdout+stderr with exit_code. No timeout by default: the command runs until it ends " +
-			"(the user can interrupt the turn); pass timeout_secs only if you want one.",
+			"Returns merged stdout+stderr with exit_code. Never blocks the turn for long: a command still running after ~60 s is " +
+			"moved to the background and you get its job_id and output so far (use terminal_output to wait/read, terminal_kill to stop). " +
+			"A command that prints nothing for 5 minutes is treated as stuck and killed. For servers/watchers pass background:true " +
+			"(returns at once, never killed for silence). Huge output is saved to a file whose path is given.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"command":      map[string]any{"type": "string", "description": "command to run"},
 				"workdir":      map[string]any{"type": "string", "description": "working directory (default: the agent's cwd)"},
-				"timeout_secs": map[string]any{"type": "integer", "description": "optional timeout in seconds; default none"},
+				"timeout_secs": map[string]any{"type": "integer", "description": "optional hard limit in seconds; the command is killed when it passes it (default none)"},
+				"background":   map[string]any{"type": "boolean", "description": "start it as a background job and return immediately (servers, watchers, long jobs)"},
 			},
 			"required": []string{"command"},
 		},
 		Exec: func(ctx context.Context, cwd string, raw json.RawMessage) (string, error) {
 			var c struct {
-				Command string `json:"command"`
-				Workdir string `json:"workdir"`
-				Timeout int    `json:"timeout_secs"`
+				Command    string `json:"command"`
+				Workdir    string `json:"workdir"`
+				Timeout    int    `json:"timeout_secs"`
+				Background bool   `json:"background"`
 			}
 			if err := json.Unmarshal(raw, &c); err != nil {
 				return "", fmt.Errorf("invalid input: %w", err)
@@ -117,27 +123,88 @@ func specTerminalRun() Spec {
 			if c.Workdir != "" {
 				dir = resolvePath(cwd, c.Workdir)
 			}
-			cctx, cancel := context.WithCancel(ctx)
-			if c.Timeout > 0 {
-				cctx, cancel = context.WithTimeout(ctx, time.Duration(c.Timeout)*time.Second)
+			sink := outputSink(ctx)
+			if c.Background {
+				sink = nil // the turn moves on; nobody is watching live
 			}
-			defer cancel()
+			j, err := startJob(c.Command, dir, sink)
+			if err != nil {
+				return fmt.Sprintf("exit_code: -1\nstart failed: %v", err), nil
+			}
+			if c.Background {
+				j.background = true
+				register(j)
+				return j.status("started in the background"), nil
+			}
+			// An explicit timeout is the model asking for a hard bound: honor it
+			// and do not auto-background.
+			return runForeground(ctx, j, time.Duration(c.Timeout)*time.Second, c.Timeout <= 0), nil
+		},
+	}
+}
 
-			cmd := terminalCmd(cctx, c.Command)
-			cmd.Dir = dir
-			lb := &liveBuffer{sink: outputSink(ctx)}
-			cmd.Stdout, cmd.Stderr = lb, lb
-			exeErr := cmd.Run()
-			out := lb.Bytes()
-			code := -1
-			if cmd.ProcessState != nil {
-				code = cmd.ProcessState.ExitCode()
+func specTerminalOutput() Spec {
+	return Spec{
+		Name: "terminal_output",
+		Description: "Waits for a background terminal_run job and returns its new output, or its final exit_code when it ended. " +
+			"Without job_id lists the jobs. Waits up to wait_secs (default 60, max 600) — prefer one long wait over many short polls.",
+		Schema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"job_id":    map[string]any{"type": "string"},
+				"wait_secs": map[string]any{"type": "integer", "description": "how long to wait for it to finish (default 60, max 600; 0 = just peek)"},
+			},
+		},
+		Exec: func(ctx context.Context, _ string, raw json.RawMessage) (string, error) {
+			var c struct {
+				JobID string `json:"job_id"`
+				Wait  *int   `json:"wait_secs"`
 			}
-			res := fmt.Sprintf("exit_code: %d\nstdout+stderr:\n%s", code, string(out))
-			if exeErr != nil && len(out) == 0 {
-				res = fmt.Sprintf("exit_code: %d\nstart failed: %v", code, exeErr)
+			if len(raw) > 0 {
+				if err := json.Unmarshal(raw, &c); err != nil {
+					return "", fmt.Errorf("invalid input: %w", err)
+				}
 			}
-			return truncateMiddle(res, outputCap), nil
+			if c.JobID == "" {
+				return listJobs(), nil
+			}
+			j, ok := lookupJob(c.JobID)
+			if !ok {
+				return "", fmt.Errorf("unknown job %q (it may have been reported finished already); call terminal_output without job_id to list", c.JobID)
+			}
+			wait := defaultOutputWait
+			if c.Wait != nil {
+				wait = min(time.Duration(max(0, *c.Wait))*time.Second, maxOutputWait)
+			}
+			return waitJob(ctx, j, wait), nil
+		},
+	}
+}
+
+func specTerminalKill() Spec {
+	return Spec{
+		Name:        "terminal_kill",
+		Description: "Stops a background terminal_run job and its child processes, returning its final output.",
+		Schema: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{"job_id": map[string]any{"type": "string"}},
+			"required":   []string{"job_id"},
+		},
+		Exec: func(ctx context.Context, _ string, raw json.RawMessage) (string, error) {
+			var c struct {
+				JobID string `json:"job_id"`
+			}
+			if err := json.Unmarshal(raw, &c); err != nil {
+				return "", fmt.Errorf("invalid input: %w", err)
+			}
+			j, ok := lookupJob(c.JobID)
+			if !ok {
+				return "", fmt.Errorf("unknown job %q", c.JobID)
+			}
+			if !j.finished() {
+				j.kill("killed by terminal_kill")
+			}
+			return waitJob(ctx, j, 0), nil
 		},
 	}
 }

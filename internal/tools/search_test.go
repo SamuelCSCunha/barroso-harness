@@ -209,3 +209,48 @@ func TestBuiltinsIncludeSearchTools(t *testing.T) {
 		}
 	}
 }
+
+// A walk over more files than maxWalkFiles stops and says the result is
+// partial, instead of running for minutes.
+func TestGrepStopsAtFileLimit(t *testing.T) {
+	old := maxWalkFiles
+	maxWalkFiles = 3
+	t.Cleanup(func() { maxWalkFiles = old })
+	root := t.TempDir()
+	for _, n := range []string{"a", "b", "c", "d", "e"} {
+		writeFile(t, root, n+".txt", "needle\n")
+	}
+	out, err := call(t, execGrep, root, map[string]any{"pattern": "needle", "output": "files"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "search stopped early: file limit of 3") {
+		t.Fatalf("no partial note:\n%s", out)
+	}
+	out, err = call(t, execGlob, root, map[string]any{"pattern": "*.txt"})
+	if err != nil || !strings.Contains(out, "results are partial") {
+		t.Fatalf("glob: err=%v\n%s", err, out)
+	}
+}
+
+func TestGrepStopsAtDeadline(t *testing.T) {
+	old := searchDeadline
+	searchDeadline = -time.Second // already past: stops at the first entry
+	t.Cleanup(func() { searchDeadline = old })
+	root := t.TempDir()
+	writeFile(t, root, "sub/a.txt", "needle\n")
+	out, err := call(t, execGrep, root, map[string]any{"pattern": "needle"})
+	if err != nil || !strings.Contains(out, "time limit") {
+		t.Fatalf("err=%v\n%s", err, out)
+	}
+}
+
+// Under the limits nothing changes: no note.
+func TestGrepNoNoteWhenComplete(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "a.txt", "needle\n")
+	out, _ := call(t, execGrep, root, map[string]any{"pattern": "needle"})
+	if strings.Contains(out, "stopped early") {
+		t.Fatalf("unexpected note:\n%s", out)
+	}
+}

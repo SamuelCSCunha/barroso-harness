@@ -158,7 +158,9 @@ func (s *Session) rebuild() {
 	s.dealer = dealer.Novo(dealer.Config{
 		BaseURL: base, APIKey: key, Model: s.config.Model,
 		MaxTokens: s.config.MaxTokens, JanelaTokens: s.config.Janela,
-		Effort: s.config.Effort,
+		Effort:    s.config.Effort,
+		FirstByte: secs(s.config.FirstByteSecs),
+		Idle:      secs(s.config.IdleSecs),
 	})
 }
 
@@ -255,6 +257,7 @@ func (s *Session) SendWithImages(ctx context.Context, r Renderer, cwd, prompt st
 
 	// No cycle limit: the turn runs until the model answers with text or the
 	// user interrupts it (Esc / Ctrl+C cancels ctx).
+	var loop loopGuard
 	for cycle := 0; ; cycle++ {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -321,6 +324,9 @@ func (s *Session) SendWithImages(ctx context.Context, r Renderer, cwd, prompt st
 		}
 		if limit != cli.MaxTokens() {
 			cli = cli.ComTeto(limit)
+		}
+		if rr, ok := r.(RendererRetry); ok {
+			cli = cli.ComAviso(rr.Retentando)
 		}
 		round, err := cli.RodarContext(ctx, system, working, schemas)
 		if err != nil {
@@ -445,6 +451,13 @@ func (s *Session) SendWithImages(ctx context.Context, r Renderer, cwd, prompt st
 		}
 		working = append(working, turn...)
 		working = append(working, results...)
+		if notice := loop.observe(round.Tools); notice != "" {
+			// A nudge, not a stop: the turn keeps going, but the model is told it
+			// is repeating itself (Gemini CLI stops at 5 identical calls in a row;
+			// BH prefers to keep working and steer).
+			working = append(working, dealer.Mensagem{Role: "user", Conteudo: notice})
+			s.record("user_message", map[string]any{"role": "user", "content": notice})
+		}
 		if state := compactedState(round.Tools, results); state != "" {
 			before := historyBytes(working)
 			working = compactHistory(working, state)
@@ -703,4 +716,13 @@ func jsonLen(v any) int {
 		return 0
 	}
 	return len(b)
+}
+
+// secs turns an optional seconds setting into the dealer's override.
+func secs(v *int) *time.Duration {
+	if v == nil {
+		return nil
+	}
+	d := time.Duration(*v) * time.Second
+	return &d
 }

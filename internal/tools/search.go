@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -13,12 +14,38 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 const (
 	maxSearchFileSize = 5 << 20 // files above this are skipped by grep
 	binarySniffBytes  = 8 << 10 // a NUL byte in this prefix marks a binary file
 )
+
+// Walk limits. Without them a grep over a home directory (130k+ files of
+// browser caches) ran for many minutes and the turn sent nothing over ACP.
+// When one is reached the tool returns what it found so far, with a note.
+var (
+	searchDeadline = 60 * time.Second
+	// maxWalkFiles is a safety net far above any project; what normally ends
+	// a broad search early is maxMatchFiles (the output could not show more
+	// anyway) or the deadline.
+	maxWalkFiles  = 500000
+	maxMatchFiles = 1000
+)
+
+// errEnough is returned by a visit callback that already has all it can use.
+var errEnough = errors.New("enough results")
+
+// walkLimit is the partial-result note; empty when the walk finished.
+type walkLimit string
+
+func (l walkLimit) note() string {
+	if l == "" {
+		return ""
+	}
+	return fmt.Sprintf("\n[search stopped early: %s; results are partial — narrow path/glob]\n", string(l))
+}
 
 // skipDirs are never descended into by grep/glob.
 var skipDirs = map[string]bool{
@@ -103,18 +130,31 @@ func pathBase(rel string) string {
 	return rel
 }
 
-// walkFiles visits every regular file under root (skipping skipDirs), giving
-// the absolute path and the slash-separated path relative to root.
-func walkFiles(ctx context.Context, root string, visit func(abs, rel string, d fs.DirEntry) error) error {
-	return filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+// walkFiles visits every regular file under root (skipping skipDirs and
+// cloud-only placeholders), giving the absolute path and the slash-separated
+// path relative to root. It stops at searchDeadline or maxWalkFiles and says
+// so in the returned walkLimit; a cancelled ctx is still an error.
+func walkFiles(ctx context.Context, root string, visit func(abs, rel string, d fs.DirEntry) error) (walkLimit, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	deadline := time.Now().Add(searchDeadline)
+	files := 0
+	var limit walkLimit
+	errStop := fmt.Errorf("stop")
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if p == root {
 				return err
 			}
 			return nil // unreadable entry: skip, keep walking
 		}
-		if ctx != nil && ctx.Err() != nil {
+		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if time.Now().After(deadline) {
+			limit = walkLimit(fmt.Sprintf("time limit of %s reached after %d file(s)", searchDeadline, files))
+			return errStop
 		}
 		if d.IsDir() {
 			if p != root && skipDirs[d.Name()] {
@@ -122,15 +162,28 @@ func walkFiles(ctx context.Context, root string, visit func(abs, rel string, d f
 			}
 			return nil
 		}
-		if !d.Type().IsRegular() {
+		if !d.Type().IsRegular() || cloudOnly(d) {
 			return nil
 		}
+		if files >= maxWalkFiles {
+			limit = walkLimit(fmt.Sprintf("file limit of %d reached", maxWalkFiles))
+			return errStop
+		}
+		files++
 		rel, rerr := filepath.Rel(root, p)
 		if rerr != nil {
 			rel = p
 		}
 		return visit(p, filepath.ToSlash(rel), d)
 	})
+	if err == errStop {
+		err = nil
+	}
+	if errors.Is(err, errEnough) {
+		limit = walkLimit(fmt.Sprintf("%d matching files found after %d file(s) scanned", maxMatchFiles, files))
+		err = nil
+	}
+	return limit, err
 }
 
 // ── grep ─────────────────────────────────────────────────────────────────
@@ -255,12 +308,16 @@ func execGrep(ctx context.Context, cwd string, raw json.RawMessage) (string, err
 			hits = append(hits, h)
 		}
 	}
+	var limit walkLimit
 	if !info.IsDir() {
 		scan(root, filepath.ToSlash(c.Path))
 	} else {
-		err = walkFiles(ctx, root, func(abs, rel string, _ fs.DirEntry) error {
+		limit, err = walkFiles(ctx, root, func(abs, rel string, _ fs.DirEntry) error {
 			if match(rel) {
 				scan(abs, rel)
+			}
+			if len(hits) >= maxMatchFiles {
+				return errEnough
 			}
 			return nil
 		})
@@ -270,7 +327,7 @@ func execGrep(ctx context.Context, cwd string, raw json.RawMessage) (string, err
 	}
 	sort.Slice(hits, func(i, j int) bool { return hits[i].display < hits[j].display })
 	if len(hits) == 0 {
-		return "no matches", nil
+		return "no matches" + limit.note(), nil
 	}
 
 	total := 0
@@ -302,7 +359,7 @@ func execGrep(ctx context.Context, cwd string, raw json.RawMessage) (string, err
 	if omitted == 0 && mode != "files" {
 		fmt.Fprintf(&sb, "(%d match(es) in %d file(s))\n", total, len(hits))
 	}
-	return truncate(sb.String(), outputCap), nil
+	return truncate(sb.String(), outputCap-256) + limit.note(), nil
 }
 
 // ── glob ─────────────────────────────────────────────────────────────────
@@ -347,7 +404,7 @@ func execGlob(ctx context.Context, cwd string, raw json.RawMessage) (string, err
 		mod int64
 	}
 	var found []entry
-	err = walkFiles(ctx, root, func(_, rel string, d fs.DirEntry) error {
+	limit, err := walkFiles(ctx, root, func(_, rel string, d fs.DirEntry) error {
 		if !re.MatchString(rel) {
 			return nil
 		}
@@ -356,13 +413,16 @@ func execGlob(ctx context.Context, cwd string, raw json.RawMessage) (string, err
 			mod = info.ModTime().UnixNano()
 		}
 		found = append(found, entry{rel, mod})
+		if len(found) >= maxMatchFiles*10 {
+			return errEnough
+		}
 		return nil
 	})
 	if err != nil {
 		return "", err
 	}
 	if len(found) == 0 {
-		return "no files match " + c.Pattern, nil
+		return "no files match " + c.Pattern + limit.note(), nil
 	}
 	sort.SliceStable(found, func(i, j int) bool {
 		if found[i].mod != found[j].mod {
@@ -375,12 +435,12 @@ func execGlob(ctx context.Context, cwd string, raw json.RawMessage) (string, err
 	for i, f := range found {
 		if sb.Len()+len(f.rel)+1 > budget {
 			fmt.Fprintf(&sb, "\n[output truncated: %d more file(s) omitted; narrow the pattern]\n", len(found)-i)
-			return sb.String(), nil
+			return sb.String() + limit.note(), nil
 		}
 		sb.WriteString(f.rel + "\n")
 	}
 	fmt.Fprintf(&sb, "(%d file(s))\n", len(found))
-	return sb.String(), nil
+	return sb.String() + limit.note(), nil
 }
 
 // ── edit ─────────────────────────────────────────────────────────────────

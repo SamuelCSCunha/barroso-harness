@@ -58,6 +58,13 @@ type RendererCache interface {
 	Cache(cachedTokens, promptTokens int)
 }
 
+// RendererRetry is OPTIONAL: it is told before the dealer repeats a request
+// that failed transiently (503, timeout, reset), so the client can show
+// "retrying" instead of silence.
+type RendererRetry interface {
+	Retentando(attempt, max int, wait time.Duration, reason error)
+}
+
 // RendererRaciocinio is OPTIONAL: it receives the round's reasoning when the
 // provider exposes it, before tools and the answer (the TUI shows "Thought").
 type RendererRaciocinio interface {
