@@ -738,12 +738,23 @@ func (r *acpRenderer) Guardrail(proactive bool) {
 	})
 }
 
-// Retentando tells the client the dealer is repeating a failed request, as
-// an agent_thought_chunk: it is progress, not part of the answer.
+// Retentando tells the client the dealer is repeating a failed request. It is
+// session STATE, never conversation content: as an agent_thought_chunk it
+// landed in the client's "Raciocínio" panel, glued to the keepalives, and read
+// as the model leaking garbage as reasoning (2026-10-23, conversation 93825).
+// It goes out as session_info_update with a _meta marker (same fallback as the
+// guardrail): a client that does not know the marker ignores it.
 func (r *acpRenderer) Retentando(attempt, max int, wait time.Duration, reason error) {
 	text := fmt.Sprintf("[retry] provider failed (%v); attempt %d/%d in %s", reason, attempt, max, wait.Round(time.Second))
-	r.emit("agent_thought_chunk", map[string]any{
-		"content": map[string]any{"type": "text", "text": text},
+	r.emit("session_info_update", map[string]any{
+		"_meta": map[string]any{
+			"barroso/retry": map[string]any{
+				"attempt": attempt,
+				"max":     max,
+				"waitMs":  wait.Milliseconds(),
+				"reason":  fmt.Sprint(reason),
+			},
+		},
 	})
 	r.a.logf("acp: session %s: %s", r.session, text)
 }
@@ -752,11 +763,16 @@ func (r *acpRenderer) Retentando(attempt, max int, wait time.Duration, reason er
 // not a constant, so tests can shrink it.
 var keepaliveInterval = 20 * time.Second
 
-// Pensando is the keepalive notification: progress, not content. Emitted as an
-// agent_thought_chunk so the client does not read it as part of the answer.
+// Pensando is the keepalive notification: it only exists so the wire is not
+// silent. It must carry NO text — as an agent_thought_chunk every tick
+// appended "[keepalive] turn still running" to the client's reasoning panel
+// (2026-10-23). A session_info_update with a _meta marker keeps the connection
+// alive and is ignored by clients that do not know the marker.
 func (r *acpRenderer) Pensando() {
-	r.emit("agent_thought_chunk", map[string]any{
-		"content": map[string]any{"type": "text", "text": "[keepalive] turn still running"},
+	r.emit("session_info_update", map[string]any{
+		"_meta": map[string]any{
+			"barroso/keepalive": map[string]any{"status": "running"},
+		},
 	})
 }
 

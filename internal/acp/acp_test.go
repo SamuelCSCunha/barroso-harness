@@ -735,8 +735,10 @@ func TestKeepaliveSpeaksWhileTurnRuns(t *testing.T) {
 		lines := readLines(t, h.out)
 		kept := false
 		for _, l := range lines {
-			if l.Params.Update.SessionUpdate == "agent_thought_chunk" &&
-				strings.Contains(l.Params.Update.Content.Blocks[0].Text, "keepalive") {
+			if l.Params.Update.SessionUpdate == "agent_thought_chunk" {
+				t.Fatalf("keepalive must not be reasoning text:\n%s", h.out.String())
+			}
+			if l.Params.Update.SessionUpdate == "session_info_update" {
 				kept = true
 			}
 		}
@@ -776,7 +778,7 @@ func TestKeepaliveStopsWhenTurnEnds(t *testing.T) {
 		t.Fatalf("keepalive kept writing after the response:\n%s", h.out.String())
 	}
 	for _, l := range after {
-		if l.Params.Update.SessionUpdate == "agent_thought_chunk" {
+		if l.Params.Update.SessionUpdate == "session_info_update" {
 			t.Fatalf("keepalive survived the end of the turn:\n%s", h.out.String())
 		}
 	}
@@ -805,7 +807,7 @@ func TestCancelStopsKeepalive(t *testing.T) {
 	time.Sleep(80 * time.Millisecond)
 	kept := false
 	for _, l := range readLines(t, h.out) {
-		if l.Params.Update.SessionUpdate == "agent_thought_chunk" {
+		if l.Params.Update.SessionUpdate == "session_info_update" {
 			kept = true
 		}
 	}
