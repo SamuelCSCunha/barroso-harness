@@ -115,7 +115,7 @@ func Especificacoes() []tools.Spec {
 			Schema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"scope":      scopeProp,
+					"scope":     scopeProp,
 					"oldString": map[string]any{"type": "string", "description": "exact passage to replace (must be unique)"},
 					"newString": map[string]any{"type": "string", "description": "replacement"},
 				},

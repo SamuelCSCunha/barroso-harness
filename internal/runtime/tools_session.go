@@ -47,8 +47,8 @@ func sessionSearchSpec(s *Session) tools.Spec {
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"query":      map[string]any{"type": "string", "description": "text to search for (substring, case-insensitive)"},
-				"limit":      map[string]any{"type": "integer", "description": "how many events to return; default 10"},
+				"query":     map[string]any{"type": "string", "description": "text to search for (substring, case-insensitive)"},
+				"limit":     map[string]any{"type": "integer", "description": "how many events to return; default 10"},
 				"sessionID": map[string]any{"type": "string", "description": "ANOTHER session's id, from session_list; omit for THIS session"},
 			},
 			"required": []string{"query"},
@@ -108,8 +108,8 @@ func sessionRetrieveSpec(s *Session) tools.Spec {
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"seq":        map[string]any{"type": "integer", "description": "event number (seq), as returned by session_search"},
-				"limit":      map[string]any{"type": "integer", "description": "byte limit of the returned content; default 8192"},
+				"seq":       map[string]any{"type": "integer", "description": "event number (seq), as returned by session_search"},
+				"limit":     map[string]any{"type": "integer", "description": "byte limit of the returned content; default 8192"},
 				"sessionID": map[string]any{"type": "string", "description": "ANOTHER session's id, from session_list; omit for THIS session"},
 			},
 			"required": []string{"seq"},

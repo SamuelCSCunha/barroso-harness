@@ -80,12 +80,12 @@ func TestLoadReadsFile(t *testing.T) {
 
 func TestFormato(t *testing.T) {
 	cases := map[float64]string{
-		0:        "",
-		0.004:    "$0.00",
-		0.1249:   "$0.12",
-		1.5:      "$1.50",
-		12.3:     "$12.30",
-		1234.5:   "$1.23k",
+		0:      "",
+		0.004:  "$0.00",
+		0.1249: "$0.12",
+		1.5:    "$1.50",
+		12.3:   "$12.30",
+		1234.5: "$1.23k",
 	}
 	for usd, want := range cases {
 		if got := Formato(usd); got != want {

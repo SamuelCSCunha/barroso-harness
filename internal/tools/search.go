@@ -206,12 +206,12 @@ func specGrep() Spec {
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"pattern":          map[string]any{"type": "string", "description": "Go regexp (RE2), e.g. `func \\w+Handler` or `import \"fmt\"`; escape regex metacharacters for literal text"},
-				"path":             map[string]any{"type": "string", "description": "directory or single file to search (default: cwd)"},
-				"include":          map[string]any{"type": "string", "description": "filename filter, e.g. \"*.go\" or \"internal/**/*_test.go\"; a pattern without '/' matches the base name at any depth; brace sets like {a,b} are not supported"},
-				"caseSensitive":    map[string]any{"type": "boolean", "description": "case-sensitive match (default true)"},
-				"context":          map[string]any{"type": "integer", "description": "lines of context before and after each match (default 0; content output only)"},
-				"output":           map[string]any{"type": "string", "enum": []string{"content", "files", "count"}, "description": "\"content\" (default): `path:line: text`; \"files\": matching paths only; \"count\": matches per file"},
+				"pattern":       map[string]any{"type": "string", "description": "Go regexp (RE2), e.g. `func \\w+Handler` or `import \"fmt\"`; escape regex metacharacters for literal text"},
+				"path":          map[string]any{"type": "string", "description": "directory or single file to search (default: cwd)"},
+				"include":       map[string]any{"type": "string", "description": "filename filter, e.g. \"*.go\" or \"internal/**/*_test.go\"; a pattern without '/' matches the base name at any depth; brace sets like {a,b} are not supported"},
+				"caseSensitive": map[string]any{"type": "boolean", "description": "case-sensitive match (default true)"},
+				"context":       map[string]any{"type": "integer", "description": "lines of context before and after each match (default 0; content output only)"},
+				"output":        map[string]any{"type": "string", "enum": []string{"content", "files", "count"}, "description": "\"content\" (default): `path:line: text`; \"files\": matching paths only; \"count\": matches per file"},
 			},
 			"required": []string{"pattern"},
 		},
@@ -466,7 +466,7 @@ func specEdit() Spec {
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"path":        map[string]any{"type": "string", "description": "file to edit"},
+				"path":       map[string]any{"type": "string", "description": "file to edit"},
 				"oldString":  map[string]any{"type": "string", "description": "exact text to replace (non-empty)"},
 				"newString":  map[string]any{"type": "string", "description": "replacement text (may be empty to delete)"},
 				"replaceAll": map[string]any{"type": "boolean", "description": "replace every occurrence (default false: exactly one must exist)"},
@@ -563,7 +563,7 @@ func specEditMany() Spec {
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
-							"path":        map[string]any{"type": "string", "description": "file to edit"},
+							"path":       map[string]any{"type": "string", "description": "file to edit"},
 							"oldString":  map[string]any{"type": "string", "description": "exact text to replace (non-empty)"},
 							"newString":  map[string]any{"type": "string", "description": "replacement text (may be empty to delete)"},
 							"replaceAll": map[string]any{"type": "boolean", "description": "replace every occurrence (default false: exactly one must exist)"},

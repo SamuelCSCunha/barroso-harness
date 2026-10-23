@@ -39,7 +39,7 @@ func specWebFetch(search *Busca) tools.Spec {
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"url":       map[string]any{"type": "string", "description": "absolute http(s) URL to fetch"},
+				"url":      map[string]any{"type": "string", "description": "absolute http(s) URL to fetch"},
 				"maxChars": map[string]any{"type": "integer", "description": "output character cap; default 20000, max 60000"},
 			},
 			"required": []string{"url"},

@@ -54,7 +54,7 @@ func specWebSearch(search *Busca) tools.Spec {
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"query":       map[string]any{"type": "string", "description": "what to search for"},
+				"query":      map[string]any{"type": "string", "description": "what to search for"},
 				"maxResults": map[string]any{"type": "integer", "description": "maximum number of results; default 8"},
 			},
 			"required": []string{"query"},

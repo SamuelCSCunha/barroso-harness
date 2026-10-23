@@ -100,10 +100,10 @@ func specTerminalRun() Spec {
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"command":      map[string]any{"type": "string", "description": "command to run"},
-				"workdir":      map[string]any{"type": "string", "description": "working directory (default: the agent's cwd)"},
-				"timeout": map[string]any{"type": "integer", "description": "optional timeout in milliseconds; the command is killed when it passes it (default none; 0 = none)"},
-				"background":   map[string]any{"type": "boolean", "description": "start it as a background job and return immediately (servers, watchers, long jobs)"},
+				"command":    map[string]any{"type": "string", "description": "command to run"},
+				"workdir":    map[string]any{"type": "string", "description": "working directory (default: the agent's cwd)"},
+				"timeout":    map[string]any{"type": "integer", "description": "optional timeout in milliseconds; the command is killed when it passes it (default none; 0 = none)"},
+				"background": map[string]any{"type": "boolean", "description": "start it as a background job and return immediately (servers, watchers, long jobs)"},
 			},
 			"required": []string{"command"},
 		},
@@ -244,9 +244,9 @@ func specFileRead() Spec {
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"path":  map[string]any{"type": "string"},
+				"path":   map[string]any{"type": "string"},
 				"offset": map[string]any{"type": "integer", "description": "first line to read (1-based)"},
-				"limit": map[string]any{"type": "integer", "description": "maximum number of lines in this read"},
+				"limit":  map[string]any{"type": "integer", "description": "maximum number of lines in this read"},
 			},
 			"required": []string{"path"},
 		},

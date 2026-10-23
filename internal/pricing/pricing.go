@@ -23,8 +23,8 @@ import (
 // price is used for the whole prompt, which is the safe assumption for
 // providers that do not report a cache.
 type Price struct {
-	InUSDPerM   float64 `json:"in_usd_per_million"`
-	OutUSDPerM  float64 `json:"out_usd_per_million"`
+	InUSDPerM    float64 `json:"in_usd_per_million"`
+	OutUSDPerM   float64 `json:"out_usd_per_million"`
 	CacheUSDPerM float64 `json:"cache_usd_per_million,omitempty"`
 }
 
