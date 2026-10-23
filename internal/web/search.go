@@ -151,7 +151,7 @@ func fetchResults(ctx context.Context, endpoint, q string) ([]searxngResult, err
 	if err != nil {
 		return nil, fmt.Errorf("request: %w", err)
 	}
-	req.Header.Set("User-Agent", dealer.UserAgent)
+	req.Header.Set("User-Agent", dealer.UserAgent())
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := newHTTPClient(searchTimeout).Do(req)

@@ -243,12 +243,12 @@ func TestCatalog403HTMLGivesShortError(t *testing.T) {
 	}
 }
 
-// TestRequestsSendUserAgent pins the root cause of a false 403: Go sends
-// "Go-http-client/1.1" by default and some WAFs (Cloudflare among them) block
-// that BEFORE looking at the key. The dealer must send a named UA on BOTH
-// paths — catalog and chat completions.
+// TestRequestsSendUserAgent pins the client contract: the official client's
+// UA (zen.go) goes on BOTH paths — catalog and chat completions, both
+// gateway or none. Go's default "Go-http-client/1.1" is 403 bait on WAFs.
 func TestRequestsSendUserAgent(t *testing.T) {
-	var catalogUA, chatUA string
+	t.Setenv("ZEN_USER_AGENT", "opencode/latest/9.9.9/test")
+	var catalogUA, chatUA, sessao string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/models":
@@ -256,6 +256,7 @@ func TestRequestsSendUserAgent(t *testing.T) {
 			io.WriteString(w, `{"data":[{"id":"m1","input":["text"]}]}`)
 		case r.URL.Path == "/chat/completions":
 			chatUA = r.Header.Get("User-Agent")
+			sessao = r.Header.Get("x-opencode-session")
 			w.Header().Set("Content-Type", "text/event-stream")
 			io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n")
 		default:
@@ -272,17 +273,23 @@ func TestRequestsSendUserAgent(t *testing.T) {
 	if len(ls) == 0 {
 		t.Fatal("empty catalog")
 	}
-	if catalogUA != UserAgent {
-		t.Fatalf("catalog sent User-Agent %q, want %q", catalogUA, UserAgent)
+	if catalogUA != UserAgent() {
+		t.Fatalf("catalog sent User-Agent %q, want %q", catalogUA, UserAgent())
 	}
 
 	// chat completions
-	c := Novo(Config{BaseURL: srv.URL, Model: "m1", APIKey: "k"})
+	c := Novo(Config{BaseURL: srv.URL, Model: "m1", APIKey: "k"}).ComConversa("sessao-teste")
 	if _, err := c.Rodar("sys", []Mensagem{{Role: "user", Conteudo: "hi"}}, nil); err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if chatUA != UserAgent {
-		t.Fatalf("chat sent User-Agent %q, want %q", chatUA, UserAgent)
+	if chatUA != UserAgent() {
+		t.Fatalf("chat sent User-Agent %q, want %q", chatUA, UserAgent())
+	}
+	// canonical session headers travel on the chat route (and never on the
+	// catalog one-shot... they do travel as a fresh mint there too; here the
+	// chat assertion pins the stable value for the conversation).
+	if !strings.HasPrefix(sessao, "ses_") || len(sessao) != 30 {
+		t.Fatalf("x-opencode-session = %q; want the canonical ses_ shape", sessao)
 	}
 
 	if catalogUA == "Go-http-client/1.1" || chatUA == "Go-http-client/1.1" {
@@ -324,8 +331,18 @@ func TestBodyUserMessageWithImage(t *testing.T) {
 			URL string `json:"url"`
 		} `json:"image_url"`
 	}
-	if err := json.Unmarshal(body.Messages[1].Content, &parts); err != nil {
-		t.Fatalf("user content is not parts: %s", body.Messages[1].Content)
+	user := -1
+	for i, m := range body.Messages {
+		if m.Role == "user" {
+			user = i
+			break
+		}
+	}
+	if user < 0 {
+		t.Fatal("no user message in the body")
+	}
+	if err := json.Unmarshal(body.Messages[user].Content, &parts); err != nil {
+		t.Fatalf("user content is not parts: %s", body.Messages[user].Content)
 	}
 	if len(parts) != 2 || parts[0].Type != "text" || parts[1].Type != "image_url" {
 		t.Fatalf("parts = %+v", parts)

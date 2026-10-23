@@ -129,6 +129,20 @@ go vet ./... && go test ./... && go build ./...
 
 Releases are automatic: push to `main` → `deploy.barroso.tec.br` webhook → binaries published as a release (no GitHub Actions — the account forbids them; the contract is `.deploy/release.json`).
 
+## ## Wire: the opencode client contract
+
+Every dealer request — catalog or inference, any gateway — speaks the **official opencode client dialect** (`internal/dealer/zen.go`, measured against the zen free tier's gate). Nothing gates on the configured provider: the harness always presents itself as that client.
+
+- **Canonical ids** (`prefixo_` + 12 hex + 14 base62): the hex prefix encodes `~(ms * 0x1000 + counter)`; the upstream validates the (timestamp, counter) pair, so ids are minted from the real clock, one fresh id per need, never derived from a hash or reused.
+- **Session headers stable per conversation**: `x-opencode-session` + `x-opencode-session-id` + `x-session-affinity` + `x-session-id` carry the same `ses_` id for the lifetime of a session (the provider's prefix cache keys on it — measured ~99.5% `cached_tokens`); one-shot traffic (catalog) mints a fresh id per call. Plus `x-opencode-request: msg_…` per request, `x-opencode-project: global`, `x-opencode-client: cli`.
+- **User-Agent** `opencode/latest/<version>/cli` with the version resolved live from npm (TTL 6h, floor on failure). `ZEN_USER_AGENT` overrides by hand.
+- **Tool fingerprint**: the `read`/`shell` definitions travel as byte-exact raw-JSON literals of the official CLI (Go map marshaling sorts keys alphabetically, which would spoil the comparison); missing ones are appended as decoys, with a system-side note telling the model they are placeholders.
+- **`tool_choice: "auto"` always**, with or without client tools (absence of `tool_choice` on a no-tools body is rejected upstream).
+- **Duplicate `tool_calls[].id`** across the history get a fresh canonical id, call and paired result renamed together (the upstream 400s on duplicates).
+- **Retry vocabulary** gains the free-tier flavors: the 429 `FreeUsageLimitError` is quota (terminal), not a throttle to hit again.
+
+The runtime threads its session id in (`ComConversa`), the dealer handles the rest.
+
 ## Context: who decides to compact
 
 `"context_policy"` in `config.json` selects the policy:

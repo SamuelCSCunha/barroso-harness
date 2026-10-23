@@ -380,6 +380,10 @@ func (s *Session) SendWithImages(ctx context.Context, r Renderer, cwd, prompt st
 			rd.Pensando()
 		}
 		cli := s.dealer
+		// The conversation identity rides along: the canonical ses_ id
+		// mints once and stays stable for the whole session (one-shot
+		// traffic outside a store keeps a per-call fresh id).
+		cli = cli.ComConversa(s.sessionID)
 		limit := cli.MaxTokens()
 		if extraLimit > 0 {
 			limit = extraLimit

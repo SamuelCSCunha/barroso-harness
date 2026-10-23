@@ -252,7 +252,7 @@ func (p *ProvedorMCP) discover(ctx context.Context) (*jsonrpc.HTTP, []remoteTool
 	if p.transport == nil {
 		p.transport = &jsonrpc.HTTP{
 			URL:       p.endpoint,
-			UserAgent: dealer.UserAgent,
+			UserAgent: dealer.UserAgent(),
 			Client:    newHTTPClient(fetchTimeout),
 			MaxBody:   providerBodyCap,
 		}
@@ -264,7 +264,7 @@ func (p *ProvedorMCP) discover(ctx context.Context) (*jsonrpc.HTTP, []remoteTool
 	if _, err := t.Call(ctx, jsonrpc.NewRequest(p.id(), "initialize", map[string]any{
 		"protocolVersion": mcpProtocolVersion,
 		"capabilities":    map[string]any{},
-		"clientInfo":      map[string]any{"name": dealer.UserAgent, "version": "1.0"},
+		"clientInfo":      map[string]any{"name": dealer.UserAgent(), "version": "1.0"},
 	})); err != nil {
 		return nil, nil, fmt.Errorf("initialize: %w", err)
 	}

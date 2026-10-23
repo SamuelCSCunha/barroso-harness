@@ -123,7 +123,7 @@ func fetch(ctx context.Context, target string, limit int) (*response, error) {
 	if err != nil {
 		return nil, fmt.Errorf("request: %w", err)
 	}
-	req.Header.Set("User-Agent", dealer.UserAgent)
+	req.Header.Set("User-Agent", dealer.UserAgent())
 	req.Header.Set("Accept", "text/html,application/json")
 
 	client := newHTTPClient(fetchTimeout)

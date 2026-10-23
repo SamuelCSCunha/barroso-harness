@@ -495,8 +495,8 @@ func TestHTTPRequiredAcceptHeader(t *testing.T) {
 	if contentType != "application/json" {
 		t.Errorf("Content-Type = %q", contentType)
 	}
-	if !strings.Contains(ua, "barroso-harness") {
-		t.Errorf("User-Agent = %q; want the dealer's", ua)
+	if !strings.Contains(ua, "opencode/") {
+		t.Errorf("User-Agent = %q; want the official client's", ua)
 	}
 }
 

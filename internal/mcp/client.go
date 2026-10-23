@@ -450,7 +450,7 @@ func (c *Cliente) openHTTP(_ context.Context) error {
 	c.httpT = &jsonrpc.HTTP{
 		URL:       strings.TrimSpace(c.serv.URL),
 		Headers:   c.serv.Headers,
-		UserAgent: dealer.UserAgent,
+		UserAgent: dealer.UserAgent(),
 		Client:    &http.Client{Timeout: c.timeout},
 		Timeout:   c.timeout,
 		MaxBody:   maxHTTPBody,

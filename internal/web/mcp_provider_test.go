@@ -232,7 +232,7 @@ func TestProviderRequestsAreAnonymousAndKeepSession(t *testing.T) {
 				t.Errorf("request %d carries %s", i, k)
 			}
 		}
-		if h.Get("User-Agent") != "barroso-harness" {
+		if !strings.Contains(h.Get("User-Agent"), "opencode/") {
 			t.Errorf("request %d User-Agent = %q", i, h.Get("User-Agent"))
 		}
 		if i > 0 && h.Get("Mcp-Session-Id") != "sess-1" {

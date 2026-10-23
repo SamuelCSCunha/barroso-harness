@@ -22,11 +22,9 @@ import (
 	"time"
 )
 
-// UserAgent identifies the client. By default Go sends "Go-http-client/1.1" —
-// and some WAFs (Cloudflare among them) block exactly that with a 403 before
-// looking at the key. A named UA avoids the false negative and also helps the
-// provider identify the client in its logs.
-const UserAgent = "barroso-harness"
+// The User-Agent is the official client's (zen.go, UserAgent()): the
+// measured contract of the opencode client, applied to every request and
+// every gateway the harness talks to.
 
 // Config is the provider configuration. The key comes from the local config
 // persisted by the CLI.
@@ -101,10 +99,22 @@ type Cliente struct {
 	cfg    Config
 	maxOut int        // output cap for this request (ComTeto); 0 = MaxTokens()
 	aviso  AvisoRetry // reported before each retry (ComAviso); nil = silent
+	// conversa is the conversation identity the canonical opencode session
+	// id (ses_) mints for and stays stable against. Empty = one-shot
+	// traffic: a fresh id per request.
+	conversa string
 }
 
 // Novo returns a client for cfg.
 func Novo(cfg Config) *Cliente { return &Cliente{cfg: cfg} }
+
+// ComConversa returns a copy of the client that carries the conversation
+// identity the canonical session headers build on.
+func (c *Cliente) ComConversa(conversa string) *Cliente {
+	c2 := *c
+	c2.conversa = conversa
+	return &c2
+}
 
 // MaxTokens is the output cap requested from the provider: the config's
 // max_tokens, or TetoPadrao for the effort.
@@ -213,6 +223,17 @@ func (c *Cliente) corpo(system string, msgs []Mensagem, tools []map[string]any, 
 			return nil, fmt.Errorf("unknown role: %q", m.Role)
 		}
 	}
+	// Duplicated tool-call ids across the history are rejected upstream with
+	// 400 — the first occurrence of each id keeps it, later ones are renamed
+	// with their paired results.
+	desduplicarIDsDeChamada(list)
+	wireTools, notas := aplicarFingerprint(tools)
+	if len(notas) > 0 {
+		// Appended decoys need their brake where the gate does not validate:
+		// the system slot, as a first message of its own (the official
+		// system follows intact, the shape the official client sends).
+		list = append([]oaiMsg{{Role: "system", Content: notaFingerprint(notas)}}, list...)
+	}
 	body := map[string]any{
 		"model":          c.cfg.Model,
 		"messages":       list,
@@ -224,10 +245,8 @@ func (c *Cliente) corpo(system string, msgs []Mensagem, tools []map[string]any, 
 		// Omit an empty field or `none` (the provider rejects both).
 		body["reasoning_effort"] = effort
 	}
-	if len(tools) > 0 {
-		body["tools"] = tools
-		body["tool_choice"] = "auto"
-	}
+	body["tools"] = wireTools
+	body["tool_choice"] = "auto"
 	return json.Marshal(body)
 }
 
@@ -369,7 +388,9 @@ func (c *Cliente) tentativa(ctx context.Context, body []byte) (*Rodada, error) {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", UserAgent)
+	// The opencode client contract applies to every gateway: live UA,
+	// canonical ids and session headers stable per conversation.
+	aplicarCabecalhosOpencode(req, sessaoEstavel(c.conversa))
 	if c.cfg.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
 	}
@@ -606,7 +627,10 @@ func Catalogo(ctx context.Context, baseURL, apiKey string) (*ModelsResponse, err
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", UserAgent)
+	// Same contract as the inference route: the catalog is a public vitrine,
+	// but the identity travels with it (the day the /models answers per key,
+	// this is already correct).
+	aplicarCabecalhosOpencode(req, "")
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}

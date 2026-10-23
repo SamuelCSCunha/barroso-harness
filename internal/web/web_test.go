@@ -710,7 +710,7 @@ func TestNoOutputExceedsCap(t *testing.T) {
 	}
 }
 
-// Harness UA in both tools.
+// The official client's UA goes out on both web tools too.
 func TestHarnessUserAgent(t *testing.T) {
 	var seen []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -725,8 +725,9 @@ func TestHarnessUserAgent(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if dealer.UserAgent != "barroso-harness" {
-		t.Fatalf("dealer UserAgent changed: %q", dealer.UserAgent)
+	want := dealer.UserAgent()
+	if !strings.Contains(want, "opencode/") {
+		t.Fatalf("UserAgent() lost the official shape: %q", want)
 	}
 	specs := specsByName(t, &Busca{Endpoint: srv.URL})
 	if _, err := run(t, specs["webfetch"], map[string]any{"url": srv.URL}); err != nil {
@@ -739,8 +740,8 @@ func TestHarnessUserAgent(t *testing.T) {
 		t.Fatalf("expected 2 requests, got %d", len(seen))
 	}
 	for i, ua := range seen {
-		if ua != dealer.UserAgent {
-			t.Errorf("request %d: User-Agent = %q, want %q", i, ua, dealer.UserAgent)
+		if ua != want {
+			t.Errorf("request %d: User-Agent = %q, want %q", i, ua, want)
 		}
 	}
 }

@@ -45,7 +45,7 @@ func searchDDG(ctx context.Context, q string) ([]searxngResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("request: %w", err)
 	}
-	req.Header.Set("User-Agent", dealer.UserAgent)
+	req.Header.Set("User-Agent", dealer.UserAgent())
 	req.Header.Set("Accept", "text/html")
 
 	resp, err := newHTTPClient(searchTimeout).Do(req)

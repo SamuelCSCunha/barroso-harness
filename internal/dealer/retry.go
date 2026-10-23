@@ -177,8 +177,9 @@ func newHTTPError(resp *http.Response, body []byte) *httpError {
 }
 
 // quotaBody recognizes the "you are out of quota" flavors of 429, as opposed
-// to a momentary rate limit.
-var quotaBody = regexp.MustCompile(`(?i)insufficient_quota|usage_limit_reached|quota[_ ]exceeded|credit[_ ]balance|billing|exceeded your current quota`)
+// to a momentary rate limit — including the free-tier budget of the opencode
+// zen lane (its 429 reads FreeUsageLimitError until the UTC reset).
+var quotaBody = regexp.MustCompile(`(?i)insufficient_quota|usage_limit_reached|quota[_ ]exceeded|credit[_ ]balance|billing|exceeded your current quota|free_usage_limit|free usage limit|freeusagelimiterror`)
 
 // parseRetryAfterMs reads retry-after-ms (OpenAI, Anthropic): milliseconds.
 func parseRetryAfterMs(v string) time.Duration {
