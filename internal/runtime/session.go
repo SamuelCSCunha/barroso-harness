@@ -365,7 +365,7 @@ func (s *Session) SendWithImages(ctx context.Context, r Renderer, cwd, prompt st
 		}
 		ev := budget.Avaliar(string(body), s.config.Janela, s.est)
 		if !ev.Cabe {
-			pruned := prune(working, &floor, ev.TokensEntrada+ev.TokensSaida-s.config.Janela)
+			pruned := prune(working, &floor, s.est.Bytes(ev.TokensEntrada+ev.TokensSaida-s.config.Janela))
 			if pruned == nil {
 				return fmt.Errorf("guardrail: request does not fit (%s) and pruning did not free enough", ev.Veredito())
 			}
@@ -417,7 +417,7 @@ func (s *Session) SendWithImages(ctx context.Context, r Renderer, cwd, prompt st
 					"politica": policy(s.config.PoliticaContexto),
 					"motivo":   oneLine(err.Error()),
 				})
-				pruned := prune(working, &floor, budget.ReservaOperacional)
+				pruned := prune(working, &floor, s.est.Bytes(budget.ReservaOperacional))
 				if pruned != nil {
 					compacted = true
 					working = pruned

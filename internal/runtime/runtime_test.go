@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ruanbarroso/barroso-harness/internal/budget"
 	"github.com/ruanbarroso/barroso-harness/internal/config"
 	"github.com/ruanbarroso/barroso-harness/internal/tools"
 )
@@ -120,5 +121,60 @@ func TestPrunePreservesTail(t *testing.T) {
 	}
 	if len(pruned[0].Conteudo) >= 4096 {
 		t.Fatal("expected the oldest one to be pruned")
+	}
+}
+
+// Regression (session bh-20261022222739-102c): after a prune that stopped
+// early, the next one must still reach the results it did not visit. Moving
+// the floor straight to the tail limit made the second guardrail pass fail
+// with "pruning did not free enough" while dozens of big results remained.
+func TestPruneResumesAfterEarlyStop(t *testing.T) {
+	var h []historyMessage
+	for i := 0; i < 40; i++ {
+		h = append(h, historyMessage{Role: "tool_result", Conteudo: strings.Repeat("x", 4096), ToolName: "read"})
+	}
+	floor := 0
+	first := prune(h, &floor, 2000)
+	if first == nil {
+		t.Fatal("first prune should free 2 KiB")
+	}
+	if floor != 1 {
+		t.Fatalf("floor should stop right after the one result pruned, got %d", floor)
+	}
+	second := prune(first, &floor, 2000)
+	if second == nil {
+		t.Fatal("second prune should still reach the unvisited results")
+	}
+	if len(second[1].Conteudo) >= 4096 {
+		t.Fatal("expected the next oldest result to be pruned")
+	}
+}
+
+// The guardrail measures its deficit in tokens; prune counts bytes. The
+// conversion must ask for chars-per-token times more, or the turn frees ~1/3
+// of what it needs and dies one cycle later.
+func TestGuardrailDeficitConvertedToBytes(t *testing.T) {
+	est := budget.Estimador{CharsPorToken: 3}
+	if got := est.Bytes(4375); got != 13125 {
+		t.Fatalf("4375 tokens at 3 chars/token = 13125 bytes, got %d", got)
+	}
+	if got := (budget.Estimador{}).Bytes(10); got != 40 {
+		t.Fatalf("uncalibrated estimator assumes 4 chars/token, got %d", got)
+	}
+	var h []historyMessage
+	for i := 0; i < 40; i++ {
+		h = append(h, historyMessage{Role: "tool_result", Conteudo: strings.Repeat("x", 4096), ToolName: "read"})
+	}
+	floor := 0
+	pruned := prune(h, &floor, est.Bytes(4375))
+	if pruned == nil {
+		t.Fatal("prune should free 13 KiB across 16 eligible 4 KiB results")
+	}
+	freed := 0
+	for i := range h {
+		freed += len(h[i].Conteudo) - len(pruned[i].Conteudo)
+	}
+	if est.Tokens(strings.Repeat("x", freed)) < 4375 {
+		t.Fatalf("freed %d bytes, below the 4375-token deficit", freed)
 	}
 }

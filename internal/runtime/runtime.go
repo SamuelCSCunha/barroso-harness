@@ -98,6 +98,10 @@ func echoExcerpt(output string) string {
 
 // prune replaces large, old tool results with a short stub. Pruning is
 // monotonic within the turn — it keeps the request prefix stable.
+//
+// deficit is in BYTES of content (convert a token deficit with
+// budget.Estimador.Bytes). Passing tokens here freed ~1/3 of what was needed
+// and the turn died with "pruning did not free enough" (2026-10-22).
 func prune(h []dealer.Mensagem, floor *int, deficit int) []dealer.Mensagem {
 	if deficit <= 0 {
 		return nil
@@ -112,6 +116,10 @@ func prune(h []dealer.Mensagem, floor *int, deficit int) []dealer.Mensagem {
 		return nil
 	}
 	freed := 0
+	// next is where the following prune resumes: only past what was actually
+	// visited. Jumping straight to limit after an early stop left the
+	// unvisited results unprunable for the rest of the turn.
+	next := limit
 	for i := *floor; i < limit; i++ {
 		if pruned[i].Role != "tool_result" || len(pruned[i].Conteudo) < 2048 {
 			continue
@@ -120,13 +128,14 @@ func prune(h []dealer.Mensagem, floor *int, deficit int) []dealer.Mensagem {
 		pruned[i].Conteudo = fmt.Sprintf("(earlier result of %s compacted by the guardrail; request it again with a smaller range if you need the content)", pruned[i].ToolName)
 		freed += before - len(pruned[i].Conteudo)
 		if freed >= deficit {
+			next = i + 1
 			break
 		}
 	}
 	if freed < deficit {
 		return nil
 	}
-	*floor = limit
+	*floor = next
 	return pruned
 }
 

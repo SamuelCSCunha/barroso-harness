@@ -3,7 +3,10 @@
 // runtime/agent policy; budget only says whether the next request physically fits.
 package budget
 
-import "fmt"
+import (
+	"fmt"
+	"math"
+)
 
 const (
 	// ReservaSaida: room the model needs available to respond (the
@@ -28,11 +31,20 @@ type Estimador struct {
 }
 
 func (e Estimador) Tokens(text string) int {
-	cpt := e.CharsPorToken
-	if cpt <= 0 {
-		cpt = 4 // conservative for Latin-script text
+	return int(float64(len(text)) / e.cpt())
+}
+
+// Bytes is the inverse of Tokens: how many bytes of text the estimator counts
+// as n tokens. Rounded up, so freeing that much always covers n.
+func (e Estimador) Bytes(n int) int {
+	return int(math.Ceil(float64(n) * e.cpt()))
+}
+
+func (e Estimador) cpt() float64 {
+	if e.CharsPorToken <= 0 {
+		return 4 // conservative for Latin-script text
 	}
-	return int(float64(len(text)) / cpt)
+	return e.CharsPorToken
 }
 
 // Calibrar takes a (bytes sent, actual tokens) pair and moves the factor
