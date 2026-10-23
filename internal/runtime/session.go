@@ -302,6 +302,18 @@ func (s *Session) SendWithImages(ctx context.Context, r Renderer, cwd, prompt st
 	baroMD := *s.baroMD
 	working := append([]dealer.Mensagem(nil), s.history...)
 	working = append(working, dealer.Mensagem{Role: "user", Conteudo: prompt, Images: images})
+	// The turn is never thrown away. Whatever way Send exits from here on —
+	// final answer, provider error after the retries, timeout, cancellation,
+	// guardrail — the history keeps the user prompt and every round that
+	// completed. working only ever grows by whole units (a valid answer, or a
+	// tool_call batch together with all its results), so it is always a
+	// well-formed transcript. Dropping it on failure (the old behavior) made
+	// the next message reach the model without the request it was meant to
+	// continue (conversation 92120, 2026-10-23: a 503 burst erased a turn
+	// with 15 tool rounds, and "prossiga" got an answer to the turn before).
+	// A failed attempt itself never enters working: retries re-send the same
+	// list and only a valid response replaces anything.
+	defer func() { s.history = working }()
 	floor := 0
 	// Consecutive cuts at the output limit, and the limit of the retry when the
 	// cut came back empty (the model spent everything thinking).
