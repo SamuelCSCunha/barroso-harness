@@ -22,6 +22,8 @@ func (t *turnWithHistory) History() []dealer.Mensagem { return t.h }
 
 var _ Turno = (*turnWithHistory)(nil)
 var _ runtime.Renderer = (*acpRenderer)(nil)
+var _ runtime.RendererAoVivo = (*acpRenderer)(nil)
+var _ runtime.RendererNota = (*acpRenderer)(nil)
 
 // setupWithLoader builds the agent with a Carregador BEFORE starting Handle
 // (the field is read by the loop; writing it afterwards would be a race).
@@ -42,7 +44,7 @@ func setupWithLoader(t *testing.T, load Carregador) *harness {
 func testHistory() []dealer.Mensagem {
 	return []dealer.Mensagem{
 		{Role: "user", Conteudo: "list the files"},
-		{Role: "tool_call", ToolID: "c1", ToolName: "list", ToolArgs: `{}`},
+		{Role: "tool_call", ToolID: "c1", ToolName: "list", ToolArgs: `{"path":"src"}`},
 		{Role: "tool_result", ToolID: "c1", ToolName: "list", Conteudo: "a.go\nb.go"},
 		{Role: "assistant", Conteudo: "there are two files"},
 	}
@@ -110,6 +112,9 @@ func TestSessionLoadReplaysHistoryAndResponds(t *testing.T) {
 	}
 	if ls[1].Params.Update.Title != "list" {
 		t.Errorf("tool_call without the tool name: %+v", ls[1].Params.Update)
+	}
+	if string(ls[1].Params.Update.RawInput) != `{"path":"src"}` {
+		t.Errorf("replayed tool_call rawInput = %s", ls[1].Params.Update.RawInput)
 	}
 	if ls[2].Params.Update.ToolCallID != ls[1].Params.Update.ToolCallID {
 		t.Errorf("update does not reference the tool_call: %q vs %q", ls[2].Params.Update.ToolCallID, ls[1].Params.Update.ToolCallID)

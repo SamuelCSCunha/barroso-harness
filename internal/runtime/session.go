@@ -540,6 +540,11 @@ func (s *Session) SendWithImages(ctx context.Context, r Renderer, cwd, prompt st
 		// add them to working when every execution has finished.
 		turn := make([]dealer.Mensagem, 0, len(round.Tools)+1)
 		if round.Texto != "" {
+			// Text that comes with tool calls is an intermediate message ("let me
+			// check X"): renderers that show progress get it before the tools run.
+			if rn, ok := r.(RendererNota); ok && strings.TrimSpace(round.Texto) != "" {
+				rn.Nota(round.Texto)
+			}
 			turn = append(turn, dealer.Mensagem{Role: "assistant", Conteudo: round.Texto, Usage: round.Usage})
 		}
 		results := make([]dealer.Mensagem, 0, len(round.Tools))

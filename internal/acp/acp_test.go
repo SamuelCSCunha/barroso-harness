@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -46,12 +47,13 @@ type line struct {
 	Params struct {
 		SessionID string `json:"sessionId"`
 		Update    struct {
-			SessionUpdate string  `json:"sessionUpdate"`
-			ToolCallID    string  `json:"toolCallId"`
-			Title         string  `json:"title"`
-			Kind          string  `json:"kind"`
-			Status        string  `json:"status"`
-			Content       Content `json:"content"`
+			SessionUpdate string          `json:"sessionUpdate"`
+			ToolCallID    string          `json:"toolCallId"`
+			Title         string          `json:"title"`
+			Kind          string          `json:"kind"`
+			Status        string          `json:"status"`
+			RawInput      json.RawMessage `json:"rawInput"`
+			Content       Content         `json:"content"`
 		} `json:"update"`
 	} `json:"params"`
 	Result map[string]any `json:"result"`
@@ -154,6 +156,8 @@ type fakeTurn struct {
 	delay   time.Duration // delay before responding (cancellation)
 	compact bool          // emits Guardrail(true)
 	tokens  bool          // emits Tokens (must not produce a notification)
+	nota    string        // intermediate text, emitted through RendererNota
+	args    string        // when set, tools go through RendererAoVivo with these args
 
 	started chan struct{}
 	once    sync.Once
@@ -180,7 +184,17 @@ func (f *fakeTurn) Send(ctx context.Context, r runtime.Renderer, cwd, prompt str
 			f.mark()
 		}
 	}
-	for _, name := range f.tools {
+	if rn, ok := r.(runtime.RendererNota); ok && f.nota != "" {
+		rn.Nota(f.nota)
+	}
+	av, live := r.(runtime.RendererAoVivo)
+	for i, name := range f.tools {
+		if live && f.args != "" {
+			id := fmt.Sprintf("%d/c%d", i, i)
+			av.ToolComecou(id, name, f.args)
+			av.ToolTerminou(id, name, f.args, f.echo, 7*time.Millisecond, false)
+			continue
+		}
 		r.Tool(name, 7*time.Millisecond, false)
 		if f.echo != "" {
 			r.Eco(f.echo)
@@ -1021,6 +1035,8 @@ func TestPromptTranslatesToolAndEchoToNotifications(t *testing.T) {
 		tools:   []string{"bash"},
 		echo:    "tool output",
 		text:    "done",
+		nota:    "checking the file",
+		args:    `{"command":"pwd"}`,
 	}
 	h := setup(t, f)
 	h.send(t, MetSessionNovo, 2, map[string]any{"cwd": "."})
@@ -1029,10 +1045,13 @@ func TestPromptTranslatesToolAndEchoToNotifications(t *testing.T) {
 		"sessionId": ls[0].Result["sessionId"],
 		"prompt":    []map[string]string{{"type": "text", "text": "run"}},
 	})
-	// tool_call + tool_call_update + agent_message_chunk + response = 4 lines
-	ls = waitLines(t, h.out, 4)
+	// note + tool_call + tool_call_update + agent_message_chunk + response
+	ls = waitLines(t, h.out, 6)
 
-	tool := ls[1]
+	if ls[1].Params.Update.SessionUpdate != "agent_message_chunk" || ls[1].Params.Update.Content.Blocks[0].Text != "checking the file" {
+		t.Fatalf("intermediate message not translated: %+v", ls[1])
+	}
+	tool := ls[2]
 	if tool.Method != "session/update" || tool.Params.Update.SessionUpdate != "tool_call" {
 		t.Fatalf("expected tool_call, got %+v", tool)
 	}
@@ -1042,23 +1061,26 @@ func TestPromptTranslatesToolAndEchoToNotifications(t *testing.T) {
 	if tool.Params.Update.Kind != "other" {
 		t.Fatalf("kind should be \"other\": %q", tool.Params.Update.Kind)
 	}
-	if tool.Params.Update.Status != "completed" {
-		t.Fatalf("status should be completed: %q", tool.Params.Update.Status)
+	if tool.Params.Update.Status != "in_progress" {
+		t.Fatalf("status should be in_progress: %q", tool.Params.Update.Status)
 	}
 	if tool.Params.Update.ToolCallID == "" {
 		t.Fatal("tool_call without toolCallId")
 	}
+	var args map[string]any
+	if err := json.Unmarshal(tool.Params.Update.RawInput, &args); err != nil || args["command"] != "pwd" {
+		t.Fatalf("tool rawInput = %s, err %v", tool.Params.Update.RawInput, err)
+	}
 
-	echo := ls[2]
-	if echo.Params.Update.SessionUpdate != "tool_call_update" {
-		t.Fatalf("expected tool_call_update, got %+v", echo)
+	ended := ls[3]
+	if ended.Params.Update.SessionUpdate != "tool_call_update" || ended.Params.Update.Status != "completed" {
+		t.Fatalf("tool did not complete: %+v", ended)
 	}
-	if echo.Params.Update.ToolCallID != tool.Params.Update.ToolCallID {
-		t.Fatalf("echo should attach to the previous tool_call: %q vs %q",
-			echo.Params.Update.ToolCallID, tool.Params.Update.ToolCallID)
+	if ended.Params.Update.ToolCallID != tool.Params.Update.ToolCallID {
+		t.Fatalf("completion references %q, want %q", ended.Params.Update.ToolCallID, tool.Params.Update.ToolCallID)
 	}
-	if n := len(echo.Params.Update.Content.Blocks); n != 1 || echo.Params.Update.Content.Blocks[0].Text != "tool output" {
-		t.Fatalf("unexpected echo content: %+v", echo.Params.Update.Content)
+	if n := len(ended.Params.Update.Content.Blocks); n != 1 || ended.Params.Update.Content.Blocks[0].Text != "tool output" {
+		t.Fatalf("unexpected tool output: %+v", ended.Params.Update.Content)
 	}
 }
 

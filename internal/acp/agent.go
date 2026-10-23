@@ -354,12 +354,16 @@ func (a *Agente) replay(w io.Writer, sessionID string, h []dealer.Mensagem) {
 		case "tool_call":
 			id := a.nextID()
 			ids[m.ToolID] = id
-			r.emit("tool_call", map[string]any{
+			upd := map[string]any{
 				"toolCallId": id,
 				"title":      m.ToolName,
 				"kind":       "other",
 				"status":     "pending",
-			})
+			}
+			if m.ToolArgs != "" {
+				upd["rawInput"] = rawInput(m.ToolArgs)
+			}
+			r.emit("tool_call", upd)
 		case "tool_result":
 			id := ids[m.ToolID]
 			if id == "" {
@@ -568,11 +572,13 @@ func (a *Agente) Esperar() { a.running.Wait() }
 // Translation rule, chosen so the client loses no information without
 // inventing events the protocol does not have:
 //
-//	Resposta  → agent_message_chunk (the model's text; runtime delivers it whole)
-//	Tool      → tool_call, kind "other", final status (completed/failed)
-//	Eco       → tool_call_update of the last call, with the output as content
-//	Guardrail → agent_message_chunk with the compaction notice
-//	Tokens    → nothing: the usage footer is a local UI matter, not protocol
+//	Resposta     → agent_message_chunk (the model's text; runtime delivers it whole)
+//	Nota         → agent_message_chunk (text of a round that also calls tools)
+//	ToolComecou  → tool_call in_progress, kind "other", arguments as rawInput
+//	ToolTerminou → tool_call_update with the final status and an output excerpt
+//	Tool / Eco   → fallback when the runtime does not use the live path
+//	Guardrail    → agent_message_chunk with the compaction notice
+//	Tokens       → nothing: the usage footer is a local UI matter, not protocol
 type acpRenderer struct {
 	a       *Agente
 	w       io.Writer
@@ -580,6 +586,9 @@ type acpRenderer struct {
 
 	mu   sync.Mutex
 	last string // toolCallId of the last tool_call, for Eco to attach to
+	// ids maps the runtime's live id ("3/c1") to the toolCallId given to the
+	// client, so ToolSaida/ToolTerminou hit the call that was announced.
+	ids map[string]string
 }
 
 func (r *acpRenderer) Resposta(text string) {
@@ -599,16 +608,73 @@ func (r *acpRenderer) Tool(name string, dur time.Duration, failed bool) {
 	r.mu.Lock()
 	r.last = id
 	r.mu.Unlock()
-	// A single notification with the FINAL status: the runtime only reports
-	// the tool after it ran (name + duration + failure together), so an
-	// in_progress/completed pair would be theatre — the client would get two
-	// events for something already finished.
 	r.emit("tool_call", map[string]any{
 		"toolCallId": id,
 		"title":      name,
 		"kind":       "other",
 		"status":     status,
 	})
+}
+
+// Nota is the text of a round that also called tools ("let me check X"). It
+// goes out as agent_message_chunk: a client that sees a tool_call after text
+// knows that text was an intermediate message, not the answer.
+func (r *acpRenderer) Nota(text string) { r.Resposta(text) }
+
+// ToolComecou announces the call BEFORE it runs, with its arguments as
+// rawInput, so the client can show "grep: pattern in file" instead of "grep".
+func (r *acpRenderer) ToolComecou(id, name, args string) {
+	toolCallID := r.a.nextID()
+	r.mu.Lock()
+	if r.ids == nil {
+		r.ids = make(map[string]string)
+	}
+	r.ids[id] = toolCallID
+	r.last = toolCallID
+	r.mu.Unlock()
+	r.emit("tool_call", map[string]any{
+		"toolCallId": toolCallID,
+		"title":      name,
+		"kind":       "other",
+		"status":     "in_progress",
+		"rawInput":   rawInput(args),
+	})
+}
+
+// rawInput turns the call's JSON arguments into ACP rawInput. Arguments that
+// are not valid JSON (a truncated call) go as the raw string: still readable.
+func rawInput(args string) any {
+	var v any
+	if err := json.Unmarshal([]byte(args), &v); err != nil {
+		return args
+	}
+	return v
+}
+
+// ToolSaida is silent: ACP content in a tool_call_update REPLACES the previous
+// content, so streaming chunks would show only the last one and every chunk
+// would be one more event for the client. The result arrives in ToolTerminou.
+func (r *acpRenderer) ToolSaida(string, string) {}
+
+// ToolTerminou closes the call announced by ToolComecou with the final status
+// and an excerpt of the output.
+func (r *acpRenderer) ToolTerminou(id, _, _, output string, _ time.Duration, failed bool) {
+	r.mu.Lock()
+	toolCallID := r.ids[id]
+	delete(r.ids, id)
+	r.mu.Unlock()
+	if toolCallID == "" {
+		return
+	}
+	status := "completed"
+	if failed {
+		status = "failed"
+	}
+	upd := map[string]any{"toolCallId": toolCallID, "status": status}
+	if echo := shortEcho(output); echo != "" {
+		upd["content"] = []map[string]any{{"type": "text", "text": echo}}
+	}
+	r.emit("tool_call_update", upd)
 }
 
 func (r *acpRenderer) Eco(output string) {

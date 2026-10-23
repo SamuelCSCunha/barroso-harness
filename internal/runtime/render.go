@@ -90,6 +90,14 @@ type RendererAoVivo interface {
 	ToolTerminou(id, name, args, output string, dur time.Duration, failed bool)
 }
 
+// RendererNota is OPTIONAL: it receives the text the model wrote in a round
+// that also calls tools, before those tools run. It is not the answer —
+// Resposta still gets only the final round — so collectors that keep the
+// answer (subagents) are not polluted by "let me check X".
+type RendererNota interface {
+	Nota(text string)
+}
+
 // RendererSteer is OPTIONAL: it is told when a message sent during the turn
 // (Session.AddSteer) was delivered to the model.
 type RendererSteer interface {
