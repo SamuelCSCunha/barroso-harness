@@ -144,6 +144,7 @@ func eventsToMessages(st *store.Store, events []store.Event) []dealer.Mensagem {
 			Blob     string   `json:"blob"`
 			Preview  string   `json:"preview"`
 			Images   []string `json:"images"`
+			HookCtx  string   `json:"hook_context"`
 			Usage    *struct {
 				PromptTokens int `json:"prompt_tokens"`
 				OutputTokens int `json:"output_tokens"`
@@ -155,7 +156,7 @@ func eventsToMessages(st *store.Store, events []store.Event) []dealer.Mensagem {
 		}
 		m := dealer.Mensagem{
 			Role:     p.Role,
-			Conteudo: p.Content,
+			Conteudo: withHookContext(p.Content, p.HookCtx),
 			ToolID:   p.ToolID,
 			ToolName: p.ToolName,
 			ToolArgs: p.ToolArgs,

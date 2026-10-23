@@ -168,9 +168,10 @@ func (s *Session) rebuild() {
 	s.dealer = dealer.Novo(dealer.Config{
 		BaseURL: base, APIKey: key, Model: s.config.Model,
 		MaxTokens: s.config.MaxTokens, JanelaTokens: s.config.Janela,
-		Effort:    s.config.Effort,
-		FirstByte: secs(s.config.FirstByteSecs),
-		Idle:      secs(s.config.IdleSecs),
+		Effort:                   s.config.Effort,
+		DisableParallelToolCalls: s.config.DisableParallelToolCalls,
+		FirstByte:                secs(s.config.FirstByteSecs),
+		Idle:                     secs(s.config.IdleSecs),
 	})
 }
 
@@ -301,7 +302,11 @@ func (s *Session) SendWithImages(ctx context.Context, r Renderer, cwd, prompt st
 	}
 	baroMD := *s.baroMD
 	working := append([]dealer.Mensagem(nil), s.history...)
-	working = append(working, dealer.Mensagem{Role: "user", Conteudo: prompt, Images: images})
+	// Prompt hooks (memory recall) ride inside the user message. The event
+	// keeps them in a field of their own: the prompt stays what the user
+	// typed, and Resume puts the context back so the replay is byte-equal.
+	hookCtx := s.promptContext(ctx, cwd, prompt)
+	working = append(working, dealer.Mensagem{Role: "user", Conteudo: withHookContext(prompt, hookCtx), Images: images})
 	// The turn is never thrown away. Whatever way Send exits from here on —
 	// final answer, provider error after the retries, timeout, cancellation,
 	// guardrail — the history keeps the user prompt and every round that
@@ -339,6 +344,9 @@ func (s *Session) SendWithImages(ctx context.Context, r Renderer, cwd, prompt st
 	userEvent := map[string]any{"role": "user", "content": prompt}
 	if len(images) > 0 {
 		userEvent["images"] = images
+	}
+	if hookCtx != "" {
+		userEvent["hook_context"] = hookCtx
 	}
 	s.record("user_message", userEvent)
 

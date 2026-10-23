@@ -93,6 +93,25 @@ type Config struct {
 	// schemas), "full" (every tool in every request) or "progressive" (MCP
 	// and management tools behind tool_search/tool_call).
 	ToolDisclosure string `json:"tool_disclosure,omitempty"`
+
+	// DisableParallelToolCalls asks OpenAI-compatible providers to emit only
+	// one tool call per response. Useful when a gateway's parallel-call
+	// encoding is broken; absent keeps the protocol default.
+	DisableParallelToolCalls bool `json:"disable_parallel_tool_calls,omitempty"`
+
+	// PromptHooks run before every user prompt of a persistent session, with
+	// the Claude Code UserPromptSubmit contract: JSON on stdin ({"prompt",
+	// "cwd", "session_id", "hook_event_name"}), and what they print on stdout
+	// - hookSpecificOutput.additionalContext, or plain text - rides along
+	// with the prompt. A failing or slow hook is skipped, never fatal.
+	PromptHooks []PromptHook `json:"prompt_hooks,omitempty"`
+}
+
+// PromptHook is one command of PromptHooks.
+type PromptHook struct {
+	Command string   `json:"command"`
+	Args    []string `json:"args,omitempty"`
+	Timeout int      `json:"timeout_segundos,omitempty"` // seconds; 0 = 10
 }
 
 // MCPServidor mirrors mcp.Servidor without importing the package — config is

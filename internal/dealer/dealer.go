@@ -35,6 +35,9 @@ type Config struct {
 	MaxTokens    int    `json:"max_tokens"`     // output cap; 0 = per-effort default (TetoPadrao)
 	JanelaTokens int    `json:"context_window"` // 0 = unknown
 	Effort       string `json:"effort"`         // empty = omit reasoning_effort from the request
+	// DisableParallelToolCalls sends parallel_tool_calls=false: one tool call
+	// per response, for gateways that drop arguments in parallel batches.
+	DisableParallelToolCalls bool `json:"disable_parallel_tool_calls,omitempty"`
 	// Watchdog overrides: nil = package default, ≤0 = disabled.
 	FirstByte *time.Duration `json:"-"`
 	Idle      *time.Duration `json:"-"`
@@ -252,6 +255,9 @@ func (c *Cliente) corpo(system string, msgs []Mensagem, tools []map[string]any, 
 	}
 	body["tools"] = wireTools
 	body["tool_choice"] = "auto"
+	if c.cfg.DisableParallelToolCalls {
+		body["parallel_tool_calls"] = false
+	}
 	return json.Marshal(body)
 }
 
@@ -338,12 +344,15 @@ type sseChunk struct {
 			Reasoning        *string `json:"reasoning"`
 			ReasoningContent *string `json:"reasoning_content"`
 			ToolCalls        []struct {
-				Index    int    `json:"index"`
+				Index    *int   `json:"index"`
 				ID       string `json:"id"`
 				Type     string `json:"type"`
 				Function struct {
-					Name      string `json:"name"`
-					Arguments string `json:"arguments"`
+					Name string `json:"name"`
+					// Raw, not string: some upstreams send the arguments as a
+					// JSON object instead of the encoded string the OpenAI
+					// contract asks for (see argFragment).
+					Arguments json.RawMessage `json:"arguments"`
 				} `json:"function"`
 			} `json:"tool_calls"`
 		} `json:"delta"`
@@ -424,6 +433,9 @@ func readRound(resp *http.Response, ctx context.Context, start time.Time, kick f
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 0, 1<<20), 4<<20)
 	pending := map[int]*oaiCall{}
+	// byID resolves a delta that carries an id but no index (or an index that
+	// already belongs to another call) back to the call it continues.
+	byID := map[string]int{}
 	for sc.Scan() {
 		select {
 		case <-ctx.Done():
@@ -450,19 +462,31 @@ func readRound(resp *http.Response, ctx context.Context, start time.Time, kick f
 		}
 		if len(ch.Choices) > 0 {
 			d := &ch.Choices[0].Delta
-			for _, tc := range d.ToolCalls {
-				if pending[tc.Index] == nil {
-					pending[tc.Index] = &oaiCall{ID: tc.ID, Type: "function"}
+			for pos, tc := range d.ToolCalls {
+				i := pos
+				if tc.Index != nil {
+					i = *tc.Index
 				}
 				if tc.ID != "" {
-					pending[tc.Index].ID = tc.ID
+					if known, ok := byID[tc.ID]; ok {
+						i = known
+					} else if p := pending[i]; p != nil && p.ID != "" && p.ID != tc.ID {
+						// Same index, new id: a new call the upstream did not
+						// number. It gets the next free slot.
+						i = nextFree(pending)
+					}
+					byID[tc.ID] = i
+				}
+				if pending[i] == nil {
+					pending[i] = &oaiCall{ID: tc.ID, Type: "function"}
+				}
+				if tc.ID != "" {
+					pending[i].ID = tc.ID
 				}
 				if tc.Function.Name != "" {
-					pending[tc.Index].Function.Name += tc.Function.Name
+					pending[i].Function.Name += tc.Function.Name
 				}
-				if tc.Function.Arguments != "" {
-					pending[tc.Index].Function.Arguments += tc.Function.Arguments
-				}
+				pending[i].Function.Arguments += argFragment(tc.Function.Arguments)
 			}
 			if d.Content != nil {
 				r.Texto += *d.Content
@@ -515,6 +539,35 @@ func readRound(resp *http.Response, ctx context.Context, start time.Time, kick f
 	r.FimPorTexto = len(r.Tools) == 0
 	r.Dur = time.Since(start)
 	return r, nil
+}
+
+// argFragment turns one streamed arguments delta into text. The contract is a
+// JSON-encoded string fragment; an upstream that sends the whole object
+// instead gets it verbatim, and null/absent adds nothing.
+func argFragment(raw json.RawMessage) string {
+	t := strings.TrimSpace(string(raw))
+	if t == "" || t == "null" {
+		return ""
+	}
+	if t[0] == '"' {
+		var s string
+		if json.Unmarshal(raw, &s) == nil {
+			return s
+		}
+		return ""
+	}
+	return t
+}
+
+// nextFree is the slot after the highest index in use.
+func nextFree(pending map[int]*oaiCall) int {
+	n := 0
+	for i := range pending {
+		if i >= n {
+			n = i + 1
+		}
+	}
+	return n
 }
 
 // ── /models catalog ──────────────────────────────────────────────────────
