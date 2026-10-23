@@ -79,3 +79,31 @@ func TestIntermediateTextBecomesNotaBeforeTools(t *testing.T) {
 		t.Fatalf("events:\n got %q\nwant %q", got, want)
 	}
 }
+
+// The intermediate text is persisted with its calls: a resumed session
+// (session/load, /resume) must show the model it spoke between tools, or it
+// learns from its own history to run tools in silence.
+func TestIntermediateTextSurvivesResume(t *testing.T) {
+	srv := textAndToolProvider()
+	defer srv.Close()
+	st := testStore(t)
+	const id = "bh-20240101120000-0001"
+	s := NewSessionWithStore(fakeConfig(t, srv.URL), st, id)
+	s.Injetar(tools.Spec{Name: "probe", Schema: map[string]any{"type": "object"},
+		Exec: func(context.Context, string, json.RawMessage) (string, error) { return "ok", nil }})
+	if err := s.Send(context.Background(), &notaRenderer{}, t.TempDir(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	s2 := NewSessionWithStore(config.Config{}, st, id)
+	if err := s2.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	var roles []string
+	for _, m := range s2.History() {
+		roles = append(roles, m.Role+":"+m.Conteudo+m.ToolName)
+	}
+	want := "user:go,assistant:let me check,tool_call:probe,tool_result:okprobe,assistant:done"
+	if got := strings.Join(roles, ","); got != want {
+		t.Fatalf("resumed history:\n got %q\nwant %q", got, want)
+	}
+}
