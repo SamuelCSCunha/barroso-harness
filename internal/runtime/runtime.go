@@ -97,39 +97,38 @@ func echoExcerpt(output string) string {
 }
 
 // prune replaces large, old tool results with a short stub. Pruning is
-// monotonic within the turn — it keeps the request prefix stable.
-//
-// deficit is in BYTES of content (convert a token deficit with
-// budget.Estimador.Bytes). Passing tokens here freed ~1/3 of what was needed
-// and the turn died with "pruning did not free enough" (2026-10-22).
+// monotonic within the turn — it keeps the request prefix stable. Results in
+// the last tail messages are kept while older ones can cover the deficit;
+// when they cannot (a short conversation whose few results are huge), the
+// tail is pruned too, oldest first, sparing only the latest result.
 func prune(h []dealer.Mensagem, floor *int, deficit int) []dealer.Mensagem {
 	if deficit <= 0 {
 		return nil
 	}
 	const tail = 24
-	if len(h) <= tail {
-		return nil
-	}
 	pruned := append([]dealer.Mensagem(nil), h...)
-	limit := len(pruned) - tail
-	if limit <= *floor {
-		return nil
-	}
+	limit := max(len(pruned)-tail, 0)
 	freed := 0
 	// next is where the following prune resumes: only past what was actually
 	// visited. Jumping straight to limit after an early stop left the
 	// unvisited results unprunable for the rest of the turn.
-	next := limit
+	next := max(limit, *floor)
 	for i := *floor; i < limit; i++ {
-		if pruned[i].Role != "tool_result" || len(pruned[i].Conteudo) < 2048 {
+		if !stubResult(pruned, i, &freed) {
 			continue
 		}
-		before := len(pruned[i].Conteudo)
-		pruned[i].Conteudo = fmt.Sprintf("(earlier result of %s compacted by the guardrail; request it again with a smaller range if you need the content)", pruned[i].ToolName)
-		freed += before - len(pruned[i].Conteudo)
 		if freed >= deficit {
 			next = i + 1
 			break
+		}
+	}
+	if freed < deficit {
+		last := len(pruned) - 1
+		for last >= 0 && pruned[last].Role != "tool_result" {
+			last--
+		}
+		for i := max(limit, *floor); i < last && freed < deficit; i++ {
+			stubResult(pruned, i, &freed)
 		}
 	}
 	if freed < deficit {
@@ -137,6 +136,18 @@ func prune(h []dealer.Mensagem, floor *int, deficit int) []dealer.Mensagem {
 	}
 	*floor = next
 	return pruned
+}
+
+// stubResult replaces h[i] with the guardrail stub when it is a tool result
+// of at least 2 KiB, adding the bytes saved to freed.
+func stubResult(h []dealer.Mensagem, i int, freed *int) bool {
+	if h[i].Role != "tool_result" || len(h[i].Conteudo) < 2048 {
+		return false
+	}
+	before := len(h[i].Conteudo)
+	h[i].Conteudo = fmt.Sprintf("(earlier result of %s compacted by the guardrail; request it again with a smaller range if you need the content)", h[i].ToolName)
+	*freed += before - len(h[i].Conteudo)
+	return true
 }
 
 // contextOverflow reports whether a provider error means the request

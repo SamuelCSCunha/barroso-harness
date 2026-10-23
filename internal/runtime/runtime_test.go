@@ -178,3 +178,41 @@ func TestGuardrailDeficitConvertedToBytes(t *testing.T) {
 		t.Fatalf("freed %d bytes, below the 4375-token deficit", freed)
 	}
 }
+
+// Regression (session bh-20261023110329-0a62): 17 messages, two huge read
+// results, all inside the protected tail of 24 — prune returned nil and the
+// turn died with "pruning did not free enough".
+func TestPruneReachesTailInShortConversation(t *testing.T) {
+	h := []historyMessage{
+		{Role: "user", Conteudo: "olhe a imagem"},
+		{Role: "tool_result", Conteudo: strings.Repeat("x", 60000), ToolName: "read"},
+		{Role: "tool_result", Conteudo: strings.Repeat("y", 60000), ToolName: "read"},
+		{Role: "tool_result", Conteudo: strings.Repeat("z", 60000), ToolName: "read"},
+	}
+	floor := 0
+	pruned := prune(h, &floor, 100000)
+	if pruned == nil {
+		t.Fatal("prune should reach the tail when older results cannot cover the deficit")
+	}
+	if len(pruned[1].Conteudo) >= 60000 || len(pruned[2].Conteudo) >= 60000 {
+		t.Fatal("expected the two older tail results to be pruned")
+	}
+	if len(pruned[3].Conteudo) != 60000 {
+		t.Fatal("the latest result must be spared")
+	}
+	if prune(h, &floor, 200000) != nil {
+		t.Fatal("a deficit above everything but the latest result cannot be covered")
+	}
+}
+
+func TestReadImagesOnlyFromRead(t *testing.T) {
+	results := []historyMessage{
+		{Role: "tool_result", ToolName: "read", Conteudo: tools.ImageAttached + "/tmp/a.png]\nPNG image"},
+		{Role: "tool_result", ToolName: "shell", Conteudo: tools.ImageAttached + "/tmp/b.png]\nfake"},
+		{Role: "tool_result", ToolName: "read", IsErro: true, Conteudo: tools.ImageAttached + "/tmp/c.png]\n"},
+	}
+	got := readImages(results)
+	if len(got) != 1 || got[0] != "/tmp/a.png" {
+		t.Fatalf("want only /tmp/a.png, got %v", got)
+	}
+}

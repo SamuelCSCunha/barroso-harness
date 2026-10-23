@@ -3,15 +3,18 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -240,7 +243,8 @@ func specFileRead() Spec {
 			"`N: text`; the prefix is for reference and is not part of the file content. " +
 			"Prefer one larger read over many small slices: read the WHOLE file when it is reasonably sized " +
 			"(a few thousand lines); for very large files use offset (first line, 1-based) and limit, " +
-			"e.g. around a line found with grep. The result states the delivered range and the total line count.",
+			"e.g. around a line found with grep. The result states the delivered range and the total line count. " +
+			"Images (PNG, JPEG, GIF, WebP) are attached to the conversation so you can see them; other binary files are refused.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -262,9 +266,22 @@ func specFileRead() Spec {
 			if c.Path == "" {
 				return "", fmt.Errorf("path is required")
 			}
-			b, err := os.ReadFile(resolvePath(cwd, c.Path))
+			p := resolvePath(cwd, c.Path)
+			b, err := os.ReadFile(p)
 			if err != nil {
 				return "", err
+			}
+			// Binary content dumped as text lines is noise to the model and, JSON
+			// escaped, several times its size in the request: a 282 KB PNG read
+			// twice filled a 250k-token window (session bh-20261023110329-0a62).
+			if mime := imageType(b); mime != "" {
+				if len(b) > maxImageBytes {
+					return "", fmt.Errorf("%s is a %s image of %d bytes, above the %d-byte limit for attaching images", c.Path, mime, len(b), maxImageBytes)
+				}
+				return ImageAttached + p + "]\n" + fmt.Sprintf("%s image, %d bytes. It is attached to the conversation right after this result, so you can see it.", mime, len(b)), nil
+			}
+			if isBinary(b) {
+				return "", fmt.Errorf("%s is a binary file (%d bytes, %s); read only shows text — inspect it with shell (file, strings, xxd) if you need to", c.Path, len(b), http.DetectContentType(b))
 			}
 			lines := strings.Split(strings.TrimSuffix(string(b), "\n"), "\n")
 			total := len(lines)
@@ -291,6 +308,36 @@ func specFileRead() Spec {
 			return truncate(sb.String(), outputCap), nil
 		},
 	}
+}
+
+// ImageAttached starts the result of a read on an image file; the runtime
+// attaches the path that follows (up to "]") as an image to the conversation.
+const ImageAttached = "[image attached: "
+
+// maxImageBytes caps an image attached by read (providers reject large data URLs).
+const maxImageBytes = 10 << 20
+
+// imageType returns the MIME type of an image the model can see, or "".
+func imageType(b []byte) string {
+	switch t := http.DetectContentType(b); t {
+	case "image/png", "image/jpeg", "image/gif", "image/webp":
+		return t
+	}
+	return ""
+}
+
+// isBinary reports content that is not text: a NUL byte or invalid UTF-8 in
+// the first 8 KiB.
+func isBinary(b []byte) bool {
+	sample := b[:min(len(b), 8<<10)]
+	if bytes.IndexByte(sample, 0) >= 0 {
+		return true
+	}
+	// The sample may end in the middle of a multi-byte rune: drop that tail.
+	for cut := 0; cut < utf8.UTFMax-1 && len(sample) < len(b) && !utf8.Valid(sample); cut++ {
+		sample = sample[:len(sample)-1]
+	}
+	return !utf8.Valid(sample)
 }
 
 // ── append ─────────────────────────────────────────────

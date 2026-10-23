@@ -577,6 +577,14 @@ func (s *Session) SendWithImages(ctx context.Context, r Renderer, cwd, prompt st
 		}
 		working = append(working, turn...)
 		working = append(working, results...)
+		// Images opened with read reach the model as images: the tool result
+		// only names the file, and a user message right after the round's
+		// results carries it (tool messages cannot hold images).
+		if imgs := readImages(results); len(imgs) > 0 {
+			note := "[images opened with read]"
+			working = append(working, dealer.Mensagem{Role: "user", Conteudo: note, Images: imgs})
+			s.record("user_message", map[string]any{"role": "user", "content": note, "images": imgs})
+		}
 		if notice := loop.observe(round.Tools); notice != "" {
 			// A nudge, not a stop: the turn keeps going, but the model is told it
 			// is repeating itself (Gemini CLI stops at 5 identical calls in a row;
@@ -625,6 +633,22 @@ func toolSchemas(list []tools.Spec) []map[string]any {
 		})
 	}
 	return schemas
+}
+
+// readImages returns the image paths that read results in the round asked to
+// attach (tools.ImageAttached).
+func readImages(results []dealer.Mensagem) []string {
+	var paths []string
+	for _, m := range results {
+		if m.IsErro || m.ToolName != "read" || !strings.HasPrefix(m.Conteudo, tools.ImageAttached) {
+			continue
+		}
+		rest := strings.TrimPrefix(m.Conteudo, tools.ImageAttached)
+		if end := strings.Index(rest, "]\n"); end > 0 {
+			paths = append(paths, rest[:end])
+		}
+	}
+	return paths
 }
 
 // toolOutcome is one executed call of a round.
