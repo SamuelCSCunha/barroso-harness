@@ -96,6 +96,9 @@ type Agente struct {
 	writeMu sync.Mutex   // serializes writes to the wire
 	seq     atomic.Int64 // process-unique tool call ids; aligned on 386
 	running sync.WaitGroup
+	// compaction: the client advertised clientCapabilities.session.compaction
+	// in initialize, so compaction_update may be sent (see Guardrail).
+	compaction atomic.Bool
 }
 
 // Novo creates the agent over cfg, with the production factory.
@@ -227,6 +230,9 @@ func (a *Agente) initialize(w io.Writer, req Request) error {
 	if f, ok := p.ProtocolVersion.(float64); ok && int(f) > 0 {
 		v = int(f)
 	}
+	// Omitted or null means unsupported; {} advertises the whole contract.
+	sess, _ := p.ClientCapabilities["session"].(map[string]any)
+	a.compaction.Store(sess != nil && sess["compaction"] != nil)
 	return a.respond(w, NovaResposta(req.ID, map[string]any{
 		"protocolVersion": v,
 		"agentCapabilities": map[string]any{
@@ -577,7 +583,8 @@ func (a *Agente) Esperar() { a.running.Wait() }
 //	ToolComecou  → tool_call in_progress, kind "other", arguments as rawInput
 //	ToolTerminou → tool_call_update with the final status and an output excerpt
 //	Tool / Eco   → fallback when the runtime does not use the live path
-//	Guardrail    → agent_message_chunk with the compaction notice
+//	Guardrail    → compaction_update, or the opencode/compaction marker on
+//	               session_info_update when the client lacks the capability
 //	Tokens       → nothing: the usage footer is a local UI matter, not protocol
 type acpRenderer struct {
 	a       *Agente
@@ -693,13 +700,41 @@ func (r *acpRenderer) Eco(output string) {
 	})
 }
 
+// Guardrail reports a compaction as session STATE, never as conversation
+// content. As an agent_message_chunk it reached the client as the model's own
+// words: one "[guardrail] …" bubble per prune, a dozen in five minutes on a long
+// turn, and the chat read as an agent that was doing nothing (2026-10-22).
+//
+// ACP has a dedicated update for this, gated by the client's capability:
+//   - client advertised session.compaction → compaction_update with a terminal
+//     status (the guardrail prune is instant, and "one completed update is
+//     enough" per the spec);
+//   - otherwise the spec forbids compaction_update, and this follows OpenCode's
+//     fallback: session_info_update carrying _meta["opencode/compaction"]. A
+//     client that does not know the marker ignores it, which is the point.
 func (r *acpRenderer) Guardrail(proactive bool) {
-	text := "[guardrail] reactive compaction: the provider refused due to context"
-	if proactive {
-		text = "[guardrail] proactive compaction due to predicted overflow"
+	id := fmt.Sprintf("cmp-%d", r.a.seq.Add(1))
+	if r.a.compaction.Load() {
+		r.emit("compaction_update", map[string]any{
+			"compactionId": id,
+			"status":       "completed",
+		})
+		return
 	}
-	r.emit("agent_message_chunk", map[string]any{
-		"content": map[string]any{"type": "text", "text": text},
+	reason := "auto"
+	if !proactive {
+		// The provider rejected the request size; still automatic, but the
+		// detail is worth keeping for whoever reads the marker.
+		reason = "overflow"
+	}
+	r.emit("session_info_update", map[string]any{
+		"_meta": map[string]any{
+			"opencode/compaction": map[string]any{
+				"status":    "completed",
+				"messageId": id,
+				"reason":    reason,
+			},
+		},
 	})
 }
 

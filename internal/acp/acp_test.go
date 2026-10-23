@@ -1099,24 +1099,68 @@ func TestRenderFailedToolBecomesStatusFailed(t *testing.T) {
 	}
 }
 
-func TestRenderGuardrailBecomesTextChunk(t *testing.T) {
+// guardrailTurn runs one turn that compacts and answers "ok", after an
+// initialize with the given client capabilities (nil = none), and returns the
+// raw update line of the compaction plus every update emitted.
+func guardrailTurn(t *testing.T, caps map[string]any) (string, []line) {
+	t.Helper()
 	f := &fakeTurn{started: make(chan struct{}), compact: true, text: "ok"}
 	h := setup(t, f)
+	init := map[string]any{"protocolVersion": 1}
+	if caps != nil {
+		init["clientCapabilities"] = caps
+	}
+	h.send(t, MetInitialize, 1, init)
 	h.send(t, MetSessionNovo, 2, map[string]any{"cwd": "."})
-	ls := waitLines(t, h.out, 1)
+	ls := waitLines(t, h.out, 2)
 	h.send(t, MetPrompt, 3, map[string]any{
-		"sessionId": ls[0].Result["sessionId"],
+		"sessionId": ls[1].Result["sessionId"],
 		"prompt":    []map[string]string{{"type": "text", "text": "run"}},
 	})
-	ls = waitLines(t, h.out, 4)
-	if ls[1].Params.Update.SessionUpdate != "agent_message_chunk" {
-		t.Fatalf("guardrail should become a text chunk, got %+v", ls[1])
+	ls = waitLines(t, h.out, 5)
+	raw := strings.Split(strings.TrimSuffix(h.out.String(), "\n"), "\n")
+	return raw[2], ls[2:]
+}
+
+// The compaction notice is session state, not the model talking: it must never
+// arrive as agent_message_chunk, which the client draws as an assistant bubble
+// (one per prune, "[guardrail] proactive compaction…" a dozen times in 5 min).
+func TestRenderGuardrailIsNotAMessage(t *testing.T) {
+	for _, caps := range []map[string]any{nil, {"session": map[string]any{"compaction": map[string]any{}}}} {
+		_, ups := guardrailTurn(t, caps)
+		for _, u := range ups {
+			for _, b := range u.Params.Update.Content.Blocks {
+				if strings.Contains(b.Text, "guardrail") || strings.Contains(b.Text, "compaction") {
+					t.Fatalf("compaction leaked into %s: %q", u.Params.Update.SessionUpdate, b.Text)
+				}
+			}
+		}
+		if ups[0].Params.Update.SessionUpdate == "agent_message_chunk" || ups[0].Params.Update.SessionUpdate == "agent_thought_chunk" {
+			t.Fatalf("compaction must not be a chunk, got %s", ups[0].Params.Update.SessionUpdate)
+		}
 	}
-	if n := len(ls[1].Params.Update.Content.Blocks); n != 1 {
-		t.Fatalf("guardrail chunk should have 1 block, got %+v", ls[1].Params.Update.Content)
+}
+
+// With the client's session.compaction capability, the spec's dedicated update.
+func TestRenderGuardrailCompactionUpdateWhenAdvertised(t *testing.T) {
+	raw, ups := guardrailTurn(t, map[string]any{"session": map[string]any{"compaction": map[string]any{}}})
+	if ups[0].Params.Update.SessionUpdate != "compaction_update" {
+		t.Fatalf("expected compaction_update, got %s", raw)
 	}
-	if !strings.Contains(ls[1].Params.Update.Content.Blocks[0].Text, "guardrail") {
-		t.Fatalf("chunk text should mention the guardrail: %q", ls[1].Params.Update.Content.Blocks[0].Text)
+	if ups[0].Params.Update.Status != "completed" || !strings.Contains(raw, `"compactionId":"cmp-`) {
+		t.Fatalf("compaction_update needs an id and a terminal status: %s", raw)
+	}
+}
+
+// Without the capability the spec forbids compaction_update; the OpenCode
+// marker goes out instead, and a client that does not know it ignores it.
+func TestRenderGuardrailMarkerWithoutCapability(t *testing.T) {
+	raw, ups := guardrailTurn(t, nil)
+	if ups[0].Params.Update.SessionUpdate != "session_info_update" {
+		t.Fatalf("expected session_info_update, got %s", raw)
+	}
+	if !strings.Contains(raw, `"opencode/compaction"`) || !strings.Contains(raw, `"reason":"auto"`) || !strings.Contains(raw, `"status":"completed"`) {
+		t.Fatalf("marker incomplete: %s", raw)
 	}
 }
 
