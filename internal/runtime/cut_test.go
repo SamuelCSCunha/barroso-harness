@@ -126,6 +126,55 @@ func TestCutNeverGivesUp(t *testing.T) {
 	}
 }
 
+// Empty final answer with a plain stop: the SAME transcript is re-requested
+// (nothing is appended — not even a synthetic user note), and the second
+// attempt's text is the answer.
+func TestEmptyFinalRegensTransparent(t *testing.T) {
+	srv, seen := cutProvider(t, []step{{"", false, "stop"}, {"", false, "stop"}, {"pronto", false, "stop"}})
+	var sb strings.Builder
+	if err := Turno(&sb, config.Config{BaseURL: srv.URL, Model: "m", APIKey: "k"}, t.TempDir(), "hi"); err != nil {
+		t.Fatal(err)
+	}
+	v := *seen
+	if len(v) != 3 {
+		t.Fatalf("requests = %d; want 1 round + 1 regen + 1 final success", len(v))
+	}
+	for i, sev := range v {
+		if sev.Last != "hi" {
+			t.Fatalf("request %d last message = %q; the regen must not append anything", i, sev.Last)
+		}
+	}
+	if !strings.Contains(sb.String(), "pronto") {
+		t.Fatalf("output:\n%s", sb.String())
+	}
+}
+
+// Exhausted regens: the turn fails with an honest error instead of a silent
+// "(sem resposta)" — and nothing fake ever entered the history.
+func TestEmptyFinalGivesUpHonestly(t *testing.T) {
+	steps := []step{}
+	for i := 0; i < 6; i++ {
+		steps = append(steps, step{"", false, "stop"})
+	}
+	srv, seen := cutProvider(t, steps)
+	var sb strings.Builder
+	err := Turno(&sb, config.Config{BaseURL: srv.URL, Model: "m", APIKey: "k"}, t.TempDir(), "hi")
+	if err == nil {
+		t.Fatal("an always-empty provider must fail the turn")
+	}
+	if !strings.Contains(err.Error(), "empty") || !strings.Contains(err.Error(), `"stop"`) {
+		t.Fatalf("error = %v", err)
+	}
+	if n := len(*seen); n != 3 {
+		t.Fatalf("requests = %d; want 1 + 2 regens with the cap of 2", n)
+	}
+	for i, sev := range *seen {
+		if sev.Last != "hi" {
+			t.Fatalf("request %d last message = %q; regens must not append", i, sev.Last)
+		}
+	}
+}
+
 type thinkingRenderer struct {
 	*RendererPuro
 	thought string

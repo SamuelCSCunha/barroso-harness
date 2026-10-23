@@ -82,6 +82,11 @@ type Rodada struct {
 	// Cortada: the provider stopped at the output cap (finish_reason
 	// "length"). Text and tool calls may be incomplete.
 	Cortada bool
+	// Fim is the raw finish_reason of the round ("stop", "length",
+	// "tool_calls", ...). Empty when the stream ended without one (cut
+	// stream) — the runtime uses it to tell an honest empty answer from a
+	// stream that died mid-think.
+	Fim string
 	// Raciocinio is the reasoning the provider exposed (reasoning or
 	// reasoning_content in the delta) and DurRaciocinio the time from the
 	// start of the request to its last chunk. Display only; never sent back
@@ -471,8 +476,11 @@ func readRound(resp *http.Response, ctx context.Context, start time.Time, kick f
 				r.Raciocinio += *p
 				r.DurRaciocinio = time.Since(start)
 			}
-			if f := ch.Choices[0].FinishReason; f != nil && *f == "length" {
-				r.Cortada = true
+			if f := ch.Choices[0].FinishReason; f != nil && *f != "" {
+				r.Fim = *f
+				if *f == "length" {
+					r.Cortada = true
+				}
 			}
 		}
 		if ch.Usage != nil && r.Usage == nil {

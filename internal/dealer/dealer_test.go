@@ -185,6 +185,38 @@ func TestRunSendsEffort(t *testing.T) {
 	}
 }
 
+// TestRunCapturesFinishReason pins the contract the runtime's empty-answer
+// regen relies on: Rodada.Fim carries the raw finish_reason, and "length"
+// still marks the round as cut.
+func TestRunCapturesFinishReason(t *testing.T) {
+	rodar := func(reason string) *Rodada {
+		t.Helper()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			payload, _ := json.Marshal(map[string]any{
+				"choices": []map[string]any{{
+					"delta":         map[string]any{"content": "x"},
+					"finish_reason": reason,
+				}},
+			})
+			w.Write([]byte("data: " + string(payload) + "\n\ndata: [DONE]\n\n"))
+		}))
+		defer srv.Close()
+		c := Novo(Config{BaseURL: srv.URL, Model: "m", APIKey: "k"})
+		rd, err := c.Rodar("sys", nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rd
+	}
+	if rd := rodar("stop"); rd.Fim != "stop" || rd.Cortada {
+		t.Fatalf("Fim=%q Cortada=%v; want stop/false", rd.Fim, rd.Cortada)
+	}
+	if rd := rodar("length"); rd.Fim != "length" || !rd.Cortada {
+		t.Fatalf("Fim=%q Cortada=%v; want length/true", rd.Fim, rd.Cortada)
+	}
+}
+
 func TestMain(m *testing.M) { os.Exit(m.Run()) }
 
 // TestErrorSummaryHTMLDoesNotDumpMarkup pins the requested fix: when the

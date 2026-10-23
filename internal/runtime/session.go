@@ -306,6 +306,14 @@ func (s *Session) SendWithImages(ctx context.Context, r Renderer, cwd, prompt st
 	// Consecutive cuts at the output limit, and the limit of the retry when the
 	// cut came back empty (the model spent everything thinking).
 	extraLimit := 0
+	// Empty final answers: the round that ends the turn may come back with no
+	// text and no tool calls (GLM free spends the whole budget on reasoning
+	// and stops, measured 2026-10-22). Regen (re-request the SAME transcript,
+	// nothing appended) up to the cap, then fail honestly. Measured in the
+	// opencode runner: a stream dead BEFORE output re-runs the step
+	// transparently (Retry); only interrupted/length flows get a synthetic
+	// continuation note, and no harness appends a fake user message.
+	regens := 0
 	reactiveDone := false
 	compacted := false
 	// Whole-turn totals: each tool cycle spends request and response, and the
@@ -486,6 +494,30 @@ func (s *Session) SendWithImages(ctx context.Context, r Renderer, cwd, prompt st
 		}
 		extraLimit = 0
 		if len(round.Tools) == 0 {
+			if strings.TrimSpace(round.Texto) == "" {
+				// An empty final round is never an answer: the provider
+				// ended the round without visible content and without tool
+				// calls (truncated reasoning, empty content). Regen
+				// transparently — re-request the SAME transcript (nothing is
+				// appended; the sticky prefix cache survives), never deliver
+				// an empty answer. A cut stream (no finish reason) and a
+				// plain stop both regen; a length finish is handled above.
+				if regens < maxRegensVazia {
+					regens++
+					gastados := 0
+					if round.Usage != nil {
+						gastados = round.Usage.OutputTokens
+					}
+					s.record("regem_vazia", map[string]any{
+						"cycle":         cycle,
+						"fim":           round.Fim,
+						"output_tokens": gastados,
+						"tentativa":     regens,
+					})
+					continue
+				}
+				return fmt.Errorf("the provider returned an empty answer after %d attempts (finish_reason %q); no text and no tool calls — try lower reasoning effort or repeat the request", regens+1, round.Fim)
+			}
 			r.Resposta(round.Texto)
 			r.Tokens(promptUsage, outputUsage, time.Since(start), compacted)
 			working = append(working, dealer.Mensagem{Role: "assistant", Conteudo: round.Texto, Usage: round.Usage})
@@ -598,9 +630,9 @@ var sequentialTools = map[string]bool{
 	"instructions_delete": true,
 	"skill_create":        true,
 	"skill_remove":        true,
-	"context_compact":         true,
-	"context_write":           true,
-	"context_append":          true,
+	"context_compact":     true,
+	"context_write":       true,
+	"context_append":      true,
 	"subagent":            true,
 }
 
@@ -786,6 +818,12 @@ func runTool(ctx context.Context, list []tools.Spec, cwd string, call dealer.Too
 const (
 	cutNotice      = "[output limit] Your last response hit the output token limit and was cut off. Continue exactly where you stopped, without repeating what you already wrote, and break the remaining work into smaller pieces."
 	cutNoticeTools = "Tool calls in the cut response were NOT executed because their arguments may be incomplete; call them again, with smaller arguments if needed."
+
+	// maxRegensVazia bounds the transparent regen of an empty final round
+	// (thinking model burnt the budget and answered nothing, measured GLM
+	// free via the zen lane): the same transcript is re-requested up to this
+	// many times before the turn fails honestly.
+	maxRegensVazia = 2
 )
 
 // jsonLen is the serialized size of v (0 when it does not serialize).
