@@ -566,6 +566,10 @@ func (s *Session) SendWithImages(ctx context.Context, r Renderer, cwd, prompt st
 				rn.Nota(round.Texto)
 			}
 			turn = append(turn, dealer.Mensagem{Role: "assistant", Conteudo: round.Texto, Usage: round.Usage})
+			// The text enters the log with its calls: without it, session/load and
+			// /resume rebuild a history of silent tool rounds, and the model copies
+			// that pattern and stops speaking between tools (Bruce, 2026-10-23).
+			s.record("assistant", map[string]any{"role": "assistant", "content": round.Texto})
 		}
 		results := make([]dealer.Mensagem, 0, len(round.Tools))
 		for _, call := range round.Tools {
