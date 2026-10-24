@@ -67,6 +67,21 @@ type Mensagem struct {
 	// full screen as [Image N]). They are read and inlined as base64 data URLs
 	// on every request, so the model needs vision support.
 	Images []string `json:"images,omitempty"`
+	// HookContext is what prompt hooks added to a user message. Conteudo stays
+	// what the user typed (screens, titles and ACP replay read it); only the
+	// request to the model joins the two (see TextoModelo).
+	HookContext string `json:"hook_context,omitempty"`
+}
+
+// TextoModelo is the text of a message as the model receives it: Conteudo,
+// plus the hook context in a <hook-context> block. The context is escaped so
+// it cannot close the block and pass as something the user typed.
+func (m Mensagem) TextoModelo() string {
+	if m.HookContext == "" {
+		return m.Conteudo
+	}
+	esc := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace(m.HookContext)
+	return m.Conteudo + "\n\n<hook-context>\n" + esc + "\n</hook-context>"
 }
 
 // ToolChamada is a tool call emitted by the model in a round.
@@ -210,10 +225,10 @@ func (c *Cliente) corpo(system string, msgs []Mensagem, tools []map[string]any, 
 		switch m.Role {
 		case "user":
 			if len(m.Images) > 0 {
-				list = append(list, oaiMsg{Role: "user", Content: userParts(m.Conteudo, m.Images, inline)})
+				list = append(list, oaiMsg{Role: "user", Content: userParts(m.TextoModelo(), m.Images, inline)})
 				continue
 			}
-			list = append(list, oaiMsg{Role: "user", Content: strNil(m.Conteudo)})
+			list = append(list, oaiMsg{Role: "user", Content: strNil(m.TextoModelo())})
 		case "assistant", "tool_call":
 			a := oaiMsg{Role: "assistant", Content: strNil(m.Conteudo)}
 			if m.ToolID != "" {
@@ -255,7 +270,8 @@ func (c *Cliente) corpo(system string, msgs []Mensagem, tools []map[string]any, 
 	}
 	body["tools"] = wireTools
 	body["tool_choice"] = "auto"
-	if c.cfg.DisableParallelToolCalls {
+	if c.cfg.DisableParallelToolCalls && len(wireTools) > 0 {
+		// The field is only meaningful (and only accepted) alongside tools.
 		body["parallel_tool_calls"] = false
 	}
 	return json.Marshal(body)
@@ -433,9 +449,13 @@ func readRound(resp *http.Response, ctx context.Context, start time.Time, kick f
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 0, 1<<20), 4<<20)
 	pending := map[int]*oaiCall{}
-	// byID resolves a delta that carries an id but no index (or an index that
-	// already belongs to another call) back to the call it continues.
+	// byID maps a call id to its slot; slotOf maps an upstream index to the
+	// slot it was resolved to (an index can be remapped when a new id arrives
+	// on an index already taken). cur is the slot of the last delta, where an
+	// indexless, idless continuation belongs.
 	byID := map[string]int{}
+	slotOf := map[int]int{}
+	cur := -1
 	for sc.Scan() {
 		select {
 		case <-ctx.Done():
@@ -463,20 +483,8 @@ func readRound(resp *http.Response, ctx context.Context, start time.Time, kick f
 		if len(ch.Choices) > 0 {
 			d := &ch.Choices[0].Delta
 			for pos, tc := range d.ToolCalls {
-				i := pos
-				if tc.Index != nil {
-					i = *tc.Index
-				}
-				if tc.ID != "" {
-					if known, ok := byID[tc.ID]; ok {
-						i = known
-					} else if p := pending[i]; p != nil && p.ID != "" && p.ID != tc.ID {
-						// Same index, new id: a new call the upstream did not
-						// number. It gets the next free slot.
-						i = nextFree(pending)
-					}
-					byID[tc.ID] = i
-				}
+				i := resolveSlot(pending, byID, slotOf, cur, pos, tc.ID, tc.Index)
+				cur = i
 				if pending[i] == nil {
 					pending[i] = &oaiCall{ID: tc.ID, Type: "function"}
 				}
@@ -486,7 +494,13 @@ func readRound(resp *http.Response, ctx context.Context, start time.Time, kick f
 				if tc.Function.Name != "" {
 					pending[i].Function.Name += tc.Function.Name
 				}
-				pending[i].Function.Arguments += argFragment(tc.Function.Arguments)
+				if frag, whole := argFragment(tc.Function.Arguments); whole {
+					// A whole JSON object is the complete arguments: a repeat
+					// replaces the previous one instead of gluing two documents.
+					pending[i].Function.Arguments = frag
+				} else {
+					pending[i].Function.Arguments += frag
+				}
 			}
 			if d.Content != nil {
 				r.Texto += *d.Content
@@ -525,13 +539,7 @@ func readRound(resp *http.Response, ctx context.Context, start time.Time, kick f
 	for i := range pending {
 		idx = append(idx, i)
 	}
-	for i := 0; i < len(idx); i++ {
-		for j := i + 1; j < len(idx); j++ {
-			if idx[j] < idx[i] {
-				idx[i], idx[j] = idx[j], idx[i]
-			}
-		}
-	}
+	sort.Ints(idx)
 	for _, i := range idx {
 		call := pending[i]
 		r.Tools = append(r.Tools, ToolChamada{ID: call.ID, Nome: call.Function.Name, Args: call.Function.Arguments})
@@ -542,21 +550,64 @@ func readRound(resp *http.Response, ctx context.Context, start time.Time, kick f
 }
 
 // argFragment turns one streamed arguments delta into text. The contract is a
-// JSON-encoded string fragment; an upstream that sends the whole object
-// instead gets it verbatim, and null/absent adds nothing.
-func argFragment(raw json.RawMessage) string {
+// JSON-encoded string fragment (whole=false, to be concatenated); an upstream
+// that sends the whole object instead gets it verbatim with whole=true, and
+// null/absent adds nothing.
+func argFragment(raw json.RawMessage) (frag string, whole bool) {
 	t := strings.TrimSpace(string(raw))
 	if t == "" || t == "null" {
-		return ""
+		return "", false
 	}
 	if t[0] == '"' {
 		var s string
 		if json.Unmarshal(raw, &s) == nil {
+			return s, false
+		}
+		return "", false
+	}
+	return t, true
+}
+
+// resolveSlot picks the pending slot a tool-call delta belongs to:
+//   - with an id: the slot already known for that id; else the specified
+//     index if it is free; else the next free slot;
+//   - index only: the slot that index was resolved to (slotOf), else the
+//     index itself if free, else the next free slot;
+//   - neither: the current call (cur), and the position in the delta only
+//     while no call has started yet.
+func resolveSlot(pending map[int]*oaiCall, byID map[string]int, slotOf map[int]int, cur, pos int, id string, index *int) int {
+	if id != "" {
+		if known, ok := byID[id]; ok {
+			if index != nil {
+				slotOf[*index] = known
+			}
+			return known
+		}
+		i := nextFree(pending)
+		if index != nil && pending[*index] == nil {
+			i = *index
+		}
+		byID[id] = i
+		if index != nil {
+			slotOf[*index] = i
+		}
+		return i
+	}
+	if index != nil {
+		if s, ok := slotOf[*index]; ok {
 			return s
 		}
-		return ""
+		i := *index
+		if pending[i] != nil {
+			i = nextFree(pending)
+		}
+		slotOf[*index] = i
+		return i
 	}
-	return t
+	if cur >= 0 {
+		return cur
+	}
+	return pos
 }
 
 // nextFree is the slot after the highest index in use.
