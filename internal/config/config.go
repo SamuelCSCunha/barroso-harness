@@ -99,11 +99,15 @@ type Config struct {
 	// encoding is broken; absent keeps the protocol default.
 	DisableParallelToolCalls bool `json:"disable_parallel_tool_calls,omitempty"`
 
-	// PromptHooks run before every user prompt of a persistent session, with
-	// the Claude Code UserPromptSubmit contract: JSON on stdin ({"prompt",
-	// "cwd", "session_id", "hook_event_name"}), and what they print on stdout
-	// - hookSpecificOutput.additionalContext, or plain text - rides along
-	// with the prompt. A failing or slow hook is skipped, never fatal.
+	// PromptHooks run (in parallel) before every user prompt of a persistent
+	// session. The contract is compatible with Claude Code's UserPromptSubmit,
+	// minus the transcript fields (the history lives in SQLite, there is no
+	// transcript_path): JSON on stdin ({"hook_event_name", "prompt", "cwd",
+	// "session_id", "permission_mode": "bypassPermissions"}). On exit 0,
+	// stdout is hookSpecificOutput.additionalContext or plain text, sent to
+	// the model beside the prompt (up to 10,000 chars); decision:"block" or
+	// continue:false blocks the prompt, as does exit 2 (stderr is the
+	// reason). Any other failure or the timeout skips the hook.
 	PromptHooks []PromptHook `json:"prompt_hooks,omitempty"`
 }
 
