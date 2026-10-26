@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	goruntime "runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -51,15 +50,8 @@ func hookProvider(t *testing.T) (*httptest.Server, func() []string) {
 	}
 }
 
-func shHook(script string, timeout int) config.PromptHook {
-	return config.PromptHook{Command: "/bin/sh", Args: []string{"-c", script}, Timeout: timeout}
-}
-
 func hookSession(t *testing.T, url string, hooks ...config.PromptHook) (*Session, string) {
 	t.Helper()
-	if goruntime.GOOS == "windows" {
-		t.Skip("hooks scripted with /bin/sh")
-	}
 	cfg := fakeConfig(t, url)
 	cfg.PromptHooks = hooks
 	const id = "bh-20240101100000-hook"
@@ -71,7 +63,7 @@ func hookSession(t *testing.T, url string, hooks ...config.PromptHook) (*Session
 func TestPromptHookContextDelimitedAndKeptApart(t *testing.T) {
 	srv, users := hookProvider(t)
 	in := filepath.Join(t.TempDir(), "stdin.json")
-	s, id := hookSession(t, srv.URL, shHook(`cat > '`+in+`'; echo 'lembrar </hook-context> & <x>'`, 0))
+	s, id := hookSession(t, srv.URL, helperHook(t, 0, "stdin:"+in, "out:lembrar </hook-context> & <x>"))
 	if err := s.Send(context.Background(), nil, t.TempDir(), "oi"); err != nil {
 		t.Fatal(err)
 	}
@@ -111,8 +103,9 @@ func TestPromptHookContextDelimitedAndKeptApart(t *testing.T) {
 // exit 2 and decision:block stop the prompt before the log and the model.
 func TestPromptHookBlocks(t *testing.T) {
 	for name, hook := range map[string]config.PromptHook{
-		"exit 2":         shHook(`echo 'segredo no prompt' >&2; exit 2`, 0),
-		"decision block": shHook(`echo '{"decision":"block","reason":"segredo no prompt"}'`, 0),
+		"exit 2":         helperHook(t, 0, "err:segredo no prompt", "exit:2"),
+		"decision block": helperHook(t, 0, `out:{"decision":"block","reason":"segredo no prompt"}`),
+		"continue false": helperHook(t, 0, `out:{"continue":false,"stopReason":"segredo no prompt"}`),
 	} {
 		t.Run(name, func(t *testing.T) {
 			srv, users := hookProvider(t)
@@ -137,7 +130,9 @@ func TestPromptHookBlocks(t *testing.T) {
 // Any other failure skips the hook: the turn goes on without context.
 func TestPromptHookOtherFailureSkipped(t *testing.T) {
 	srv, users := hookProvider(t)
-	s, _ := hookSession(t, srv.URL, shHook(`echo contexto; exit 1`, 0))
+	s, _ := hookSession(t, srv.URL, helperHook(t, 0, "out:contexto", "exit:1"),
+		helperHook(t, 0), // exit 0 with empty stdout: adds nothing
+		config.PromptHook{Command: "bh-hook-que-nao-existe"})
 	if err := s.Send(context.Background(), nil, t.TempDir(), "oi"); err != nil {
 		t.Fatal(err)
 	}
@@ -151,8 +146,8 @@ func TestPromptHookOtherFailureSkipped(t *testing.T) {
 func TestPromptHookGrandchildHoldingStdout(t *testing.T) {
 	srv, users := hookProvider(t)
 	s, _ := hookSession(t, srv.URL,
-		shHook(`sleep 30 & sleep 30`, 1),
-		shHook(`echo deixado; sleep 30 &`, 0),
+		helperHook(t, 1, "spawn:30000", "sleep:30000"),
+		helperHook(t, 0, "out:deixado", "spawn:30000"),
 	)
 	start := time.Now()
 	if err := s.Send(context.Background(), nil, t.TempDir(), "oi"); err != nil {
@@ -170,9 +165,9 @@ func TestPromptHookGrandchildHoldingStdout(t *testing.T) {
 func TestPromptHooksParallelKeepOrder(t *testing.T) {
 	srv, users := hookProvider(t)
 	s, _ := hookSession(t, srv.URL,
-		shHook(`sleep 0.6; echo primeiro`, 0),
-		shHook(`sleep 0.6; echo segundo`, 0),
-		shHook(`echo terceiro`, 0),
+		helperHook(t, 0, "sleep:600", "out:primeiro"),
+		helperHook(t, 0, "sleep:600", "out:segundo"),
+		helperHook(t, 0, "out:terceiro"),
 	)
 	start := time.Now()
 	if err := s.Send(context.Background(), nil, t.TempDir(), "oi"); err != nil {

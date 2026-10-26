@@ -98,22 +98,26 @@ func runPromptHook(ctx context.Context, h config.PromptHook, cwd string, in []by
 	out, stderr := &hookBuffer{max: promptHookStdout}, &hookBuffer{max: promptHookMax}
 	cmd.Stdout, cmd.Stderr = out, stderr
 	treeAttrs(cmd)
+	tree := newProcTree()
+	defer tree.close()
 	cmd.WaitDelay = promptHookWait
 	cmd.Cancel = func() error {
-		if cmd.Process != nil {
-			killTree(cmd.Process.Pid)
-		}
+		tree.kill(cmd.Process)
 		return nil
 	}
 	hideWindow(cmd)
-	err := cmd.Run()
+	if err := cmd.Start(); err != nil {
+		return promptHookResult{} // command not found or not runnable: skipped
+	}
+	tree.add(cmd.Process)
+	err := cmd.Wait()
 	var exit *exec.ExitError
 	switch {
 	case err == nil:
 	case errors.Is(err, exec.ErrWaitDelay) && hctx.Err() == nil:
 		// The hook exited 0 but left a descendant holding the pipe: what it
-		// wrote counts, and the leftover group goes down with it.
-		killTree(cmd.Process.Pid)
+		// wrote counts, and the leftover tree goes down with it.
+		tree.kill(cmd.Process)
 	case errors.As(err, &exit) && exit.ExitCode() == 2 && hctx.Err() == nil:
 		// Exit 2 blocks, with stderr (or the JSON reason) as the reason.
 		r := parseHookOutput(out)

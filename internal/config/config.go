@@ -42,6 +42,9 @@ const (
 type Provider struct {
 	BaseURL string `json:"base_url"`
 	APIKey  string `json:"api_key,omitempty"`
+	// DisableParallelToolCalls turns parallel tool calls off for this
+	// provider only (see Config.DisableParallelToolCalls).
+	DisableParallelToolCalls bool `json:"disable_parallel_tool_calls,omitempty"`
 }
 
 // Config is the persisted harness configuration.
@@ -96,7 +99,8 @@ type Config struct {
 
 	// DisableParallelToolCalls asks OpenAI-compatible providers to emit only
 	// one tool call per response. Useful when a gateway's parallel-call
-	// encoding is broken; absent keeps the protocol default.
+	// encoding is broken; absent keeps the protocol default. Prefer the
+	// per-provider field: this one applies to every provider.
 	DisableParallelToolCalls bool `json:"disable_parallel_tool_calls,omitempty"`
 
 	// PromptHooks run (in parallel) before every user prompt of a persistent
@@ -205,6 +209,16 @@ func (c *Config) Ativo() *Provider {
 		return &Provider{BaseURL: c.BaseURL, APIKey: c.APIKey}
 	}
 	return nil
+}
+
+// ParallelToolCallsOff reports whether the active provider must get one tool
+// call per response: the global setting or the active provider's own.
+func (c *Config) ParallelToolCallsOff() bool {
+	if c.DisableParallelToolCalls {
+		return true
+	}
+	p := c.Ativo()
+	return p != nil && p.DisableParallelToolCalls
 }
 
 // SelecionarProvider switches the active provider, recomputing the window

@@ -3,16 +3,16 @@
 package runtime
 
 import (
-	"context"
 	"os"
 	"os/exec"
-	"strconv"
 	"syscall"
-	"time"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
-// treeAttrs puts a hook in its own process group, so killing the tree does
-// not reach the agent. Local copy of internal/tools/proctree_windows.go.
+// treeAttrs puts a hook in its own process group, so a console signal to the
+// hook never reaches the agent.
 func treeAttrs(cmd *exec.Cmd) {
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
@@ -20,15 +20,55 @@ func treeAttrs(cmd *exec.Cmd) {
 	cmd.SysProcAttr.CreationFlags |= syscall.CREATE_NEW_PROCESS_GROUP
 }
 
-// killTree ends pid and every descendant.
-func killTree(pid int) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	k := exec.CommandContext(ctx, "taskkill", "/T", "/F", "/PID", strconv.Itoa(pid))
-	k.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	if k.Run() != nil {
-		if p, err := os.FindProcess(pid); err == nil {
-			_ = p.Kill()
-		}
+// procTree holds a hook and every descendant in a Job Object. taskkill /T
+// walks parent PIDs, so it cannot find a grandchild once the hook itself has
+// exited; a job keeps the whole tree reachable (and KILL_ON_JOB_CLOSE ends
+// whatever is left when the tree is closed).
+type procTree struct{ job windows.Handle }
+
+func newProcTree() *procTree {
+	job, err := windows.CreateJobObject(nil, nil)
+	if err != nil {
+		return &procTree{}
+	}
+	info := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
+	info.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+	if _, err := windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation,
+		uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info))); err != nil {
+		_ = windows.CloseHandle(job)
+		return &procTree{}
+	}
+	return &procTree{job: job}
+}
+
+// add puts a started process in the tree. Descendants it starts afterwards
+// join the job automatically.
+func (t *procTree) add(p *os.Process) {
+	if t.job == 0 || p == nil {
+		return
+	}
+	h, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE, false, uint32(p.Pid))
+	if err != nil {
+		return
+	}
+	defer windows.CloseHandle(h)
+	_ = windows.AssignProcessToJobObject(t.job, h)
+}
+
+// kill ends the process and every descendant.
+func (t *procTree) kill(p *os.Process) {
+	if t.job != 0 {
+		_ = windows.TerminateJobObject(t.job, 1)
+	}
+	if p != nil {
+		_ = p.Kill()
+	}
+}
+
+// close releases the job, ending anything still in it.
+func (t *procTree) close() {
+	if t.job != 0 {
+		_ = windows.CloseHandle(t.job)
+		t.job = 0
 	}
 }
